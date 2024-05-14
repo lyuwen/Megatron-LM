@@ -25,6 +25,8 @@ logger = logging.getLogger(__name__)
 
 _INDEX_HEADER = b"MMIDIDX\x00\x00"
 
+_BIN_SUFFIX = ".bin"
+
 
 class DType(Enum):
     """The NumPy data type Enum for writing/reading the IndexedDataset indices
@@ -38,6 +40,7 @@ class DType(Enum):
     float64 = 6
     float32 = 7
     uint16 = 8
+    uint32 = 9
 
     @classmethod
     def code_from_dtype(cls, value: Type[numpy.number]) -> int:
@@ -707,6 +710,14 @@ def get_idx_path(path_prefix: str) -> str:
     return path_prefix + ".idx"
 
 
+def set_bin_suffix(suffix: str) -> str:
+    if not suffix.startswith("."):
+        suffix = f".{suffix}"
+    global _BIN_SUFFIX
+    _BIN_SUFFIX = suffix
+    return suffix
+
+
 def get_bin_path(path_prefix: str) -> str:
     """Get the path to the data file from the prefix
 
@@ -716,4 +727,5 @@ def get_bin_path(path_prefix: str) -> str:
     Returns:
         str: The path to the data file
     """
-    return path_prefix + ".bin"
+    return path_prefix + ".npy"
+    # return path_prefix + ".bin"

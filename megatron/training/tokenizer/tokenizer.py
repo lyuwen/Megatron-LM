@@ -9,6 +9,7 @@ from megatron.core.datasets.megatron_tokenizer import MegatronTokenizer
 
 from .bert_tokenization import FullTokenizer as FullBertTokenizer
 from .gpt2_tokenization import GPT2Tokenizer
+from .tik_tokenization import TikTokenizer
 
 
 def build_tokenizer(args):
@@ -41,6 +42,10 @@ def build_tokenizer(args):
     elif args.tokenizer_type == 'Llama2Tokenizer':
         assert args.tokenizer_model is not None
         tokenizer = _Llama2Tokenizer(args.tokenizer_model)
+    elif args.tokenizer_type == 'TikTokenizer': # openAI's tiktokenier
+        assert args.vocab_file is not None
+        assert args.tokenizer_model is not None
+        tokenizer = TikTokenizer(args.vocab_file, tokenizer_class=args.tokenizer_model)
     elif args.tokenizer_type == 'NullTokenizer':
         assert args.vocab_size is not None
         tokenizer = _NullTokenizer(args.vocab_size)

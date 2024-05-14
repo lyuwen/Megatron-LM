@@ -17,6 +17,8 @@ from megatron.core.models.retro.utils import (
 from megatron.core.transformer import TransformerConfig
 from megatron.training.activations import squared_relu
 
+from megatron.core.datasets.indexed_dataset import set_bin_suffix
+
 
 def parse_args(extra_args_provider=None, ignore_unknown_args=False):
     """Parse all arguments."""
@@ -1461,6 +1463,7 @@ def _add_data_args(parser):
                                 'SentencePieceTokenizer',
                                 'GPTSentencePieceTokenizer',
                                 'Llama2Tokenizer',
+                                'TikTokenizer',
                                 'NullTokenizer'],
                        help='What type of tokenizer to use.')
     group.add_argument('--tokenizer-model', type=str, default=None,
@@ -1477,6 +1480,9 @@ def _add_data_args(parser):
                        dest='create_attention_mask_in_dataloader')
     group.add_argument('--num-dataset-builder-threads', type=int, default=1,
                        help='Number of parallel threads per rank for dataset builder')
+    # Add the ability to change suffix for data files
+    group.add_argument('--data-suffix', type=set_bin_suffix, default=".bin",
+                       help='Suffix for data files, default \".bin\"')
     return parser
 
 
