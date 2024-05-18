@@ -130,9 +130,9 @@ class BlendedMegatronDatasetBuilder(object):
                     # Check blend size
                     assert dataset.size is None or dataset.size == dataset.dataset_index.shape[0]
                     # Check blend access of mid-level datasets
-                    _, sizes = numpy.unique(dataset.dataset_index, return_counts=True)
-                    for i, dataset_and_size in enumerate(zip(dataset.datasets, sizes)):
-                        if len(dataset_and_size[0]) < dataset_and_size[1]:
+                    dataset_indices, sizes = numpy.unique(dataset.dataset_index, return_counts=True)
+                    for i, dataset_and_size in enumerate(zip(dataset_indices, sizes)):
+                        if len(dataset.datasets[dataset_and_size[0]]) < dataset_and_size[1]:
                             raise IndexError(
                                 f"{type(dataset).__name__} blend goes out of bounds for {type([dataset_and_size[0]]).__name__} {i} for {dataset.split.name} split"
                             )

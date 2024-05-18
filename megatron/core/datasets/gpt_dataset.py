@@ -145,7 +145,7 @@ class GPTDataset(MegatronDataset):
         Returns:
             int: The length of the dataset
         """
-        return self.sample_index.shape[0] - 1
+        return max(self.sample_index.shape[0] - 1, 0)
 
     def __getitem__(self, idx: Optional[int]) -> Dict[str, torch.Tensor]:
         """Abstract method implementation
@@ -416,15 +416,18 @@ class GPTDataset(MegatronDataset):
 
             assert document_index.dtype == numpy.int32
             assert self.dataset.sequence_lengths.dtype == numpy.int32
-            sample_index = helpers.build_sample_idx(
-                self.dataset.sequence_lengths,
-                document_index,
-                sequence_length,
-                num_epochs,
-                num_tokens_per_epoch,
-                drop_last_partial_sequence,
-                self.config.add_extra_token_to_sequence,
-            )
+            if num_tokens_per_epoch == 0:
+                sample_index = numpy.empty((0, 2), dtype=numpy.int32)
+            else:
+                sample_index = helpers.build_sample_idx(
+                    self.dataset.sequence_lengths,
+                    document_index,
+                    sequence_length,
+                    num_epochs,
+                    num_tokens_per_epoch,
+                    drop_last_partial_sequence,
+                    self.config.add_extra_token_to_sequence,
+                )
 
             # Build the shuffle index
             if separate_final_epoch:
@@ -521,6 +524,8 @@ class GPTDataset(MegatronDataset):
         num_epochs = 1
         num_tokens = num_tokens_per_epoch
         if self.num_samples is None:
+            return num_epochs
+        elif num_tokens_per_epoch == 0:
             return num_epochs
         else:
             num_tokens_requested = (
