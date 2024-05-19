@@ -61,7 +61,13 @@ OUTPUT_ARGS="
     --log-interval 1 \
     --save-interval 1000 \
     --eval-interval 1000 \
-    --eval-iters 10
+    --eval-iters 10 \
+    --tensorboard-dir ${CHECKPOINT_PATH}/tf_logs \
+    --log-validation-ppl-to-tensorboard \
+    --log-memory-to-tensorboard \
+    --log-world-size-to-tensorboard \
+    --log-throughput \
+    --timing-log-level 2
 "
 
 torchrun $DISTRIBUTED_ARGS pretrain_gpt.py \
