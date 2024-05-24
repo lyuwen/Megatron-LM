@@ -1046,6 +1046,11 @@ def _add_training_args(parser):
                        help='Total number of samples to train over all '
                        'training runs. Note that either train-iters or '
                        'train-samples should be provided.')
+    group.add_argument('--force-train-samples', type=int, default=None,
+                       help='Force set the total number of samples to train over all '
+                       'training runs. Note that either train-iters or '
+                       'train-samples should be provided. '
+                       'Useful in continual training or batched training.')
     group.add_argument('--log-interval', type=int, default=100,
                        help='Report loss and timing interval.')
     group.add_argument('--exit-interval', type=int, default=None,
@@ -1483,6 +1488,9 @@ def _add_data_args(parser):
     # Add the ability to change suffix for data files
     group.add_argument('--data-suffix', type=set_bin_suffix, default=".bin",
                        help='Suffix for data files, default \".bin\"')
+    #
+    group.add_argument('--reset-dataloader', action="store_true",
+                       help='Reset dataloader to start from 0.')
     return parser
 
 

@@ -1368,7 +1368,11 @@ def get_train_valid_test_num_samples():
     args = get_args()
 
     # Number of train/valid/test samples.
-    if args.train_samples:
+    if args.force_train_samples:
+        train_samples = (args.train_iters - args.iteration) * args.global_batch_size
+        assert args.force_train_samples <= train_samples, "Input force-train-samples smaller than train iterations to run."
+        train_samples = args.force_train_samples
+    elif args.train_samples:
         train_samples = args.train_samples
     else:
         train_samples = args.train_iters * args.global_batch_size
@@ -1412,6 +1416,8 @@ def build_train_valid_test_data_loaders(
         if args.train_samples is None:
             args.consumed_valid_samples = (args.iteration // args.eval_interval) * \
                 args.eval_iters * args.global_batch_size
+    if args.reset_dataloader:
+        args.consumed_valid_samples = 0
 
     # Rely on distributed-aware core datasets, temporary
     is_distributed = getattr(build_train_valid_test_datasets_provider, "is_distributed", False)
