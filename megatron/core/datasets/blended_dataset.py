@@ -59,6 +59,7 @@ class BlendedDataset(torch.utils.data.Dataset):
             )
 
         if size is not None:
+            weights = [weights[i] * int(len(ds) > 0) for i, ds in enumerate(datasets)] # Adjust weights if some datasets are empty
             weights = normalize(weights)
 
         self.datasets = datasets
@@ -123,7 +124,8 @@ class BlendedDataset(torch.utils.data.Dataset):
         else:
             cache_hit = False
 
-        if not path_to_cache or (not cache_hit and torch.distributed.get_rank() == 0):
+        if not path_to_cache or (not cache_hit and (not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0)):
+        # if not path_to_cache or (not cache_hit and torch.distributed.get_rank() == 0):
             log_single_rank(
                 logger, logging.INFO, f"Build and save the {type(self).__name__} indices",
             )
