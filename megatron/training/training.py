@@ -1368,16 +1368,21 @@ def get_train_valid_test_num_samples():
     args = get_args()
 
     # Number of train/valid/test samples.
-    if args.force_train_samples:
+    if args.reset_dataloader and args.force_train_samples:
         train_samples = (args.train_iters - args.iteration) * args.global_batch_size
-        assert args.force_train_samples <= train_samples, "Input force-train-samples smaller than train iterations to run."
+        assert args.force_train_samples >= train_samples, \
+            f"Input force-train-samples smaller than train iterations to run."
         train_samples = args.force_train_samples
     elif args.train_samples:
         train_samples = args.train_samples
     else:
         train_samples = args.train_iters * args.global_batch_size
-    eval_iters = (args.train_iters // args.eval_interval + 1) * \
-                 args.eval_iters
+    if args.reset_dataloader:
+        eval_iters = ((args.train_iters - args.iteration) // args.eval_interval + 1) * \
+                     args.eval_iters
+    else:
+        eval_iters = (args.train_iters // args.eval_interval + 1) * \
+                     args.eval_iters
     test_iters = args.eval_iters
 
     return (

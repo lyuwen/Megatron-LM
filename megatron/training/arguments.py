@@ -1050,7 +1050,8 @@ def _add_training_args(parser):
                        help='Force set the total number of samples to train over all '
                        'training runs. Note that either train-iters or '
                        'train-samples should be provided. '
-                       'Useful in continual training or batched training.')
+                       'Useful in continual training or batched training.'
+                       'This only works with --reset-dataloader enabled.')
     group.add_argument('--log-interval', type=int, default=100,
                        help='Report loss and timing interval.')
     group.add_argument('--exit-interval', type=int, default=None,
