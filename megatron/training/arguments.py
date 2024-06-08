@@ -5,6 +5,7 @@
 import argparse
 import dataclasses
 import json
+import logging
 import os
 import torch
 import types
@@ -242,9 +243,15 @@ def validate_args(args, defaults={}):
                 args.global_batch_size), flush=True)
     assert args.global_batch_size > 0
     if args.num_layers_per_virtual_pipeline_stage is not None:
-        assert args.pipeline_model_parallel_size > 2, \
-            'pipeline-model-parallel size should be greater than 2 with ' \
-            'interleaved schedule'
+        if args.overlap_p2p_comm:
+            assert args.pipeline_model_parallel_size > 1, \
+                'when interleaved schedule is used, pipeline-model-parallel size '\
+                'should be greater than 1'
+        else:
+            assert args.pipeline_model_parallel_size > 2, \
+                'when interleaved schedule is used and p2p communication overlap is disabled, '\
+                'pipeline-model-parallel size should be greater than 2 to avoid having multiple '\
+                'p2p sends and recvs between same 2 ranks per communication batch'
         assert args.num_layers % args.transformer_pipeline_model_parallel_size == 0, \
             'number of layers should be divisible by the pipeline parallel size'
         num_layers_per_pipeline_stage = args.num_layers // args.transformer_pipeline_model_parallel_size
@@ -502,9 +509,6 @@ def validate_args(args, defaults={}):
     # MoE Spec check
     if args.num_experts is not None:
         assert args.spec is None, "Model Spec must be None when using MoEs"
-        if args.tensor_model_parallel_size > 1:
-            assert args.sequence_parallel, \
-                "When using MoE and tensor parallelism, sequence parallelism must be used."
 
     # Expert parallelism check
     if args.expert_model_parallel_size  > 1:
@@ -884,6 +888,8 @@ def _add_logging_args(parser):
     group.add_argument('--one-logger-run-name', type=str, default=None,
                        help='The one-logger run name displayed. Will ignore if '
                        '--enable-one-logger is not set')
+    group.add_argument('--logging-level', type=int, default=None,
+                       help='Set default logging level')
     return parser
 
 
@@ -1343,6 +1349,8 @@ def _add_distributed_args(parser):
                        dest='delay_grad_reduce')
     group.add_argument('--ddp-bucket-size', type=int, default=None,
                        help='Bucket size for data-parallel communication')
+    group.add_argument('--ddp-average-in-collective', action='store_true',
+                       default=False, help='If set, average directly in data-parallel communication collective.')
     group.add_argument('--overlap-param-gather', action='store_true',
                        default=False, help='If set, overlap param all-gather in distributed optimizer.')
     group.add_argument('--delay-param-gather', action='store_true',
@@ -1470,6 +1478,8 @@ def _add_data_args(parser):
                                 'GPTSentencePieceTokenizer',
                                 'Llama2Tokenizer',
                                 'TikTokenizer',
+                                'Llama3Tokenizer',
+                                'MistralTokenizer',
                                 'NullTokenizer'],
                        help='What type of tokenizer to use.')
     group.add_argument('--tokenizer-model', type=str, default=None,
@@ -1669,7 +1679,7 @@ def _add_moe_args(parser):
     group.add_argument('--moe-pad-expert-input-to-capacity', action='store_true',
                        help='Pads the input for each expert to match the expert capacity length, effective only after the --moe-expert-capacity-factor is set.')
     group.add_argument('--moe-token-drop-policy', type=str, default='probs', choices=['probs', 'position'],
-                       help='The policy to drop tokens. Can be either "prob" or "position". If "prob", the tokens with the lowest probabilities will be dropped. If "position", tokens at the end of each batch will be dropped.')
+                       help='The policy to drop tokens. Can be either "probs" or "position". If "probs", the tokens with the lowest probabilities will be dropped. If "position", tokens at the end of each batch will be dropped.')
     group.add_argument('--moe-layer-recompute', action='store_true',
                        help='Enable checkpointing for moe_layer, should be used when memory is not sufficient.')
     group.add_argument('--moe-extended-tp', action='store_true',

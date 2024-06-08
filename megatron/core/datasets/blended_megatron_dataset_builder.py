@@ -11,8 +11,9 @@ import torch
 from megatron.core.datasets.blended_dataset import BlendedDataset
 from megatron.core.datasets.blended_megatron_dataset_config import BlendedMegatronDatasetConfig
 from megatron.core.datasets.megatron_dataset import LowLevelDataset, MegatronDataset
-from megatron.core.datasets.utils import Split, log_single_rank, normalize
+from megatron.core.datasets.utils import Split, normalize
 from megatron.core.parallel_state import get_virtual_pipeline_model_parallel_rank
+from megatron.core.utils import log_single_rank
 
 logger = logging.getLogger(__name__)
 
@@ -170,7 +171,7 @@ class BlendedMegatronDatasetBuilder(object):
             split = self.config.split_matrix
 
             # Blend consists of a single prefix
-            if len(prefixes) == 1:
+            if len(prefixes) == 1 and weights is None:
                 return self._build_megatron_dataset_splits(prefixes[0], split, self.sizes)
 
             # Build the mid-level datasets
