@@ -50,7 +50,7 @@ class Config:
 
 if __name__ == '__main__':
   parser = argparse.ArgumentParser(description="Restart status checker for batched pretraining")
-  parser.add_argument("--last-batch-checkpoint", "--lbc", type=str, required=True, help="Checkpoint path of the last batch.")
+  parser.add_argument("--last-batch-checkpoint", "--lbc", type=str, help="Checkpoint path of the last batch.")
   parser.add_argument("--current-batch-checkpoint", "--cbc", type=str, required=True, help="Checkpoint path of the last batch.")
   parser.add_argument("--batch-datalist", "--dl", type=str, required=True, help="Datalist file of current batch.")
   parser.add_argument("--status-save-path", "--save", "-s", type=str, required=True, help="Path to save the batched training status.")
@@ -76,8 +76,11 @@ if __name__ == '__main__':
       sample_iters = sample_size // args.global_batch_size
       config[status_key]['sample_size'] = sample_size
       config[status_key]['sample_iters'] = sample_iters
-      with open(os.path.join(args.last_batch_checkpoint, checkpoint_index), "r") as f:
-        config[status_key]['seen_steps'] = int(f.read())
+      if not args.last_batch_checkpoint:
+        config[status_key]['seen_steps'] = 0
+      else:
+        with open(os.path.join(args.last_batch_checkpoint, checkpoint_index), "r") as f:
+          config[status_key]['seen_steps'] = int(f.read())
       reset_arguments = "--reset-dataloader --override-opt_param-scheduler"
       if args.reset_iterations:
         reset_arguments += " --reset-iterations"
