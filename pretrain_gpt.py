@@ -14,6 +14,7 @@ from megatron.core import mpu
 from megatron.core.enums import ModelType
 from megatron.core.datasets.blended_megatron_dataset_builder import BlendedMegatronDatasetBuilder
 from megatron.core.datasets.utils import get_blend_from_list
+from megatron.legacy.data.data_samplers import build_pretraining_data_loader
 from megatron.core.datasets.gpt_dataset import GPTDatasetConfig
 from megatron.core.datasets.gpt_dataset import MockGPTDataset, GPTDataset
 import megatron.legacy.model
@@ -246,7 +247,7 @@ def extra_valid_core_gpt_dataset_config_from_args(args):
 
     for datalist in args.extra_valid_datalist:
         with open(datalist, 'rt') as f:
-          datalist_input = f.read.strip().split()
+          datalist_input = f.read().strip().split()
           extra_valid_configs.append(GPTDatasetConfig(
               random_seed=args.seed,
               sequence_length=args.seq_length,
@@ -310,7 +311,7 @@ def add_extra_args(parser):
                        )
     group.add_argument('--extra-valid-data-samples', type=int, default=None, nargs="+",
                        help='Sample sizes of the list of dataset lists containing additional validation datasets. '
-                           'The last incomplete batch will be droped.'
+                           'The last incomplete batch will be droped, but will always up-sample to at least 1 global batch.'
                        )
     group.add_argument('--extra-valid-data-names', type=str, default=None, nargs="+",
                        help='Names of the dataset lists containing additional validation datasets. '
@@ -325,7 +326,9 @@ def build_extra_valid_data_loaders(
 
     args = get_args()
 
-    print_rank_0('> building extra validation datasets ...')
+    print_rank_0('> building dataloaders for extra validation datasets ...')
+
+    valid_dataloaders, extra_valid_data_samples, extra_valid_data_names = (None, None, None)
 
     # Rely on distributed-aware core datasets, temporary
     is_distributed = getattr(build_extra_valid_datasets_provider, "is_distributed", False)
@@ -335,7 +338,8 @@ def build_extra_valid_data_loaders(
 
         assert len(args.extra_valid_data_samples) == len(args.extra_valid_datalist), \
             "Length of the datalist and sample sizes do not match."
-        extra_valid_data_samples = [(num_samples // args.global_batch_size) * args.global_batch_size for num_samples in args.extra_valid_data_samples]
+        # At least up-sample to 1 global batch
+        extra_valid_data_samples = [max(num_samples // args.global_batch_size, 1) * args.global_batch_size for num_samples in args.extra_valid_data_samples]
         args.extra_valid_data_samples = extra_valid_data_samples
         #
         if args.extra_valid_data_names:
@@ -344,12 +348,18 @@ def build_extra_valid_data_loaders(
             extra_valid_data_names = args.extra_valid_data_names
         else:
             extra_valid_data_names = [f"Extra data {i}" for i in range(len(args.extra_valid_datalist))]
+        args.extra_valid_data_names = extra_valid_data_names
         # Build datasets.
         valid_ds_list = build_extra_valid_datasets_provider(extra_valid_data_samples)
         # Build dataloders.
+        orig_dataloader_type = args.dataloader_type
+        args.dataloader_type = "cyclic"
         valid_dataloaders = [build_pretraining_data_loader(valid_ds, 0) for valid_ds in valid_ds_list]
+        args.dataloader_type = orig_dataloader_type
 
-    return valid_dataloaders, args.extra_valid_data_samples, extra_valid_data_names
+    print_rank_0('> finished building dataloaders for extra validation datasets ...')
+
+    return valid_dataloaders, extra_valid_data_samples, extra_valid_data_names
 
 
 def build_extra_valid_data_iterators(extra_valid_datasets_provider):
@@ -363,14 +373,15 @@ def build_extra_valid_data_iterators(extra_valid_datasets_provider):
         build_extra_valid_data_loaders(extra_valid_datasets_provider)
 
     # Build iterators.
-    dl_type = "cyclic"
-
     def cyclic_iter(iter):
         while True:
             for x in iter:
                 yield x
 
-    valid_data_iterators = [iter(cyclic_iter(dataloader)) for dataloader in valid_dataloaders]
+    if valid_dataloaders is not None:
+        valid_data_iterators = [iter(cyclic_iter(dataloader)) for dataloader in valid_dataloaders]
+    else:
+        valid_data_iterators = None
 
     return valid_data_iterators, extra_valid_data_samples, extra_valid_data_names
 
@@ -379,6 +390,7 @@ if __name__ == "__main__":
 
     # Temporary for transition to core datasets
     train_valid_test_datasets_provider.is_distributed = True
+    extra_valid_datasets_provider.is_distributed = True
 
     pretrain(
         train_valid_test_datasets_provider,

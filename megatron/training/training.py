@@ -256,10 +256,13 @@ def pretrain(train_valid_test_dataset_provider,
                 train_valid_test_dataset_provider)
     # Extra validations
     if (args.extra_valid_datalist is not None) and extra_valid_data_iterators_builder:
+      print_rank_0('Build extra valid dataset ...')
       extra_valid_data_iterators, extra_valid_data_samples, extra_valid_data_names = \
           extra_valid_data_iterators_builder()
-      extra_valid_data_iterators.num_samples = extra_valid_data_samples
-      extra_valid_data_iterators.names = extra_valid_data_names
+      # if extra_valid_data_iterators is not None:
+      #     extra_valid_data_iterators.num_samples = extra_valid_data_samples
+      #     extra_valid_data_iterators.names = extra_valid_data_names
+      print_rank_0('Finished build extra valid dataset ...')
     else:
       extra_valid_data_iterators = None
     #
@@ -1125,11 +1128,11 @@ def train(forward_step_func, model, optimizer, opt_param_scheduler,
             # Extra validations
             if extra_valid_data_iterators:
                 for i, extra_valid_data_iterator in enumerate(extra_valid_data_iterators):
-                    num_samples = extra_valid_data_iterators.num_samples[i]
-                    data_name = extra_valid_data_iterators.names[i]
-                    eval_iter = num_samples // args.global_batch_size
-                    old_eval_iter = args.eval_iter
-                    args.eval_iter = eval_iter
+                    num_samples = args.extra_valid_data_samples[i]
+                    data_name = args.extra_valid_data_names[i]
+                    eval_iters = num_samples // args.global_batch_size
+                    old_eval_iters = args.eval_iters
+                    args.eval_iters = eval_iters
                     # Run evaluation for extra datasets
                     evaluate_and_print_results(prefix, forward_step_func,
                                                extra_valid_data_iterator, model,
@@ -1138,7 +1141,7 @@ def train(forward_step_func, model, optimizer, opt_param_scheduler,
                                                group_prefix=data_name,
                                                )
                     # Reset iter count
-                    args.eval_iter = old_eval_iter
+                    args.eval_iters = old_eval_iters
             # End Extra validations
             eval_duration += timers('eval-time').elapsed()
             eval_iterations += args.eval_iters
@@ -1371,22 +1374,22 @@ def evaluate_and_print_results(prefix, forward_step_func,
         ppl = math.exp(min(20, total_loss_dict[key].item()))
         string += '{} PPL: {:.6E} | '.format(key, ppl)
         if writer:
-            if group_prefix:
-              key = group_prefix + "/" if not group_prefix.endswith("/") else "" + key
-            writer.add_scalar('{} validation'.format(key),
+            if group_prefix and (not group_prefix.endswith("/")):
+                group_prefix = group_prefix + "/"
+            writer.add_scalar('{} validation'.format(group_prefix + key),
                               total_loss_dict[key].item(),
                               iteration)
-            writer.add_scalar('{} validation vs samples'.format(key),
+            writer.add_scalar('{} validation vs samples'.format(group_prefix + key),
                               total_loss_dict[key].item(),
                               args.consumed_train_samples)
             if args.log_validation_ppl_to_tensorboard:
-                writer.add_scalar('{} validation ppl'.format(key), ppl,
+                writer.add_scalar('{} validation ppl'.format(group_prefix + key), ppl,
                                   iteration)
-                writer.add_scalar('{} validation ppl vs samples'.format(key),
+                writer.add_scalar('{} validation ppl vs samples'.format(group_prefix + key),
                                   ppl, args.consumed_train_samples)
             if wandb_writer and is_last_rank():
                 wandb_writer.log({
-                    '{} validation'.format(key): total_loss_dict[key].item()},
+                    '{} validation'.format(group_prefix + key): total_loss_dict[key].item()},
                     iteration)
 
     if process_non_loss_data_func is not None and writer and is_last_rank():
