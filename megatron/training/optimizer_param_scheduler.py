@@ -169,7 +169,7 @@ class OptimizerParamScheduler(object):
         return sd_value
 
 
-    def load_state_dict(self, sd):
+    def load_state_dict(self, sd, reset_iterations=None):
 
         if 'start_lr' in sd:
             max_lr_ = sd['start_lr']
@@ -208,7 +208,9 @@ class OptimizerParamScheduler(object):
                                                lr_decay_style_,
                                                'learning rate decay style')
 
-        if 'num_iters' in sd:
+        if reset_iterations is not None:
+            num_steps = reset_iterations
+        elif 'num_iters' in sd:
             num_steps = sd['num_iters']
         else:
             num_steps = sd['num_steps']

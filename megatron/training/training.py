@@ -156,7 +156,9 @@ def pretrain(train_valid_test_dataset_provider,
              forward_step_func,
              process_non_loss_data_func=None,
              extra_args_provider=None,
-             args_defaults={}):
+             args_defaults={},
+             extra_valid_datasets_provider=None,
+             ):
     """Main training program.
 
     This function will run the followings in the order provided:
@@ -184,6 +186,8 @@ def pretrain(train_valid_test_dataset_provider,
             to it. It is used for programs to add their own arguments.
         args_defaults: a dictionary from argument-name to argument-value. It
             to set already parse arguments.
+        extra_valid_datasets_providers: a function that produces a list of extra
+            validation datasets.
     """
 
     # Initalize and get arguments, timers, and Tensorboard writer.
@@ -529,6 +533,9 @@ def setup_model_and_optimizer(model_provider_func,
         unwrapped_model[0].init_state_dict_from_bert()
         if args.fp16:
             optimizer.reload_model_params()
+
+    if args.reset_iterations is not None:
+        args.iteration = args.reset_iterations
 
     return model, optimizer, opt_param_scheduler
 
@@ -1422,6 +1429,7 @@ def build_train_valid_test_data_loaders(
             args.consumed_valid_samples = (args.iteration // args.eval_interval) * \
                 args.eval_iters * args.global_batch_size
     if args.reset_dataloader:
+        args.consumed_train_samples = 0
         args.consumed_valid_samples = 0
 
     # Rely on distributed-aware core datasets, temporary

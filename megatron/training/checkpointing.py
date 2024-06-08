@@ -797,9 +797,9 @@ def load_checkpoint(model, optimizer, opt_param_scheduler, load_arg='load', stri
             # Load scheduler.
             if opt_param_scheduler is not None:
                 if 'lr_scheduler' in state_dict: # backward compatbility
-                    opt_param_scheduler.load_state_dict(state_dict['lr_scheduler'])
+                    opt_param_scheduler.load_state_dict(state_dict['lr_scheduler'], reset_iterations=args.reset_iterations)
                 else:
-                    opt_param_scheduler.load_state_dict(state_dict['opt_param_scheduler'])
+                    opt_param_scheduler.load_state_dict(state_dict['opt_param_scheduler'], reset_iterations=args.reset_iterations)
         except KeyError:
             print_rank_0('Unable to load optimizer from checkpoint {}. '
                          'Specify --no-load-optim or --finetune to prevent '

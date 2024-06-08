@@ -1492,6 +1492,8 @@ def _add_data_args(parser):
     #
     group.add_argument('--reset-dataloader', action="store_true",
                        help='Reset dataloader to start from 0.')
+    group.add_argument('--reset-iterations', nargs="?", const=0, type=int,
+                       help='Reset iterations to a given value.')
     return parser
 
 
