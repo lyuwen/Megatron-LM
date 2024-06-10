@@ -157,7 +157,7 @@ def pretrain(train_valid_test_dataset_provider,
              process_non_loss_data_func=None,
              extra_args_provider=None,
              args_defaults={},
-             extra_valid_datasets_provider=None,
+             extra_valid_data_iterators_builder=None,
              ):
     """Main training program.
 
@@ -186,8 +186,8 @@ def pretrain(train_valid_test_dataset_provider,
             to it. It is used for programs to add their own arguments.
         args_defaults: a dictionary from argument-name to argument-value. It
             to set already parse arguments.
-        extra_valid_datasets_providers: a function that produces a list of extra
-            validation datasets.
+        extra_valid_data_iterators_builder: a function that produces a list of extra
+            validation datasets, a list of sample sizes and a list dataset names.
     """
 
     # Initalize and get arguments, timers, and Tensorboard writer.
@@ -254,6 +254,18 @@ def pretrain(train_valid_test_dataset_provider,
         train_data_iterator, valid_data_iterator, test_data_iterator \
             = build_train_valid_test_data_iterators(
                 train_valid_test_dataset_provider)
+    # Extra validations
+    if (args.extra_valid_datalist is not None) and extra_valid_data_iterators_builder:
+      print_rank_0('Build extra valid dataset ...')
+      extra_valid_data_iterators, extra_valid_data_samples, extra_valid_data_names = \
+          extra_valid_data_iterators_builder()
+      # if extra_valid_data_iterators is not None:
+      #     extra_valid_data_iterators.num_samples = extra_valid_data_samples
+      #     extra_valid_data_iterators.names = extra_valid_data_names
+      print_rank_0('Finished build extra valid dataset ...')
+    else:
+      extra_valid_data_iterators = None
+    #
     timers('train/valid/test-data-iterators-setup').stop()
     print_datetime('after dataloaders are built')
 
@@ -279,7 +291,9 @@ def pretrain(train_valid_test_dataset_provider,
                 forward_step_func,
                 model, optimizer, opt_param_scheduler,
                 train_data_iterator, valid_data_iterator,
-                process_non_loss_data_func, config, checkpointing_context)
+                process_non_loss_data_func, config, checkpointing_context,
+                extra_valid_data_iterators=extra_valid_data_iterators,
+                )
 
         print_datetime('after training is done')
 
@@ -908,7 +922,9 @@ def save_checkpoint_and_time(iteration, model, optimizer, opt_param_scheduler,
 
 def train(forward_step_func, model, optimizer, opt_param_scheduler,
           train_data_iterator, valid_data_iterator,
-          process_non_loss_data_func, config, checkpointing_context):
+          process_non_loss_data_func, config, checkpointing_context,
+          extra_valid_data_iterators=None,
+          ):
     """Train the model function."""
     args = get_args()
     timers = get_timers()
@@ -1109,6 +1125,24 @@ def train(forward_step_func, model, optimizer, opt_param_scheduler,
                                        valid_data_iterator, model,
                                        iteration, process_non_loss_data_func,
                                        config, False)
+            # Extra validations
+            if extra_valid_data_iterators:
+                for i, extra_valid_data_iterator in enumerate(extra_valid_data_iterators):
+                    num_samples = args.extra_valid_data_samples[i]
+                    data_name = args.extra_valid_data_names[i]
+                    eval_iters = num_samples // args.global_batch_size
+                    old_eval_iters = args.eval_iters
+                    args.eval_iters = eval_iters
+                    # Run evaluation for extra datasets
+                    evaluate_and_print_results(prefix, forward_step_func,
+                                               extra_valid_data_iterator, model,
+                                               iteration, process_non_loss_data_func,
+                                               config, False,
+                                               group_prefix=data_name,
+                                               )
+                    # Reset iter count
+                    args.eval_iters = old_eval_iters
+            # End Extra validations
             eval_duration += timers('eval-time').elapsed()
             eval_iterations += args.eval_iters
             timers('eval-time').stop()
@@ -1316,7 +1350,9 @@ def evaluate(forward_step_func,
 def evaluate_and_print_results(prefix, forward_step_func,
                                data_iterator, model,
                                iteration, process_non_loss_data_func, config,
-                               verbose=False, write_to_tensorboard=True):
+                               verbose=False, write_to_tensorboard=True,
+                               group_prefix="",
+                               ):
     """Helper function to evaluate and dump results on screen."""
     args = get_args()
     if write_to_tensorboard:
@@ -1338,24 +1374,29 @@ def evaluate_and_print_results(prefix, forward_step_func,
         ppl = math.exp(min(20, total_loss_dict[key].item()))
         string += '{} PPL: {:.6E} | '.format(key, ppl)
         if writer:
-            writer.add_scalar('{} validation'.format(key),
+            if group_prefix and (not group_prefix.endswith("/")):
+                group_prefix = group_prefix + "/"
+            writer.add_scalar('{} validation'.format(group_prefix + key),
                               total_loss_dict[key].item(),
                               iteration)
-            writer.add_scalar('{} validation vs samples'.format(key),
+            writer.add_scalar('{} validation vs samples'.format(group_prefix + key),
                               total_loss_dict[key].item(),
                               args.consumed_train_samples)
             if args.log_validation_ppl_to_tensorboard:
-                writer.add_scalar('{} validation ppl'.format(key), ppl,
+                writer.add_scalar('{} validation ppl'.format(group_prefix + key), ppl,
                                   iteration)
-                writer.add_scalar('{} validation ppl vs samples'.format(key),
+                writer.add_scalar('{} validation ppl vs samples'.format(group_prefix + key),
                                   ppl, args.consumed_train_samples)
             if wandb_writer and is_last_rank():
                 wandb_writer.log({
-                    '{} validation'.format(key): total_loss_dict[key].item()},
+                    '{} validation'.format(group_prefix + key): total_loss_dict[key].item()},
                     iteration)
 
     if process_non_loss_data_func is not None and writer and is_last_rank():
         process_non_loss_data_func(collected_non_loss_data, iteration, writer)
+
+    if group_prefix:
+        string = f"[{group_prefix}] " + string
 
     length = len(string) + 1
     print_rank_last('-' * length)
