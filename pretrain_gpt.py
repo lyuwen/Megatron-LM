@@ -306,14 +306,14 @@ def extra_valid_datasets_provider(extra_valid_num_samples):
 def add_extra_args(parser):
     group = parser.add_argument_group(title='extra arguements')
 
-    group.add_argument('--extra-valid-datalist', type=str, default=None, nargs="+",
+    group.add_argument('--extra-valid-datalist', type=str, default=None, action="append",
                        help='A list of dataset lists containing additional validation datasets. '
                        )
-    group.add_argument('--extra-valid-data-samples', type=int, default=None, nargs="+",
+    group.add_argument('--extra-valid-data-samples', type=int, default=None, action="append",
                        help='Sample sizes of the list of dataset lists containing additional validation datasets. '
                            'The last incomplete batch will be droped, but will always up-sample to at least 1 global batch.'
                        )
-    group.add_argument('--extra-valid-data-names', type=str, default=None, nargs="+",
+    group.add_argument('--extra-valid-data-names', type=str, default=None, action="append",
                        help='Names of the dataset lists containing additional validation datasets. '
                        )
 

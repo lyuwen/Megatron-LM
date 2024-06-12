@@ -263,6 +263,7 @@ def pretrain(train_valid_test_dataset_provider,
       #     extra_valid_data_iterators.num_samples = extra_valid_data_samples
       #     extra_valid_data_iterators.names = extra_valid_data_names
       print_rank_0('Finished build extra valid dataset ...')
+      print_rank_0(f'> Number of extra datasets: len({extra_valid_data_iterators}) - {extra_valid_data_names}')
     else:
       extra_valid_data_iterators = None
     #
@@ -1130,6 +1131,7 @@ def train(forward_step_func, model, optimizer, opt_param_scheduler,
                 for i, extra_valid_data_iterator in enumerate(extra_valid_data_iterators):
                     num_samples = args.extra_valid_data_samples[i]
                     data_name = args.extra_valid_data_names[i]
+                    print_rank_0(f">>>> {i=} {extra_valid_data_iterator=} {num_samples=} {data_name=}")
                     eval_iters = num_samples // args.global_batch_size
                     old_eval_iters = args.eval_iters
                     args.eval_iters = eval_iters
