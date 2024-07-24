@@ -1113,7 +1113,7 @@ def train(forward_step_func, model, optimizer, opt_param_scheduler,
 
         # Evaluation
         if args.eval_interval and iteration % args.eval_interval == 0 and \
-           args.do_valid:
+           args.do_valid or extra_valid_data_iterators:
             timers('interval-time').stop()
             if args.use_distributed_optimizer and args.overlap_param_gather:
                 optimizer.disable_pre_hook()
@@ -1122,10 +1122,11 @@ def train(forward_step_func, model, optimizer, opt_param_scheduler,
                 gc.collect()
             prefix = 'iteration {}'.format(iteration)
             timers('eval-time', log_level=0).start(barrier=True)
-            evaluate_and_print_results(prefix, forward_step_func,
-                                       valid_data_iterator, model,
-                                       iteration, process_non_loss_data_func,
-                                       config, False)
+            if args.do_valid:
+                evaluate_and_print_results(prefix, forward_step_func,
+                                           valid_data_iterator, model,
+                                           iteration, process_non_loss_data_func,
+                                           config, False)
             # Extra validations
             if extra_valid_data_iterators:
                 for i, extra_valid_data_iterator in enumerate(extra_valid_data_iterators):
