@@ -10,7 +10,7 @@ def sum_column(file, column_index=0):
   with open(file, "r") as f:
     total = 0
     for l in f:
-      if l.startswith("#"):
+      if l.startswith("#") or (not l.strip()):
         continue
       total += int(l.split()[column_index])
   return total
@@ -76,7 +76,7 @@ if __name__ == '__main__':
       sample_iters = sample_size // args.global_batch_size
       config[status_key]['sample_size'] = sample_size
       config[status_key]['sample_iters'] = sample_iters
-      if not args.last_batch_checkpoint:
+      if not args.last_batch_checkpoint or (not os.path.exists(os.path.join(args.last_batch_checkpoint, checkpoint_index))):
         config[status_key]['seen_steps'] = 0
       else:
         with open(os.path.join(args.last_batch_checkpoint, checkpoint_index), "r") as f:

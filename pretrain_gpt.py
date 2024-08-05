@@ -14,6 +14,7 @@ from megatron.core import mpu
 from megatron.core.enums import ModelType
 from megatron.core.datasets.blended_megatron_dataset_builder import BlendedMegatronDatasetBuilder
 from megatron.core.datasets.utils import get_blend_from_list
+from megatron.legacy.data.data_samplers import build_pretraining_data_loader
 from megatron.core.datasets.gpt_dataset import GPTDatasetConfig
 from megatron.core.datasets.gpt_dataset import MockGPTDataset, GPTDataset
 import megatron.legacy.model
@@ -237,10 +238,157 @@ def train_valid_test_datasets_provider(train_val_test_num_samples):
     return train_ds, valid_ds, test_ds
 
 
+def extra_valid_core_gpt_dataset_config_from_args(args):
+    tokenizer = get_tokenizer()
+
+    extra_valid_configs = []
+
+    for datalist in args.extra_valid_datalist:
+        with open(datalist, 'rt') as f:
+          datalist_input = f.read().strip().split()
+          extra_valid_configs.append(GPTDatasetConfig(
+              random_seed=args.seed,
+              sequence_length=args.seq_length,
+              #  blend=None,
+              blend_per_split=[
+                  None,
+                  get_blend_from_list(datalist_input),
+                  None,
+              ],
+              #  split=None,
+              num_dataset_builder_threads=args.num_dataset_builder_threads,
+              path_to_cache=args.data_cache_path,
+              mmap_bin_files=args.mmap_bin_files,
+              tokenizer=tokenizer,
+              reset_position_ids=args.reset_position_ids,
+              reset_attention_mask=args.reset_attention_mask,
+              eod_mask_loss=args.eod_mask_loss,
+              create_attention_mask=args.create_attention_mask_in_dataloader,
+          ))
+    return extra_valid_configs
+
+
+def extra_valid_datasets_provider(extra_valid_num_samples):
+    """Build the train test and validation datasets.
+
+    Args:
+        train_val_test_num_samples : A list containing the number of samples in train test and validation.
+    """
+    args = get_args()
+
+    configs = extra_valid_core_gpt_dataset_config_from_args(args)
+
+    if args.mock_data:
+        dataset_type = MockGPTDataset
+    else:
+        dataset_type = GPTDataset
+
+    print_rank_0("> building train, validation, and test datasets for GPT ...")
+
+    valid_ds_list = []
+
+    for config, num_samples in zip(configs, extra_valid_num_samples):
+        train_ds, valid_ds, test_ds = BlendedMegatronDatasetBuilder(
+            dataset_type,
+            (None, num_samples, None),
+            is_dataset_built_on_rank,
+            config
+        ).build()
+        valid_ds_list.append(valid_ds)
+
+    print_rank_0("> finished creating GPT datasets for extra validation sets ...")
+
+    return valid_ds_list
+
+
+def add_extra_args(parser):
+    group = parser.add_argument_group(title='extra arguements')
+
+    group.add_argument('--extra-valid-datalist', type=str, default=None, nargs="+",
+                       help='A list of dataset lists containing additional validation datasets. '
+                       )
+    group.add_argument('--extra-valid-data-samples', type=int, default=None, nargs="+",
+                       help='Sample sizes of the list of dataset lists containing additional validation datasets. '
+                           'The last incomplete batch will be droped, but will always up-sample to at least 1 global batch.'
+                       )
+    group.add_argument('--extra-valid-data-names', type=str, default=None, nargs="+",
+                       help='Names of the dataset lists containing additional validation datasets. '
+                       )
+
+    return parser
+
+
+def build_extra_valid_data_loaders(
+        build_extra_valid_datasets_provider):
+    """Build pretraining data loaders."""
+
+    args = get_args()
+
+    print_rank_0('> building dataloaders for extra validation datasets ...')
+
+    valid_dataloaders, extra_valid_data_samples, extra_valid_data_names = (None, None, None)
+
+    # Rely on distributed-aware core datasets, temporary
+    is_distributed = getattr(build_extra_valid_datasets_provider, "is_distributed", False)
+
+    # Construct the data pipeline
+    if is_distributed or mpu.get_tensor_model_parallel_rank() == 0:
+
+        assert len(args.extra_valid_data_samples) == len(args.extra_valid_datalist), \
+            "Length of the datalist and sample sizes do not match."
+        # At least up-sample to 1 global batch
+        extra_valid_data_samples = [max(num_samples // args.global_batch_size, 1) * args.global_batch_size for num_samples in args.extra_valid_data_samples]
+        args.extra_valid_data_samples = extra_valid_data_samples
+        #
+        if args.extra_valid_data_names:
+            assert len(args.extra_valid_data_names) == len(args.extra_valid_datalist), \
+                "Length of the datalist and data names do not match."
+            extra_valid_data_names = args.extra_valid_data_names
+        else:
+            extra_valid_data_names = [f"Extra data {i}" for i in range(len(args.extra_valid_datalist))]
+        args.extra_valid_data_names = extra_valid_data_names
+        # Build datasets.
+        valid_ds_list = build_extra_valid_datasets_provider(extra_valid_data_samples)
+        # Build dataloders.
+        orig_dataloader_type = args.dataloader_type
+        args.dataloader_type = "cyclic"
+        valid_dataloaders = [build_pretraining_data_loader(valid_ds, 0) for valid_ds in valid_ds_list]
+        args.dataloader_type = orig_dataloader_type
+
+    print_rank_0('> finished building dataloaders for extra validation datasets ...')
+
+    return valid_dataloaders, extra_valid_data_samples, extra_valid_data_names
+
+
+def build_extra_valid_data_iterators(extra_valid_datasets_provider):
+    """Build pretraining data iterators."""
+
+    args = get_args()
+
+    # Build loaders.
+    #  valid_dataloaders = build_extra_valid_data_loaders(extra_valid_datasets_provider)
+    valid_dataloaders, extra_valid_data_samples, extra_valid_data_names = \
+        build_extra_valid_data_loaders(extra_valid_datasets_provider)
+
+    # Build iterators.
+    def cyclic_iter(iter):
+        while True:
+            for x in iter:
+                yield x
+
+    if valid_dataloaders is not None:
+        valid_data_iterators = [iter(cyclic_iter(dataloader)) for dataloader in valid_dataloaders]
+    else:
+        valid_data_iterators = None
+
+    return valid_data_iterators, extra_valid_data_samples, extra_valid_data_names
+
+
 if __name__ == "__main__":
 
     # Temporary for transition to core datasets
     train_valid_test_datasets_provider.is_distributed = True
+    extra_valid_datasets_provider.is_distributed = True
 
     pretrain(
         train_valid_test_datasets_provider,
@@ -248,4 +396,6 @@ if __name__ == "__main__":
         ModelType.encoder_or_decoder,
         forward_step,
         args_defaults={'tokenizer_type': 'GPT2BPETokenizer'},
-    )
+        extra_args_provider=add_extra_args,
+        extra_valid_data_iterators_builder=partial(build_extra_valid_data_iterators, extra_valid_datasets_provider=extra_valid_datasets_provider),
+        )
