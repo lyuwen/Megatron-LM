@@ -83,6 +83,8 @@ class BlendedDataset(torch.utils.data.Dataset):
             self.unique_description.encode("utf-8")
         ).hexdigest()
 
+        self.built_anew_on_cache_miss = False
+
         self.dataset_index, self.dataset_sample_index = self._build_indices()
 
     def __len__(self) -> int:
@@ -128,8 +130,11 @@ class BlendedDataset(torch.utils.data.Dataset):
         if not path_to_cache or (not cache_hit and (not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0)):
         # if not path_to_cache or (not cache_hit and torch.distributed.get_rank() == 0):
             log_single_rank(
-                logger, logging.INFO, f"Build and save the {type(self).__name__} indices",
+                logger,
+                logging.INFO,
+                f"Build and save the {type(self).__name__} indices",
             )
+            self.built_anew_on_cache_miss = True
 
             # Build the dataset and dataset sample indexes
             log_single_rank(

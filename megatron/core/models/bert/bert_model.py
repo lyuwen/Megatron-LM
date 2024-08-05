@@ -7,6 +7,7 @@ import torch
 from torch import Tensor
 
 from megatron.core import parallel_state, tensor_parallel
+from megatron.core.config_logger import has_config_logger_enabled, log_config_to_disk
 from megatron.core.dist_checkpointing.mapping import ShardedStateDict
 from megatron.core.models.bert.bert_lm_head import BertLMHead
 from megatron.core.models.bert.pooler import Pooler
@@ -60,6 +61,9 @@ class BertModel(LanguageModule):
     ):
         super(BertModel, self).__init__(config=config)
 
+        if has_config_logger_enabled(config):
+            log_config_to_disk(config, locals(), prefix=type(self).__name__)
+
         if return_embeddings:
             assert self.post_process and self.add_binary_head
 
@@ -100,6 +104,7 @@ class BertModel(LanguageModule):
                 rotary_percent=rotary_percent,
                 rotary_interleaved=self.config.rotary_interleaved,
                 seq_len_interpolation_factor=seq_len_interpolation_factor,
+                use_cpu_initialization=self.config.use_cpu_initialization,
             )
 
         # Transformer.
@@ -113,7 +118,10 @@ class BertModel(LanguageModule):
         # Output
         if post_process:
             # TODO: Make sure you are passing in the mpu_vocab_size properly
-            self.lm_head = BertLMHead(config.hidden_size, config,)
+            self.lm_head = BertLMHead(
+                config.hidden_size,
+                config,
+            )
 
             self.output_layer = tensor_parallel.ColumnParallelLinear(
                 config.hidden_size,

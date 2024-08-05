@@ -33,20 +33,22 @@ TRANSFORMER_IMPL=local
 if [[ $ALLOW_NONDETERMINISTIC -eq 1 ]]; then
    command="$command export NVTE_ALLOW_NONDETERMINISTIC_ALGO=1;"
 else
-   command="$command export NVTE_ALLOW_NONDETERMINISTIC_ALGO=0; export NCCL_ALGO=^NVLS;"
+   command="$command export NVTE_ALLOW_NONDETERMINISTIC_ALGO=0; export NCCL_ALGO=Tree; export CUBLAS_WORKSPACE_CONFIG=:4096:8;"
    ADDITIONAL_PARAMS+=" --deterministic-mode"
 fi
 
+USE_LEGACY=1
 if [[ $USE_CORE -eq 1 ]]; then
        echo "Running using megatron core"
        TRANSFORMER_IMPL=local
        TRAINING_DTYPE=bf16
-       USE_MCORE=1
+       unset USE_LEGACY
 fi
 
 if [[ $MOE_GROUPED_GEMM -eq 1 ]]; then
        echo "Running MoE with Grouped GEMM"
        TRAINING_DTYPE=bf16  # Currently GroupedGEMM for MoE only supports bf16 dtype
+       ADDITIONAL_PARAMS+=" --moe-grouped-gemm --disable-bias-linear"
 fi
 
 if [[ $USE_TE -eq 1 ]]; then
@@ -69,19 +71,21 @@ else
        __SAVE_INTERVAL=10000  # inf
 fi
 if [[ -n "$CKPT_FORMAT" ]] && [[ "$CKPT_FORMAT" != 'torch' ]]; then
-       echo "Using distributed checkpoint format..."
-       command="$command pip install zarr tensorstore==0.1.45;"
-       ADDITIONAL_PARAMS+=" --use-dist-ckpt --dist-ckpt-format $CKPT_FORMAT"
+       echo "Using distributed checkpoint format $CKPT_FORMAT..."
+       [[ "$CKPT_FORMAT" == 'zarr' ]] && command="$command pip install zarr tensorstore==0.1.45;"
+       ADDITIONAL_PARAMS+=" --use-dist-ckpt --dist-ckpt-format $CKPT_FORMAT --use-mcore-models"
 fi
 set +x
 
-DISTRIBUTED_ARGS="--nproc_per_node $GPUS_PER_NODE --nnodes $NUM_NODES"
+DISTRIBUTED_ARGS="--max-restarts 3 --nproc_per_node $GPUS_PER_NODE --nnodes $NUM_NODES"
 
 build_torch_run_cmd() {
   torch_run_cmd="torchrun $DISTRIBUTED_ARGS \
     pretrain_vlm.py \
       --num-layers 12 \
       --hidden-size 512 \
+      --attention-dropout 0.0 \
+      --hidden-dropout 0.0 \
       --num-attention-heads 8 \
       --log-params-norm \
       --log-num-zeros-in-grad \
@@ -116,7 +120,7 @@ build_torch_run_cmd() {
       --pipeline-model-parallel-size $PP_SIZE \
       ${VP_SIZE:+--num-layers-per-virtual-pipeline-stage "$VP_SIZE"} \
       ${ADDITIONAL_PARAMS:+$ADDITIONAL_PARAMS} \
-      ${USE_MCORE:+--use-mcore-models} \
+      ${USE_LEGACY:+--use-legacy-models} \
       --no-gradient-accumulation-fusion \
       --${TRAINING_DTYPE} \
       --img-h 336 \
@@ -173,8 +177,9 @@ echo "$command" > $SCRIPTS_DIR/pretrain_llava_distributed_command.sh
 eval $command
 
 echo "Saving test results to $TENSORBOARD_DIR"
-PYTHONPATH=$PWD python3 ./tests/functional_tests/python_test_utils/get_test_results_from_tensorboard_logs.py $TENSORBOARD_DIR "$JOB_NAME" | \
-    tee ${TENSORBOARD_DIR}/results.json
+PYTHONPATH=$PWD python3 ./tests/functional_tests/python_test_utils/get_test_results_from_tensorboard_logs.py \
+  --logs-dir $TENSORBOARD_DIR \
+  --output-path ${TENSORBOARD_DIR}/results.json
 
 if [[ $SKIP_PYTEST != 1 ]]; then
     echo "-----------------------------------------------------------------------------"

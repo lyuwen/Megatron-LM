@@ -1,5 +1,11 @@
 import os
+from datetime import timedelta
+
 import torch
+from torch._C._distributed_c10d import PrefixStore
+from torch.distributed import rendezvous
+from torch.distributed.distributed_c10d import _store_based_barrier
+
 import megatron.core.parallel_state as ps
 
 
@@ -15,6 +21,22 @@ class Utils:
 
     world_size = torch.cuda.device_count()
     rank = int(os.environ['LOCAL_RANK'])
+    inited = False
+    store = None
+
+    @staticmethod
+    def barrier():
+        group_name = os.environ.get('PYTEST_CURRENT_TEST')
+        if " " in group_name:
+            group_name = group_name.split(" ")[0]
+
+        _store_based_barrier(
+            rank=Utils.rank,
+            store=Utils.store,
+            group_name=os.environ.get('PYTEST_CURRENT_TEST'),
+            rendezvous_count=Utils.world_size,
+            timeout=timedelta(minutes=2),
+        )
 
     @staticmethod
     def initialize_distributed():
@@ -27,14 +49,26 @@ class Utils:
             master_ip = os.getenv('MASTER_ADDR', 'localhost')
             master_port = os.getenv('MASTER_PORT', '6000')
             init_method += master_ip + ':' + master_port
+            rendezvous_iterator = rendezvous(
+                init_method, Utils.rank, Utils.world_size, timeout=timedelta(minutes=1)
+            )
+            store, rank, world_size = next(rendezvous_iterator)
+            store.set_timeout(timedelta(minutes=1))
+
+            # Use a PrefixStore to avoid accidental overrides of keys used by
+            # different systems (e.g. RPC) in case the store is multi-tenant.
+            store = PrefixStore("default_pg", store)
+            Utils.store = store
+
             torch.distributed.init_process_group(
                 backend='nccl',
                 world_size=Utils.world_size,
                 rank=Utils.rank,
-                init_method=init_method,
+                store=store,
             )
 
-            torch.distributed.barrier()
+            Utils.barrier()
+        Utils.inited = True
 
     @staticmethod
     def set_world_size(world_size=None, rank=None):
@@ -54,15 +88,17 @@ class Utils:
 
     @staticmethod
     def destroy_model_parallel():
+        if not Utils.inited:
+            return
+        Utils.barrier()
         ps.destroy_model_parallel()
-        torch.distributed.barrier()
+        Utils.inited = False
 
     @staticmethod
     def initialize_model_parallel(
         tensor_model_parallel_size=1,
         pipeline_model_parallel_size=1,
         virtual_pipeline_model_parallel_size=None,
-        pipeline_model_parallel_split_rank=None,
         **kwargs,
     ):
         ps.destroy_model_parallel()
@@ -71,6 +107,6 @@ class Utils:
             tensor_model_parallel_size,
             pipeline_model_parallel_size,
             virtual_pipeline_model_parallel_size,
-            pipeline_model_parallel_split_rank,
             **kwargs,
         )
+        Utils.inited = True

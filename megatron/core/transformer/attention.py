@@ -17,7 +17,6 @@ from megatron.core.parallel_state import (
     get_tensor_model_parallel_rank,
     get_tensor_model_parallel_world_size,
 )
-from megatron.core.transformer.custom_layers.transformer_engine import SplitAlongDim
 from megatron.core.transformer.enums import AttnMaskType
 from megatron.core.transformer.identity_op import IdentityFuncOp, IdentityOp
 from megatron.core.transformer.module import MegatronModule
@@ -27,6 +26,18 @@ from megatron.core.utils import divide
 
 from .enums import AttnMaskType
 from .transformer_config import TransformerConfig
+
+try:
+    import transformer_engine
+
+    HAVE_TE = True
+except ImportError:
+    HAVE_TE = False
+
+if HAVE_TE:
+    from megatron.core.transformer.custom_layers.transformer_engine import SplitAlongDim
+else:
+    SplitAlongDim = None
 
 
 @dataclass
@@ -178,7 +189,6 @@ class Attention(MegatronModule, ABC):
         # =================================================
         # Pre-allocate memory for key-values for inference.
         # =================================================
-        is_first_step = False
         if self.layer_number not in inference_params.key_value_memory_dict:
             inf_max_seq_length = inference_params.max_sequence_length
             inf_max_batch_size = inference_params.max_batch_size
@@ -192,12 +202,15 @@ class Attention(MegatronModule, ABC):
                 inference_key_memory,
                 inference_value_memory,
             )
-            is_first_step = True
         else:
             # Get the pre-allocated buffers for this layer
             inference_key_memory, inference_value_memory = inference_params.key_value_memory_dict[
                 self.layer_number
             ]
+
+        if inference_params.sequence_len_offset > 0:
+            # This should mean that we are past the prompt forward_step
+            # and so we need to turn off masking
             attn_mask_type = AttnMaskType.no_mask
 
         batch_start = inference_params.batch_size_offset
@@ -213,24 +226,13 @@ class Attention(MegatronModule, ABC):
         value = inference_value_memory[:sequence_end, batch_start:batch_end, ...]
 
         # adjust the key rotary positional embedding
-        if rotary_pos_emb is not None:
-            q_pos_emb, k_pos_emb = rotary_pos_emb
-            # need to cross check this condition during inference
-            # if not set_inference_key_value_memory:
-            if not is_first_step:
-                # In inference, we compute one token at a time.
-                # Select the correct positional embedding
-                # (only the last token in the sequence)
-                q_pos_emb = q_pos_emb[sequence_end - 1 : sequence_end]
-            else:
-                # In the first forward pass of inference,
-                # we use the entire provided prefix.
-                # q_pos_emb here has the rope embeddings of the entire
-                # prefix + to-be-generated output so
-                # we slice to just the prefix.
-                q_pos_emb = q_pos_emb[:sequence_end, :, :, :]
-            k_pos_emb = k_pos_emb[:sequence_end, :, :, :]
-            rotary_pos_emb = (q_pos_emb, k_pos_emb)
+        if rotary_pos_emb is None:
+            return key, value, rotary_pos_emb, attn_mask_type
+
+        q_pos_emb, k_pos_emb = rotary_pos_emb
+        q_pos_emb = q_pos_emb[sequence_start:sequence_end, :, :, :]
+        k_pos_emb = k_pos_emb[:sequence_end, :, :, :]
+        rotary_pos_emb = (q_pos_emb, k_pos_emb)
 
         return key, value, rotary_pos_emb, attn_mask_type
 
@@ -287,10 +289,16 @@ class Attention(MegatronModule, ABC):
             else:
                 cu_seqlens_q = cu_seqlens_kv = None
             query = apply_rotary_pos_emb(
-                query, q_pos_emb, config=self.config, cu_seqlens=cu_seqlens_q,
+                query,
+                q_pos_emb,
+                config=self.config,
+                cu_seqlens=cu_seqlens_q,
             )
             key = apply_rotary_pos_emb(
-                key, k_pos_emb, config=self.config, cu_seqlens=cu_seqlens_kv,
+                key,
+                k_pos_emb,
+                config=self.config,
+                cu_seqlens=cu_seqlens_kv,
             )
 
             # TODO, can apply positional embedding to value_layer so it has
@@ -491,11 +499,19 @@ class SelfAttention(Attention):
         if SplitAlongDim is not None:
 
             # [sq, b, ng, (np/ng + 2) * hn] --> [sq, b, ng, np/ng * hn], [sq, b, ng, hn], [sq, b, ng, hn]
-            (query, key, value) = SplitAlongDim(mixed_qkv, 3, split_arg_list,)
+            (query, key, value) = SplitAlongDim(
+                mixed_qkv,
+                3,
+                split_arg_list,
+            )
         else:
 
             # [sq, b, ng, (np/ng + 2) * hn] --> [sq, b, ng, np/ng * hn], [sq, b, ng, hn], [sq, b, ng, hn]
-            (query, key, value) = torch.split(mixed_qkv, split_arg_list, dim=3,)
+            (query, key, value) = torch.split(
+                mixed_qkv,
+                split_arg_list,
+                dim=3,
+            )
 
         # [sq, b, ng, np/ng * hn] -> [sq, b, np, hn]
         query = query.reshape(query.size(0), query.size(1), -1, self.hidden_size_per_attention_head)

@@ -61,6 +61,7 @@ def _load_checkpoint(queue, args):
                 '--no-load-rng',
                 '--no-save-optim',
                 '--no-save-rng',
+                '--mock-data', # To pass the "blend data checks" in arguments.py
                 '--no-initialization',
                 '--load', args.load_dir,
                 '--position-embedding-type', args.position_embedding_type,
@@ -80,7 +81,7 @@ def _load_checkpoint(queue, args):
     # Validate margs.
     margs = validate_args(margs)
 
-    margs.use_mcore_models = False
+    margs.use_legacy_models = True
     margs.transformer_impl = args.loader_transformer_impl
 
     def check_for_arg(arg_name, default=None):
@@ -365,6 +366,6 @@ def _load_checkpoint(queue, args):
 def load_checkpoint(queue, args):
     try:
         _load_checkpoint(queue, args)
-    except:
+    except Exception:
         queue.put("exit")
         raise

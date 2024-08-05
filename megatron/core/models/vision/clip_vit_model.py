@@ -4,6 +4,7 @@ from typing import Optional, Union
 
 import torch
 
+from megatron.core.config_logger import has_config_logger_enabled, log_config_to_disk
 from megatron.core.models.common.vision_module.vision_module import VisionModule
 from megatron.core.transformer.custom_layers.transformer_engine import TENorm
 from megatron.core.transformer.enums import ModelType
@@ -20,11 +21,11 @@ class CLIPViTModel(VisionModule):
         transformer_config (TransformerConfig): Transformer config.
         transformer_layer_spec (ModuleSpec): Specifies module to use for transformer layers.
         ln_pre_impl (ModuleSpec or type): Specifies the layer norm type to use for ln_pre.
+        add_class_token (bool, optional): Include a class token. Defaults to True.
+        class_token_len (int): Class token length. Defaults to 1 but 8 may be faster.
         patch_dim (int): Image patch size.
         img_h (int): Input image height.
         img_w (int): Input image width.
-        add_class_token (bool, optional): Include a class token. Defaults to True.
-        class_token_len (int): Class token length. Defaults to 1 but 8 may be faster.
     """
 
     def __init__(
@@ -32,18 +33,23 @@ class CLIPViTModel(VisionModule):
         transformer_config: TransformerConfig,
         transformer_layer_spec: ModuleSpec,
         ln_pre_impl: Union[ModuleSpec, type] = TENorm,
+        add_class_token: bool = True,
+        class_token_len: int = 1,
         patch_dim: int = 14,
         img_h: int = 336,
         img_w: int = 336,
-        add_class_token: bool = True,
-        class_token_len: int = 1,
     ) -> None:
         super().__init__(config=transformer_config)
 
+        if has_config_logger_enabled(transformer_config):
+            log_config_to_disk(transformer_config, locals(), prefix=type(self).__name__)
+
+        self.class_token_len = class_token_len
         self.visual_hidden_size = transformer_config.hidden_size
         self.patch_dim = patch_dim
         self.img_h = img_h
         self.img_w = img_w
+
         assert self.img_h % self.patch_dim == 0
         assert self.img_w % self.patch_dim == 0
         self.num_patches_per_dim_h = self.img_h // self.patch_dim
@@ -125,14 +131,21 @@ class CLIPViTModel(VisionModule):
                 [class_token, x], dim=1
             )  # [batch, grid ** 2 + class_token_len, hidden_size]
 
+        assert x.shape[1] == self.seq_length, f"{x.shape[1]} != {self.seq_length}"
         x = x + self.position_embeddings(self.position_ids)
         x = self.ln_pre(x)
-
         x = x.permute(1, 0, 2)  # [b, s, h] -> [s, b, h]
+        x = (
+            x.contiguous()
+        )  # contiguous() call required as `permute` can sparsify the tensor and this breaks pipelining
+
         if attention_mask is None:
-            attention_mask = torch.ones(1, 1, x.shape[0], x.shape[0]).cuda()  # [1, 1, s, s]
+            attention_mask = torch.ones(
+                1, 1, self.seq_length, self.seq_length
+            ).cuda()  # [1, 1, s, s]
             attention_mask = attention_mask < 0.5  # to bool
-        x = self.decoder(x.contiguous(), attention_mask)
+
+        x = self.decoder(x, attention_mask)
         x = x.permute(1, 0, 2)  # [s, b, h] -> [b, s, h]
         x = x.contiguous()
 

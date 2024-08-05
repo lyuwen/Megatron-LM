@@ -25,7 +25,6 @@ from megatron.training import get_args, get_model, print_rank_0
 from megatron.training.checkpointing import load_checkpoint
 from megatron.training.initialize import initialize_megatron
 
-
 def add_text_generation_args(parser):
     """Text generation arguments."""
     group = parser.add_argument_group(title='Vision language model text generation')
@@ -91,6 +90,11 @@ def preprocess_image(target_h, target_w, img):
     return output_img
 
 
+def _get_partition_bounds(total_num_samples, num_partitions, partition_id):
+    samples_per_partition = total_num_samples // num_partitions
+    return samples_per_partition * partition_id, samples_per_partition * (partition_id + 1)
+
+
 def generate_samples(model):
     """Text generation using a trained vision language model."""
     args = get_args()
@@ -113,8 +117,8 @@ def generate_samples(model):
 
         # Optionally, process only a subset of the input files.
         if args.num_partitions > 0:
-            per_part = len(samples) // args.num_partitions
-            samples = samples[per_part * args.partition_id : per_part * (args.partition_id + 1)]
+            lb, ub = _get_partition_bounds(len(samples), args.num_partitions, args.partition_id)
+            samples = samples[lb:ub]
 
         num_samples = len(samples)
 
@@ -141,10 +145,8 @@ def generate_samples(model):
         image_files = sorted(glob.glob(args.input_image_path + "/*"))
         # Optionally, process only a subset of the input files.
         if args.num_partitions > 0:
-            per_part = len(image_files) // args.num_partitions
-            image_files = image_files[
-                per_part * args.partition_id : per_part * (args.partition_id + 1)
-            ]
+            lb, ub = _get_partition_bounds(len(image_files), args.num_partitions, args.partition_id)
+            image_files = image_files[lb:ub]
 
         num_samples = len(image_files)
         images = []
@@ -152,7 +154,7 @@ def generate_samples(model):
         # Run image preprocessing.
         for image_file in image_files:
             img = np.array(Image.open(image_file))
-            img = preprocess(args.img_h, args.img_w, img)
+            img = preprocess_image(args.img_h, args.img_w, img)
 
             images.append(img.reshape(-1, 3, args.img_h, args.img_w))
 
@@ -165,6 +167,70 @@ def generate_samples(model):
             gts = json.load(open(args.gt_path))
             for gt in gts["annotations"]:
                 gt_sample_id_to_captions[gt["image_id"]].append(gt['caption'])
+    elif args.task == 'MMMU':
+        # The following downloads the MMMU dataset from HuggingFace and uses the API from the MMMU github repo to run MMMU evaluation.
+        import datasets
+
+        from evaluation.MMMU.eval.utils.data_utils import (
+            CAT_SHORT2LONG,
+            construct_prompt,
+            load_yaml,
+            process_single_sample,
+        )
+
+        all_mmmu_datasets = []
+
+        hf_datasets_cache = os.environ["HF_DATASETS_CACHE"]
+        assert hf_datasets_cache != "", "Please set the environment variable HF_DATASETS_CACHE."
+
+        for subject in CAT_SHORT2LONG.values():
+            subject_dataset = datasets.load_dataset(
+                "MMMU/MMMU", subject, split=datasets.Split.VALIDATION, cache_dir=hf_datasets_cache
+            )
+            all_mmmu_datasets.append(subject_dataset)
+
+        dataset = datasets.concatenate_datasets(all_mmmu_datasets)
+
+        # Optionally, process only a subset of the input files.
+        start_idx = 0
+        end_idx = len(dataset)
+        if args.num_partitions > 0:
+            start_idx, end_idx = _get_partition_bounds(
+                len(dataset), args.num_partitions, args.partition_id
+            )
+
+        # Using the LLaVA config from the MMMU repo.
+        config = load_yaml("evaluation/MMMU/eval/configs/llava1.5.yaml")
+        for k, v in config.items():
+            if isinstance(v, list):
+                assert len(v) == 1, "only one value supported."
+                config[k] = v[0]
+
+        for idx in range(start_idx, end_idx):
+            sample = dataset[idx]
+            sample = process_single_sample(sample)
+            sample = construct_prompt(sample, config)
+
+            # Skip samples with no images or multiple images. Not supported yet.
+            if "image" not in sample or "<image 2>" in sample['final_input_prompt']:
+                continue
+
+            img = np.array(sample['image'].convert("RGB"))
+            img = preprocess_image(args.img_h, args.img_w, img)
+            images.append(img.reshape(-1, 3, args.img_h, args.img_w))
+
+            sample_ids.append(sample['id'])
+
+            # TODO: Support different image positions.
+            prompt = sample['final_input_prompt']
+            prompt = prompt.replace("<image 1>", "")
+            questions.append(prompt.strip())
+
+            answers.append(sample['answer'])
+
+            samples.append(sample)
+
+        num_samples = len(samples)
     else:
         raise NotImplementedError("unsupported task")
 
@@ -179,7 +245,12 @@ def generate_samples(model):
             prompt = questions[idx]
         elif args.task == "VQAv2":
             prompt = questions[idx]
-            prompt += "\nAnswer the question using a single word or phrase."
+            prompt = "Given the image, answer the following question with a single word or phrase. " + prompt
+        elif args.task == "MMMU":
+            prompt = questions[idx]
+
+        prompt = prompt.replace("<image>", "")
+        prompt = prompt + "\n"
 
         forward_step = partial(VLMForwardStep, image, get_image_token_count())
 
@@ -208,16 +279,30 @@ def generate_samples(model):
                     output_name = "caption"
                 elif args.task == "VQAv2":
                     output_name = "answer"
-                elif args.task == "TextVQA":
+                elif args.task in ("TextVQA", "MMMU"):
                     output_name = "text"
 
-                generated = generation[len(prompt) :]
+                generated = generation[len(prompt) + 1 :]
                 output[output_name] = generated
 
                 if args.task == "captioning":
                     output["ground_truth"] = gt_sample_id_to_captions[sample_id]
                 elif args.task == "VQAv2":
                     output["ground_truth"] = answers[idx]
+                elif args.task == "MMMU":
+                    sample = samples[idx]
+
+                    prediction = generated
+                    if sample["question_type"] == "multiple-choice":
+                        from evaluation.MMMU.eval.utils.eval_utils import (
+                            parse_multi_choice_response,
+                        )
+
+                        prediction = parse_multi_choice_response(
+                            generated, sample["all_choices"], sample["index2ans"]
+                        )
+
+                    output["prediction"] = prediction
 
                 print_rank_0(output)
 
