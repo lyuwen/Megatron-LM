@@ -291,6 +291,7 @@ def pretrain(
       #     extra_valid_data_iterators.num_samples = extra_valid_data_samples
       #     extra_valid_data_iterators.names = extra_valid_data_names
       print_rank_0('Finished build extra valid dataset ...')
+      print_rank_0(f'> Number of extra datasets: len({extra_valid_data_iterators}) - {extra_valid_data_names}')
     else:
       extra_valid_data_iterators = None
     #
@@ -354,6 +355,24 @@ def pretrain(
                                    valid_data_iterator, model,
                                    iteration, process_non_loss_data_func, config,
                                    verbose=True, write_to_tensorboard=not args.skip_train)
+        # Extra validations
+        if extra_valid_data_iterators:
+            for i, extra_valid_data_iterator in enumerate(extra_valid_data_iterators):
+                num_samples = args.extra_valid_data_samples[i]
+                data_name = args.extra_valid_data_names[i]
+                print_rank_0(f">>>> {i=} {extra_valid_data_iterator=} {num_samples=} {data_name=}")
+                eval_iters = num_samples // args.global_batch_size
+                old_eval_iters = args.eval_iters
+                args.eval_iters = eval_iters
+                # Run evaluation for extra datasets
+                evaluate_and_print_results(prefix, forward_step_func,
+                                           extra_valid_data_iterator, model,
+                                           iteration, process_non_loss_data_func,
+                                           config, False,
+                                           group_prefix=data_name,
+                                           )
+                # Reset iter count
+                args.eval_iters = old_eval_iters
 
     if args.do_test:
         prefix = f'iteration {iteration} on test set'
@@ -1200,7 +1219,7 @@ def train(forward_step_func, model, optimizer, opt_param_scheduler,
 
         # Evaluation
         if args.eval_interval and iteration % args.eval_interval == 0 and \
-           args.do_valid:
+           args.do_valid or extra_valid_data_iterators:
             timers('interval-time').stop()
             if args.use_distributed_optimizer and args.overlap_param_gather:
                 optimizer.disable_pre_hook()
@@ -1209,15 +1228,17 @@ def train(forward_step_func, model, optimizer, opt_param_scheduler,
                 gc.collect()
             prefix = 'iteration {}'.format(iteration)
             timers('eval-time', log_level=0).start(barrier=True)
-            evaluate_and_print_results(prefix, forward_step_func,
-                                       valid_data_iterator, model,
-                                       iteration, process_non_loss_data_func,
-                                       config, False)
+            if args.do_valid:
+                evaluate_and_print_results(prefix, forward_step_func,
+                                           valid_data_iterator, model,
+                                           iteration, process_non_loss_data_func,
+                                           config, False)
             # Extra validations
             if extra_valid_data_iterators:
                 for i, extra_valid_data_iterator in enumerate(extra_valid_data_iterators):
                     num_samples = args.extra_valid_data_samples[i]
                     data_name = args.extra_valid_data_names[i]
+                    print_rank_0(f">>>> {i=} {extra_valid_data_iterator=} {num_samples=} {data_name=}")
                     eval_iters = num_samples // args.global_batch_size
                     old_eval_iters = args.eval_iters
                     args.eval_iters = eval_iters
