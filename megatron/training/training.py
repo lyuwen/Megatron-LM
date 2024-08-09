@@ -1241,6 +1241,7 @@ def train(forward_step_func, model, optimizer, opt_param_scheduler,
                     print_rank_0(f">>>> {i=} {extra_valid_data_iterator=} {num_samples=} {data_name=}")
                     eval_iters = num_samples // args.global_batch_size
                     old_eval_iters = args.eval_iters
+                    old_consumed_valid_samples = args.consumed_valid_samples
                     args.eval_iters = eval_iters
                     # Run evaluation for extra datasets
                     evaluate_and_print_results(prefix, forward_step_func,
@@ -1251,6 +1252,7 @@ def train(forward_step_func, model, optimizer, opt_param_scheduler,
                                                )
                     # Reset iter count
                     args.eval_iters = old_eval_iters
+                    args.consumed_valid_samples = old_consumed_valid_samples
             # End Extra validations
             eval_duration += timers('eval-time').elapsed()
             eval_iterations += args.eval_iters
