@@ -75,6 +75,7 @@ class BlendedDataset(torch.utils.data.Dataset):
         unique_identifiers["split"] = self.split.name
         unique_identifiers["weights"] = self.weights
         unique_identifiers["size"] = self.size
+        unique_identifiers["renormalize_blend_weights"] = self.config.renormalize_blend_weights
 
         self.unique_description = json.dumps(
             unique_identifiers, indent=4, default=lambda obj: obj.unique_identifiers
@@ -93,10 +94,7 @@ class BlendedDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx: int) -> Dict[str, Union[int, numpy.ndarray]]:
         dataset_id = self.dataset_index[idx]
         dataset_sample_id = self.dataset_sample_index[idx]
-        return {
-            "dataset_id": dataset_id,
-            **self.datasets[dataset_id][dataset_sample_id],
-        }
+        return {"dataset_id": dataset_id, **self.datasets[dataset_id][dataset_sample_id]}
 
     def _build_indices(self) -> Tuple[numpy.ndarray, numpy.ndarray]:
         """Build and optionally cache the dataset index and the dataset sample index
@@ -130,9 +128,7 @@ class BlendedDataset(torch.utils.data.Dataset):
         if not path_to_cache or (not cache_hit and (not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0)):
         # if not path_to_cache or (not cache_hit and torch.distributed.get_rank() == 0):
             log_single_rank(
-                logger,
-                logging.INFO,
-                f"Build and save the {type(self).__name__} indices",
+                logger, logging.INFO, f"Build and save the {type(self).__name__} indices"
             )
             self.built_anew_on_cache_miss = True
 

@@ -51,6 +51,7 @@ from .utils import (
     report_memory,
     unwrap_model,
     append_to_progress_log,
+    update_use_dist_ckpt,
 )
 from .global_vars import (
     get_args,
@@ -627,6 +628,20 @@ def setup_model_and_optimizer(model_provider_func,
         if args.fp16:
             optimizer.reload_model_params()
 
+    # Convert checkpoint format.
+    if args.ckpt_convert_format is not None:
+        load_ckpt_format = args.ckpt_format
+        args.ckpt_format = args.ckpt_convert_format
+        args.save = os.path.join(args.ckpt_convert_save, args.ckpt_convert_format)
+        update_use_dist_ckpt(args)
+        
+        save_checkpoint(args.iteration, model, optimizer, opt_param_scheduler,
+                        args.num_floating_point_operations_so_far)
+
+        print_rank_0("> converted checkpoint: %s -> %s." % (load_ckpt_format, args.ckpt_format))
+        torch.distributed.barrier()
+        exit()
+
     if args.reset_iterations is not None:
         args.iteration = args.reset_iterations
 
@@ -1142,7 +1157,7 @@ def train(forward_step_func, model, optimizer, opt_param_scheduler,
         update_num_microbatches(args.consumed_train_samples, consistency_check=False, verbose=True)
         if get_num_microbatches() != num_microbatches and iteration != 0:
             assert get_num_microbatches() > num_microbatches, \
-                "number of microbatches should be increasing due to batch size rampup"
+                "number of microbatches should be increasing due to batch size rampup ... %d -> %d." % (num_microbatches, get_num_microbatches())
             if args.save is not None:
                 save_checkpoint_and_time(iteration, model, optimizer,
                                          opt_param_scheduler,

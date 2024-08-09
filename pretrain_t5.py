@@ -85,6 +85,11 @@ def model_provider(
 
     args = get_args()
 
+    assert (
+        args.encoder_tensor_model_parallel_size == 0 or
+        args.encoder_tensor_model_parallel_size == args.tensor_model_parallel_size
+    ), f"Because word embeddings are shared between the encoder & decoder, these have to have the same tensor parallel size."
+
     config = core_transformer_config_from_args(args)
     if args.use_legacy_models:
         model = LegacyT5Model(
@@ -208,6 +213,7 @@ def train_valid_test_datasets_provider(train_val_test_num_samples: int):
             get_blend_from_list(args.valid_data_path),
             get_blend_from_list(args.test_data_path)
         ],
+        renormalize_blend_weights=args.renormalize_blend_weights,
         split=args.split,
         path_to_cache=args.data_cache_path,
         tokenizer=tokenizer,

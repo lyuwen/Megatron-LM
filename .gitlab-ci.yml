@@ -32,9 +32,9 @@ workflow:
     on_new_commit: interruptible
 
 stages:
-  - build
   - test 
   - functional_tests
+  - publish
 
 default:
   interruptible: true
@@ -55,6 +55,12 @@ variables:
     options:
       - "yes"
       - "no"
+  PUBLISH: 
+    value: "no"
+    options: 
+      - "yes"
+      - "no"
+    description: Build and publish a wheel to PyPi
   SCOPE:
     value: "mr"
     options:
@@ -125,10 +131,24 @@ metadata:
   rules:
     - if: '$FUNCTIONAL_TEST == "yes"'
 
+mirror_to_github:
+  tags: [mcore-docker-node-small]
+  stage: .pre
+  image: python:3.10
+  variables:
+    GIT_STRATEGY: "clone"
+  script:
+    - git checkout main
+    - git remote add github https://ko3n1g:$GH_TOKEN@github.com/NVIDIA/Megatron-LM.git || true
+    - git push -u github main
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+
 ppp_capacity_statistics:
   tags: [mcore-ssh-node-A]
   stage: .pre
   image: ${GITLAB_ENDPOINT}:5005/adlr/megatron-lm/mcore_ci:buildcache
+  allow_failure: true
   script:
     - |
       set -x
@@ -181,11 +201,49 @@ ppp_capacity_statistics:
         we are eating up our budget such that we can discuss this with capacity planning.
         "
 
+label_merge_request:
+  stage: .pre
+  image: golang:1.22
+  tags:
+    - mcore-docker-node-small
+  before_script:
+    - git clone -b nv https://${GITLAB_ENDPOINT}/okoenig/gitlab-mr-labeler.git
+    - cd gitlab-mr-labeler
+    - go install .
+    - cd ..
+    - |
+      go install github.com/itchyny/gojq/cmd/gojq@latest
+      echo LABELS=$(curl --header "PRIVATE-TOKEN: ${PROJECT_ACCESS_TOKEN_MCORE}" --url "https://${GITLAB_ENDPOINT}/api/v4/projects/${CI_PROJECT_ID}/merge_requests/${CI_MERGE_REQUEST_IID}" | gojq '.labels | join(",")') > labels
+  script:
+    - gitlab-mr-labeler -f .gitlab/labeler-config.yml -t ${PROJECT_ACCESS_TOKEN_MCORE} --debug true
+  after_script:
+    - |
+      source labels
+      curl --header "PRIVATE-TOKEN: ${PROJECT_ACCESS_TOKEN_MCORE}" --url "https://${GITLAB_ENDPOINT}/api/v4/projects/${CI_PROJECT_ID}/merge_requests/${CI_MERGE_REQUEST_IID}" --data-urlencode "add_labels=$LABELS" -X PUT
+  only:
+    refs:
+      - merge_requests
+
+check_milestone:
+  stage: .pre
+  image: ${GITLAB_ENDPOINT}:5005/adlr/megatron-lm/mcore_ci:buildcache
+  tags:
+    - mcore-docker-node-small
+  script:
+    - env
+    - |
+      MILESTONE=$(curl --header "PRIVATE-TOKEN: ${PROJECT_ACCESS_TOKEN_MCORE}" --url "https://${GITLAB_ENDPOINT}/api/v4/projects/${CI_PROJECT_ID}/merge_requests/${CI_MERGE_REQUEST_IID}" | jq '.milestone')
+    - |
+      if [[ "$MILESTONE" == "null" ]]; then
+        echo Please assign a Milestone to this MR!
+        exit 1
+      fi
+
 build_image:
   tags:
     - 8xL40S-builder
   image: docker:26.1.4-dind
-  stage: build
+  stage: test
   timeout: 45m
   parallel:
     matrix:
@@ -253,14 +311,29 @@ unit_tests:
   stage: test
   needs: [build_image]
   timeout: 180m
+  parallel:
+    matrix:
+      - TAG: latest
+      - TAG: 9229390b3ef365694d323b0cd8d5e86f86268b05
   tags:
     - 8xL40S
   rules:
     - if: '$FUNCTIONAL_TEST == "no" && $CI_PIPELINE_SOURCE == "merge_request_event" && ($CI_MERGE_REQUEST_TARGET_BRANCH_NAME != $CI_DEFAULT_BRANCH && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME !~ /^core_r/)'
       allow_failure: true
     - when: always
+  variables:
+    GIT_STRATEGY: clone
+    GIT_DEPTH: 0
+  before_script:
+    - |
+      if [[ $TAG != latest ]]; then
+        git checkout $TAG
+        rm -rf /opt/megatron-lm/tests
+        cp -r tests/ /opt/megatron-lm
+      fi
   script:
     - |
+      cd /opt/megatron-lm  
       for i in $(seq $UNIT_TEST_REPEAT); do
         SEED=$((RANDOM % 9000 + 1000));
         timeout ${UNIT_TEST_TIMEOUT}m torchrun --nproc_per_node=8 -m pytest --random-order --random-order-seed ${SEED} -xvs --cov-report=term --cov-report=html --cov=megatron/core --no-cov-on-fail tests/unit_tests
@@ -291,6 +364,7 @@ formatting:
   tags:
     - mcore-docker-node-small
   stage: test
+  needs: [build_image]
   before_script:
     - git fetch origin main
   script:
@@ -303,10 +377,11 @@ formatting:
   interruptible: true
 
 copyright:
-  image: ${LINTING_IMAGE}:${CI_PIPELINE_ID}
   tags:
     - mcore-docker-node-small
   stage: test
+  image: ${CI_MCORE_IMAGE}:${CI_PIPELINE_ID}
+  needs: [build_image]
   before_script:
     - git fetch origin main
   script:
@@ -377,6 +452,7 @@ convergence-test:
       
       echo "${!SETTINGS}" > vars.sh
       source vars.sh
+      
 
       # Fill in data blend
       DATA_BLEND_ID=$(curl \
@@ -396,4 +472,19 @@ convergence-test:
 
       env
       bash tests/functional_tests/shell_test_utils/run_ci_test_locally.sh
-  
+
+publish-wheel:
+  image: quay.io/pypa/manylinux_2_28_x86_64
+  stage: publish
+  rules:
+    - if: $CI_COMMIT_BRANCH =~ /^core_r/ && $PUBLISH == "yes"
+      when: manual
+    - when: never
+  before_script:
+    - pip install twine
+  script:
+    - /opt/python/cp310-cp310/bin/python -m build
+    - /opt/python/cp311-cp311/bin/python -m build
+    - auditwheel repair dist/*.whl
+    - twine upload --repository pypi wheelhouse/*
+
