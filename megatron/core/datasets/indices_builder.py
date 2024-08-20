@@ -1,7 +1,7 @@
 import numpy as np
 
 
-def build_blend_indices(
+def build_blending_indices(
     weights: list[float] | np.ndarray[float],
     num_datasets: int,
     size: int,
