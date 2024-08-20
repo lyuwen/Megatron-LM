@@ -140,16 +140,28 @@ class BlendedDataset(torch.utils.data.Dataset):
             from megatron.core.datasets import helpers
 
             if self.size is not None:
-                dataset_index = numpy.zeros(self.size, dtype=numpy.int16)
-                dataset_sample_index = numpy.zeros(self.size, dtype=numpy.int64)
-                helpers.build_blending_indices(
-                    dataset_index,
-                    dataset_sample_index,
-                    self.weights,
-                    len(self.datasets),
-                    self.size,
-                    _VERBOSE,
-                )
+                # LFu
+                if self.config.use_fast_blend_indices:
+                    from megatron.core.datasets import indices_builder
+                    log_single_rank(
+                        logger, logging.INFO, f"Use fast indices builder for the {type(self).__name__} indices"
+                    )
+                    dataset_index, dataset_sample_index = indices_builder.build_blending_indices(
+                        self.weights,
+                        len(self.datasets),
+                        self.size,
+                    )
+                else:
+                    dataset_index = numpy.zeros(self.size, dtype=numpy.int16)
+                    dataset_sample_index = numpy.zeros(self.size, dtype=numpy.int64)
+                    helpers.build_blending_indices(
+                        dataset_index,
+                        dataset_sample_index,
+                        self.weights,
+                        len(self.datasets),
+                        self.size,
+                        _VERBOSE,
+                    )
             else:
                 size = sum(self.weights)
                 dataset_index = numpy.zeros(size, dtype=numpy.int16)

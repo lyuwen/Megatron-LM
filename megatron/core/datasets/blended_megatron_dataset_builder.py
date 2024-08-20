@@ -196,10 +196,16 @@ class BlendedMegatronDatasetBuilder(object):
             else:
                 sizes_per_dataset = _get_size_per_split_per_dataset(weights, self.sizes)
 
-            # build each dataset in parallel
-            megatron_datasets = self._build_megatron_datasets_parallel(
-                prefixes, split, sizes_per_dataset
-            )
+            if self.config.use_distributed_builder:
+                #  LFu: build each dataset in distributed
+                megatron_datasets = self._build_megatron_datasets_distributed(
+                   prefixes, split, sizes_per_dataset
+                )
+            else:
+                #  build each dataset in parallel
+                megatron_datasets = self._build_megatron_datasets_parallel(
+                    prefixes, split, sizes_per_dataset
+                )
 
             # Build the top-level datasets
             blended_datasets = [None] * len(Split)
@@ -302,6 +308,69 @@ class BlendedMegatronDatasetBuilder(object):
                     )
 
             return blended_datasets
+
+
+    # LFu
+    def _build_megatron_datasets_distributed(
+        self, prefixes: List[str], split: List[float], sizes_per_dataset: List[List[int]]
+    ) -> List[List[Optional[MegatronDataset]]]:
+        assert torch.distributed.is_initialized(), "Torch distributed needs to be initialized."
+        rank = torch.distributed.get_rank()
+        world_size = torch.distributed.get_world_size()
+        #
+        prefixes_on_rank = prefixes[rank::world_size]
+        sizes_per_dataset_on_rank = sizes_per_dataset[rank::world_size]
+        #
+        # Helper function to wrap the threading logic
+        def _threading_helper(
+            megatron_datasets: List[List[Optional[MegatronDataset]]],
+            num_workers: int,
+            prefixes: List[str],
+            split: List[float],
+            sizes_per_dataset: List[List[int]],
+        ) -> None:
+            with ThreadPoolExecutor(max_workers=num_workers) as executor:
+                all_futures = []
+                for i in range(len(prefixes)):
+                    all_futures.append(
+                        executor.submit(
+                            self._build_megatron_dataset_splits,
+                            prefixes[i],
+                            split,
+                            sizes_per_dataset[i],
+                            False,  # synchronize_ranks, barrier is called in this function
+                        )
+                    )
+                for future in all_futures:
+                    try:
+                        megatron_datasets_split = future.result()
+                        for j in range(len(megatron_datasets_split)):
+                            megatron_datasets[j].append(megatron_datasets_split[j])
+                    except Exception as err:
+                        raise err
+        # First build on all ranks
+        megatron_datasets = [[] for _ in range(len(Split))]
+        num_workers = num_dataset_builder_threads
+        if num_workers > 1:
+            # since only rank 0 is running, scale up the thread count
+            # but not too much to avoid overloading storage on miss path.
+            # if user set num_dataset_builder_threads to 1,
+            # i.e. meant for serial build, do not scale up.
+            num_workers *= min(2, max(1, torch.cuda.device_count()))
+        _threading_helper(
+            megatron_datasets, num_workers, prefixes_on_rank, split, sizes_per_dataset_on_rank
+        )
+
+        torch.distributed.barrier()
+
+        _threading_helper(
+            megatron_datasets,
+            num_dataset_builder_threads,
+            prefixes,
+            split,
+            sizes_per_dataset,
+        )
+
 
     def _build_megatron_datasets_parallel(
         self, prefixes: List[str], split: List[float], sizes_per_dataset: List[List[int]]
