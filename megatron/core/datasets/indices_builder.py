@@ -25,4 +25,5 @@ def build_blending_indices(
       isample = isamples[i]
       dataset_sample_index[c:c+isample] = maxrange[0:isample]
       c += isample
-  return dataset_index, dataset_sample_index
+  indices = np.random.permutation(len(dataset_index))
+  return dataset_index[indices], dataset_sample_index[indices]
