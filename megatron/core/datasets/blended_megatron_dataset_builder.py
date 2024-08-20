@@ -317,6 +317,7 @@ class BlendedMegatronDatasetBuilder(object):
         assert torch.distributed.is_initialized(), "Torch distributed needs to be initialized."
         rank = torch.distributed.get_rank()
         world_size = torch.distributed.get_world_size()
+        num_dataset_builder_threads = self.config.num_dataset_builder_threads
         #
         prefixes_on_rank = prefixes[rank::world_size]
         sizes_per_dataset_on_rank = sizes_per_dataset[rank::world_size]
@@ -351,18 +352,13 @@ class BlendedMegatronDatasetBuilder(object):
         # First build on all ranks
         megatron_datasets = [[] for _ in range(len(Split))]
         num_workers = num_dataset_builder_threads
-        if num_workers > 1:
-            # since only rank 0 is running, scale up the thread count
-            # but not too much to avoid overloading storage on miss path.
-            # if user set num_dataset_builder_threads to 1,
-            # i.e. meant for serial build, do not scale up.
-            num_workers *= min(2, max(1, torch.cuda.device_count()))
         _threading_helper(
             megatron_datasets, num_workers, prefixes_on_rank, split, sizes_per_dataset_on_rank
         )
 
         torch.distributed.barrier()
 
+        megatron_datasets = [[] for _ in range(len(Split))]
         _threading_helper(
             megatron_datasets,
             num_dataset_builder_threads,
@@ -370,6 +366,7 @@ class BlendedMegatronDatasetBuilder(object):
             split,
             sizes_per_dataset,
         )
+        return megatron_datasets
 
 
     def _build_megatron_datasets_parallel(
