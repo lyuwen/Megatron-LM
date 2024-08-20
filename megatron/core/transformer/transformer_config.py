@@ -229,6 +229,9 @@ class TransformerConfig(ModelParallelConfig):
     moe_router_topk: int = 2
     """Number of experts to route to for each token."""
 
+    moe_router_pre_softmax: bool = False
+    """Enable pre-softmax routing for MoE, which means softmax is before the top-k selection. By default, softmax is done after top-k."""
+
     moe_grouped_gemm: bool = False
     """When there are multiple experts per rank, compress multiple local (potentially small) gemms
     in a single kernel launch to improve the utilization and performance by leveraging the Grouped
@@ -261,8 +264,8 @@ class TransformerConfig(ModelParallelConfig):
     moe_pad_expert_input_to_capacity: bool = False
     """moe_pad_expert_input_to_capacity (bool): If True, pads the input for each expert to match the expert capacity length, effective only after the moe_expert_capacity_factor is set. The default setting is False."""
 
-    moe_token_drop_policy: str = 'position'
-    """The policy to drop tokens. Can be either "prob" or "position". If "prob", the tokens with the lowest probabilities will be dropped. If "position", tokens at the end of each batch will be dropped.
+    moe_token_drop_policy: str = 'probs'
+    """The policy to drop tokens. Can be either "probs" or "position". If "probs", the tokens with the lowest probabilities will be dropped. If "position", tokens at the end of each batch will be dropped.
     """
     moe_layer_recompute: bool = False
     """Memory optimization: checkpointing moe_layer to save actiavtion memory."""
@@ -280,16 +283,12 @@ class TransformerConfig(ModelParallelConfig):
     enable_cuda_graph: bool = False
     """When set to true, TransformerLayer blocks are wrapped with CUDA graph."""
 
-    # These 2 attributes are WAR for TRTLLM export. DO NOT USE!! WILL BE DEPRECATED SOON!!
-    max_position_embeddings: int = 0
-    """Deprecated. Do not use."""
-
-    rotary_percent: float = 0
-    """Deprecated. Do not use."""
+    config_logger_dir: str = ""
+    """When non-empty, dumps entry-point configs to config_logger_dir"""
 
     def __post_init__(self):
-        """ Python dataclass method that is used to modify attributes after initialization.
-            See https://docs.python.org/3/library/dataclasses.html#post-init-processing for more details.
+        """Python dataclass method that is used to modify attributes after initialization.
+        See https://docs.python.org/3/library/dataclasses.html#post-init-processing for more details.
         """
         super().__post_init__()
         if self.fp16 and self.bf16:

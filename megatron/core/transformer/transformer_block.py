@@ -1,9 +1,10 @@
 # Copyright (c) 2024, NVIDIA CORPORATION. All rights reserved.
 
 import re
+import warnings
 from contextlib import nullcontext
 from dataclasses import dataclass
-from typing import List, Tuple, Union
+from typing import List, Optional, Tuple, Union
 
 import torch
 from torch import Tensor
@@ -13,26 +14,46 @@ from megatron.core.dist_checkpointing.mapping import ShardedStateDict
 from megatron.core.dist_checkpointing.utils import replace_prefix_for_sharding
 from megatron.core.fusions.fused_layer_norm import FusedLayerNorm
 from megatron.core.packed_seq_params import PackedSeqParams
-from megatron.core.transformer.custom_layers.transformer_engine import (
-    TEDelayedScaling,
-    TENorm,
-    get_cpu_offload_context,
-    te_checkpoint,
-)
 from megatron.core.transformer.enums import AttnMaskType
 from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.spec_utils import ModuleSpec, build_module
 from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core.transformer.transformer_layer import BaseTransformerLayer, TransformerLayer
 from megatron.core.transformer.utils import sharded_state_dict_default
-from megatron.core.utils import make_sharded_tensor_for_checkpoint, make_viewless_tensor
+from megatron.core.utils import (
+    assert_viewless_tensor,
+    make_sharded_tensor_for_checkpoint,
+    make_viewless_tensor,
+)
+
+try:
+    from megatron.core.transformer.custom_layers.transformer_engine import (
+        TEDelayedScaling,
+        TENorm,
+        get_cpu_offload_context,
+        te_checkpoint,
+    )
+
+    HAVE_TE = True
+    LayerNormImpl = TENorm
+except ImportError:
+    HAVE_TE = False
+    get_cpu_offload_context = None
+    try:
+        import apex
+
+        LayerNormImpl = FusedLayerNorm
+    except ModuleNotFoundError:
+        from megatron.core.transformer.torch_layer_norm import WrappedTorchLayerNorm
+
+        LayerNormImpl = WrappedTorchLayerNorm
 
 
 def get_num_layers_to_build(config: TransformerConfig) -> int:
 
-    num_layers_per_pipeline_rank = (
-        config.num_layers // parallel_state.get_pipeline_model_parallel_world_size()
-    )
+    pipeline_ranks = config.pipeline_model_parallel_size
+
+    num_layers_per_pipeline_rank = config.num_layers // pipeline_ranks
 
     if parallel_state.get_virtual_pipeline_model_parallel_world_size() is not None:
         # Interleaved pipeline parallelism:
@@ -65,10 +86,11 @@ def get_num_layers_to_build(config: TransformerConfig) -> int:
 @dataclass
 class TransformerBlockSubmodules:
     layer_specs: List[ModuleSpec] = None
+    layer_norm: Optional[Union[ModuleSpec, torch.nn.Module]] = None
 
 
 def _get_block_submodules(
-    config: TransformerConfig, spec: Union[TransformerBlockSubmodules, ModuleSpec],
+    config: TransformerConfig, spec: Union[TransformerBlockSubmodules, ModuleSpec]
 ) -> TransformerBlockSubmodules:
 
     # Transformer block submodules.
@@ -83,7 +105,9 @@ def _get_block_submodules(
             return spec.submodules
         elif issubclass(spec.module, BaseTransformerLayer):
             num_layers = get_num_layers_to_build(config)
-            return TransformerBlockSubmodules(layer_specs=[spec] * num_layers)
+            return TransformerBlockSubmodules(
+                layer_specs=[spec] * num_layers, layer_norm=LayerNormImpl
+            )
         else:
             raise Exception(f"specialize for {spec.module.__name__}.")
     else:
@@ -120,14 +144,14 @@ class TransformerBlock(MegatronModule):
         self.checkpoint_core_attention = self.config.recompute_granularity == 'selective'
 
         if get_cpu_offload_context is not None:
-            (
-                self.offload_context,
-                self.group_prefetch_offload_commit_async,
-            ) = get_cpu_offload_context(
-                self.config.cpu_offloading,
-                self.config.cpu_offloading_num_layers,
-                self.config.cpu_offloading_activations,
-                self.config.cpu_offloading_weights,
+            (self.offload_context, self.group_prefetch_offload_commit_async) = (
+                get_cpu_offload_context(
+                    self.config.cpu_offloading,
+                    self.config.cpu_offloading_num_layers,
+                    self.config.num_layers,
+                    self.config.cpu_offloading_activations,
+                    self.config.cpu_offloading_weights,
+                )
             )
             self.config._cpu_offloading_context = (
                 self.offload_context if self.config.cpu_offloading else None
@@ -151,7 +175,7 @@ class TransformerBlock(MegatronModule):
         #     coeff = self.layer_number
         #     self.norm_factor *= coeff
         def build_layer(layer_spec, layer_number):
-            return build_module(layer_spec, config=self.config, layer_number=layer_number,)
+            return build_module(layer_spec, config=self.config, layer_number=layer_number)
 
         # offset is implicit in TransformerLayer
         self.layers = torch.nn.ModuleList(
@@ -176,13 +200,17 @@ class TransformerBlock(MegatronModule):
         # else:
         #     self.layers = torch.nn.ModuleList([build_layer(i + 1 + offset) for i in range(self.num_layers)])
 
-        if self.post_process and self.post_layer_norm:
-            # Final layer norm before output.
-            self.final_layernorm = TENorm(
+        # In pipeline parallelism, we want to add this LN only to the last stage of the pipeline
+        # self.post_process and self.post_layer_norm guide this behavior
+        if self.submodules.layer_norm and self.post_process and self.post_layer_norm:
+            self.final_layernorm = build_module(
+                self.submodules.layer_norm,
                 config=self.config,
                 hidden_size=self.config.hidden_size,
                 eps=self.config.layernorm_epsilon,
             )
+        else:
+            self.final_layernorm = None  # Either this or nn.Identity
 
     def _get_layer(self, layer_number: int):
         return self.layers[layer_number]
@@ -200,12 +228,7 @@ class TransformerBlock(MegatronModule):
 
         def custom(start: int, end: int):
             def custom_forward(
-                hidden_states,
-                attention_mask,
-                context,
-                context_mask,
-                rotary_pos_emb,
-                packed_seq_params,
+                hidden_states, attention_mask, context, context_mask, rotary_pos_emb
             ):
                 for index in range(start, end):
                     layer = self._get_layer(index)
@@ -234,7 +257,6 @@ class TransformerBlock(MegatronModule):
                     context,
                     context_mask,
                     rotary_pos_emb,
-                    packed_seq_params,
                 )
             else:
                 return tensor_parallel.checkpoint(
@@ -245,7 +267,6 @@ class TransformerBlock(MegatronModule):
                     context,
                     context_mask,
                     rotary_pos_emb,
-                    packed_seq_params,
                 )
 
         if self.config.recompute_method == 'uniform':
@@ -278,12 +299,7 @@ class TransformerBlock(MegatronModule):
                     hidden_states, context = checkpoint_handler(custom(l, l + 1))
                 else:
                     hidden_states, context = custom(l, l + 1)(
-                        hidden_states,
-                        attention_mask,
-                        context,
-                        context_mask,
-                        rotary_pos_emb,
-                        packed_seq_params,
+                        hidden_states, attention_mask, context, context_mask, rotary_pos_emb
                     )
         else:
             raise ValueError("Invalid activation recompute method.")
@@ -332,9 +348,7 @@ class TransformerBlock(MegatronModule):
         #   likely redundant, since p2p_communication.py (likely originator)
         #   already creates viewless tensors. That said, make_viewless_tensor()
         #   is called here to be future-proof and corner-case-proof.
-        hidden_states = make_viewless_tensor(
-            inp=hidden_states, requires_grad=True, keep_graph=True,
-        )
+        hidden_states = make_viewless_tensor(inp=hidden_states, requires_grad=True, keep_graph=True)
 
         if self.config.sequence_parallel:
             rng_context = tensor_parallel.get_cuda_rng_tracker().fork()
@@ -404,7 +418,7 @@ class TransformerBlock(MegatronModule):
                                 self.current_microbatch < len(self.cuda_graphs[l_no])
                             )
                             hidden_states = self.cuda_graphs[l_no][self.current_microbatch](
-                                hidden_states, is_first_microbatch=(self.current_microbatch == 0),
+                                hidden_states, is_first_microbatch=(self.current_microbatch == 0)
                             )
 
                     if (
@@ -415,8 +429,14 @@ class TransformerBlock(MegatronModule):
                         hidden_states = self.group_prefetch_offload_commit_async(hidden_states)
 
         # Final layer norm.
-        if self.post_process and self.post_layer_norm:
+        if self.final_layernorm is not None:
             hidden_states = self.final_layernorm(hidden_states)
+            # TENorm produces a "viewed" tensor. This will result in schedule.py's
+            # deallocate_output_tensor() throwing an error, so a viewless tensor is
+            # created to prevent this.
+            hidden_states = make_viewless_tensor(
+                inp=hidden_states, requires_grad=True, keep_graph=True
+            )
 
         return hidden_states
 

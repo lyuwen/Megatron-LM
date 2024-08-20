@@ -2,8 +2,8 @@
 
 import pytest
 import torch
-from megatron.core import parallel_state
 
+from megatron.core import parallel_state
 from megatron.core.models.gpt.gpt_layer_specs import get_gpt_layer_with_transformer_engine_spec
 from megatron.core.transformer.moe.moe_layer import MoELayer
 from megatron.core.transformer.moe.moe_utils import permute, unpermute
@@ -18,6 +18,7 @@ class MoEModelTestContainer:
         tp_size,
         ep_size,
         pp_size,
+        cp_size=1,
         data_parallel_random_init=False,
         num_moe_experts=8,
         moe_router_topk=2,
@@ -25,6 +26,7 @@ class MoEModelTestContainer:
         moe_token_dispatcher_type="alltoall",
         moe_expert_capacity_factor=None,
         moe_pad_expert_input_to_capacity=False,
+        moe_aux_loss_coeff=0.1,
         **kwargs,
     ):
         self.num_local_experts = num_moe_experts // ep_size
@@ -32,6 +34,7 @@ class MoEModelTestContainer:
             tensor_model_parallel_size=tp_size,
             pipeline_model_parallel_size=pp_size,
             expert_model_parallel_size=ep_size,
+            context_parallel_size=cp_size,
         )
         _set_random_seed(seed_=123, data_parallel_random_init=data_parallel_random_init)
         local_expert_indices_offset = (
@@ -45,12 +48,14 @@ class MoEModelTestContainer:
             tensor_model_parallel_size=tp_size,
             expert_model_parallel_size=ep_size,
             pipeline_model_parallel_size=pp_size,
+            context_parallel_size=cp_size,
             moe_router_topk=moe_router_topk,
             num_moe_experts=num_moe_experts,
             moe_router_load_balancing_type=moe_router_load_balancing_type,
             moe_token_dispatcher_type=moe_token_dispatcher_type,
             moe_expert_capacity_factor=moe_expert_capacity_factor,
             moe_pad_expert_input_to_capacity=moe_pad_expert_input_to_capacity,
+            moe_aux_loss_coeff=moe_aux_loss_coeff,
             num_layers=1,
             moe_extended_tp=kwargs.get("moe_extended_tp", False),
             moe_grouped_gemm=kwargs.get("moe_grouped_gemm", False),
@@ -68,7 +73,8 @@ class MoEModelTestContainer:
         self.moe_layer = MoELayer(
             self.config, transformer_layer_spec.submodules.mlp.submodules
         ).cuda()
-    
+        self.moe_layer.set_layer_number(0)
+
     def __del__(self):
         torch.distributed.barrier()
         torch.cuda.synchronize()
@@ -90,11 +96,8 @@ class MoEModelTestContainer:
         # indices = torch.ones_like(indices) * torch.distributed.get_rank()
         # print(permuted_local_hidden_states)
 
-        (
-            permuted_local_hidden_states,
-            tokens_per_expert,
-        ) = moe_layer.token_dispatcher.token_permutation(
-            hidden_states, probs, indices
+        (permuted_local_hidden_states, tokens_per_expert) = (
+            moe_layer.token_dispatcher.token_permutation(hidden_states, probs, indices)
         )
 
         permuted_local_hidden_states /= moe_layer.config.tensor_model_parallel_size
@@ -130,11 +133,8 @@ class MoEModelTestContainer:
         ]
         restored_hidden_states_answer = hidden_states * local_probss.sum(dim=1).unsqueeze(1)
 
-        (
-            permuted_local_hidden_states,
-            tokens_per_expert,
-        ) = moe_layer.token_dispatcher.token_permutation(
-            hidden_states, probs, indices
+        (permuted_local_hidden_states, tokens_per_expert) = (
+            moe_layer.token_dispatcher.token_permutation(hidden_states, probs, indices)
         )
 
         print(f"Dispatched tokens per expert: {tokens_per_expert}")
@@ -175,7 +175,7 @@ class MoEModelTestContainer:
         # num_local_tokens_per_expert = torch.tensor([2, 2, 2, 2, 2, 2, 2, 2]).cuda()
 
         probs_1, indices_1 = moe_layer.router(hidden_states)
-        (permuted_input_1, tokens_per_expert,) = moe_layer.token_dispatcher.token_permutation(
+        (permuted_input_1, tokens_per_expert) = moe_layer.token_dispatcher.token_permutation(
             hidden_states, probs_1, indices_1
         )
         torch.distributed.barrier()
@@ -191,7 +191,7 @@ class MoEModelTestContainer:
         # End
 
         probs_2, indices_2 = moe_layer.router(hidden_states)
-        (permuted_input_2, tokens_per_expert,) = moe_layer.token_dispatcher.token_permutation(
+        (permuted_input_2, tokens_per_expert) = moe_layer.token_dispatcher.token_permutation(
             hidden_states, probs_2, indices_2
         )
         restored_hidden_states, restored_bias = moe_layer.token_dispatcher.token_unpermutation(
@@ -224,9 +224,7 @@ class TestAllgatherDispatcher:
         Utils.destroy_model_parallel()
 
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
-    @pytest.mark.parametrize("tp_size,ep_size", [
-        (8, 1),
-    ])
+    @pytest.mark.parametrize("tp_size,ep_size", [(8, 1)])
     def test_forward_backward(self, tp_size, ep_size):
         container = MoEModelTestContainer(
             tp_size=tp_size,
@@ -263,13 +261,15 @@ class TestAllgatherDispatcher:
         assert scores.shape == (256, moe_layer.router.topk), "Scores shape is not correct"
         assert indices.shape == (256, moe_layer.router.topk), "Indices shape is not correct"
         scores = torch.ones_like(scores) / 2
-        (
-            permuted_local_hidden_states,
-            tokens_per_expert,
-        ) = moe_layer.token_dispatcher.token_permutation(hidden_states, scores, indices)
-        permuted_local_hidden_states /= moe_layer.config.tensor_model_parallel_size * moe_layer.config.expert_model_parallel_size
+        (permuted_local_hidden_states, tokens_per_expert) = (
+            moe_layer.token_dispatcher.token_permutation(hidden_states, scores, indices)
+        )
+        permuted_local_hidden_states /= (
+            moe_layer.config.tensor_model_parallel_size
+            * moe_layer.config.expert_model_parallel_size
+        )
         restored_hidden_states, restored_bias = moe_layer.token_dispatcher.token_unpermutation(
-            permuted_local_hidden_states, bias=torch.zeros_like(permuted_local_hidden_states),
+            permuted_local_hidden_states, bias=torch.zeros_like(permuted_local_hidden_states)
         )
 
         assert torch.allclose(

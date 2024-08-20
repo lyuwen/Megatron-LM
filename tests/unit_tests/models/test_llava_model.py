@@ -38,14 +38,16 @@ class TestLLaVAModel:
         self.model = LLaVAModel(
             language_transformer_config=language_config,
             language_transformer_layer_spec=language_layer_spec,
-            language_position_embedding_type="rope",
-            vocab_size=2048,
-            max_sequence_length=1024,
+            language_vocab_size=2048,
+            language_max_sequence_length=1024,
             vision_transformer_config=vision_config,
             vision_transformer_layer_spec=vision_layer_spec,
             drop_vision_class_token=False,
             vision_projection_config=vision_projection_config,
             vision_projection_layer_spec=vision_projection_spec,
+            img_h=336,
+            img_w=336,
+            patch_dim=14,
         )
 
     def teardown_method(self, method):
@@ -55,7 +57,7 @@ class TestLLaVAModel:
         assert isinstance(self.model, LLaVAModel)
 
         num_weights = sum([p.numel() for p in self.model.parameters()])
-        assert num_weights == 1308232
+        assert num_weights == 1439304
 
     def test_set_input_tensor(self):
         expected_shape = (1, 2, 3, 4)
@@ -76,7 +78,7 @@ class TestLLaVAModel:
         labels = torch.randint(0, 2048, (2, 1601)).cuda()
 
         # Try with labels.
-        loss = self.model.forward(img, input_ids, position_ids, attention_mask, labels)
+        loss = self.model.forward(img, input_ids, position_ids, attention_mask, labels=labels)
         assert loss.shape == torch.Size((2, 1601))
 
         # Try without labels and without inference params.
@@ -94,8 +96,15 @@ class TestLLaVAModel:
             inference_params=inference_params,
         )
         assert logits.shape == torch.Size((2, 1601, 2048))
-        # Check KV cache got created.
-        assert len(inference_params.key_value_memory_dict) > 0
+
+        # Check KV cache got created correctly.
+        kv_dict = inference_params.key_value_memory_dict
+
+        assert kv_dict["image_tokens_count"] == 577
+        for layer_no in range(1, 4):  # 3 layers in the model.
+            layer_kv = kv_dict[layer_no]
+            # Expected shape is [sequence_len, batch_size, num_heads, hidden_size_per_head]
+            assert layer_kv[0].shape == layer_kv[1].shape == torch.Size((1601, 2, 8, 16))
 
     def test_save_load(self, tmp_path):
         path = tmp_path / "model.pt"

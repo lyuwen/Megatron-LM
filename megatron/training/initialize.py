@@ -1,9 +1,11 @@
 # Copyright (c) 2022, NVIDIA CORPORATION. All rights reserved.
 
 """Megatron initialization."""
-
+import logging
 import random
 import os
+import packaging
+import packaging.version
 import time
 
 import numpy as np
@@ -22,12 +24,17 @@ from megatron.training.global_vars import set_global_variables
 from megatron.legacy.model.transformer import bias_dropout_add_fused_train
 from megatron.legacy.model.fused_bias_gelu import bias_gelu
 
+logger = logging.getLogger(__name__)
+
+
 def initialize_megatron(
     extra_args_provider=None,
     args_defaults={},
     ignore_unknown_args=False,
     allow_no_cuda=False,
     skip_mpu_initialization=False,
+    get_embedding_ranks=None,
+    get_position_embedding_ranks=None
 ):
     """Set global variables, initialize distributed, and
     set autoresume and random seeds.
@@ -44,8 +51,14 @@ def initialize_megatron(
     # Parse arguments
     args = parse_args(extra_args_provider, ignore_unknown_args)
 
+    # Prep for checkpoint conversion.
+    if args.ckpt_convert_format is not None:
+        assert args.ckpt_convert_save is not None
+        assert args.load is not None
+        args.exit_on_missing_checkpoint = True
+
     if args.use_checkpoint_args or args_defaults.get("use_checkpoint_args", False):
-        assert args.load is not None, "--use-checkpoints-args requires --load argument"
+        assert args.load is not None, "--use-checkpoint-args requires --load argument"
         load_args_from_checkpoint(args)
 
     if args.yaml_cfg is not None:
@@ -58,11 +71,14 @@ def initialize_megatron(
     # tensorboard-writer, and timers.
     set_global_variables(args)
 
+    # set logging level
+    setup_logging()
+
     # torch.distributed initialization
     def finish_mpu_init():
         args = get_args()
         # Pytorch distributed.
-        _initialize_distributed()
+        _initialize_distributed(get_embedding_ranks, get_position_embedding_ranks)
 
         # Random seeds for reproducibility.
         if args.rank == 0:
@@ -173,7 +189,7 @@ def _compile_dependencies():
         )
 
 def _initialize_tp_communicators():
-    """ initializing the communicators with user buffers for high-performance tensor-model-parallel 
+    """ initializing the communicators with user buffers for high-performance tensor-model-parallel
         communication overlap """
 
     try:
@@ -184,26 +200,26 @@ def _initialize_tp_communicators():
 
     except ImportError:
        raise RuntimeError("Tensor Parallel Communication/GEMM Overlap optimization needs 'yaml' and "
-             "'transformer_engine' packages") 
+             "'transformer_engine' packages")
 
     args = get_args()
 
     if args.tp_comm_overlap_cfg is not None:
-       with open(args.tp_comm_overlap_cfg,"r") as stream:    
+       with open(args.tp_comm_overlap_cfg,"r") as stream:
           ub_cfgs = yaml.safe_load(stream)
     else:
        ub_cfgs = {}
 
     input_shape = [(args.seq_length * args.micro_batch_size) // args.context_parallel_size , args.hidden_size]
 
-    #We create a MPI process group, which is needed to bootstrap the pipelined 
+    #We create a MPI process group, which is needed to bootstrap the pipelined
     #tensor-model-parallel communication overlap
     torch.distributed.new_group(backend='mpi')
 
-    te_module.base.initialize_ub(shape = input_shape, tp_size = args.tensor_model_parallel_size, 
+    te_module.base.initialize_ub(shape = input_shape, tp_size = args.tensor_model_parallel_size,
                                  use_fp8 = (args.fp8 is not None) , ub_cfgs = ub_cfgs,)
 
-def _initialize_distributed():
+def _initialize_distributed(get_embedding_ranks, get_position_embedding_ranks):
     """Initialize torch.distributed and core model parallel."""
     args = get_args()
 
@@ -225,21 +241,22 @@ def _initialize_distributed():
             print("> initializing torch distributed ...", flush=True)
         # Manually set the device ids.
         if device_count > 0:
-            device = args.rank % device_count
-            if args.local_rank is not None:
-                assert (
-                    args.local_rank == device
-                ), "expected local-rank to be the same as rank % device-count."
-            else:
-                args.local_rank = device
-            torch.cuda.set_device(device)
+            torch.cuda.set_device(args.local_rank)
+            device_id = torch.device(f'cuda:{args.local_rank}')
+        else:
+            device_id = None
+
         # Call the init process
-        torch.distributed.init_process_group(
-            backend=args.distributed_backend,
-            world_size=args.world_size,
-            rank=args.rank,
-            timeout=timedelta(minutes=args.distributed_timeout_minutes),
-        )
+        init_process_group_kwargs = {
+            'backend' : args.distributed_backend,
+            'world_size': args.world_size,
+            'rank': args.rank,
+            'timeout': timedelta(minutes=args.distributed_timeout_minutes),
+        }
+        if packaging.version.Version(torch.__version__) >= packaging.version.Version("2.3.0"):
+            init_process_group_kwargs['device_id'] = device_id
+
+        torch.distributed.init_process_group(**init_process_group_kwargs)
 
     # Set the tensor model-parallel, pipeline model-parallel, and
     # data-parallel communicators.
@@ -257,6 +274,10 @@ def _initialize_distributed():
                 distributed_timeout_minutes=args.distributed_timeout_minutes,
                 nccl_communicator_config_path=args.nccl_communicator_config_path,
                 order='tp-cp-ep-dp-pp' if not args.use_tp_pp_dp_mapping else 'tp-pp-dp',
+                encoder_tensor_model_parallel_size=args.encoder_tensor_model_parallel_size,
+                encoder_pipeline_model_parallel_size=args.encoder_pipeline_model_parallel_size,
+                get_embedding_ranks=get_embedding_ranks,
+                get_position_embedding_ranks=get_position_embedding_ranks,
             )
             if args.rank == 0:
                 print(
@@ -392,3 +413,26 @@ def _warmup_jit_function():
             output = bias_dropout_add_fused_train(input, bias, residual, dropout_rate)
     del bias, input, residual, output
     torch.cuda.empty_cache()
+
+
+def setup_logging() -> None:
+    """ Sets the default logging level based on cmdline args and env vars.
+
+    Precedence:
+    1. Command line argument `--logging-level`
+    2. Env var `MEGATRON_LOGGING_LEVEL`
+    3. Default logging level (INFO)
+
+    Returns: None
+    """
+    args = get_args()
+    logging_level = None
+    env_logging_level = os.getenv('MEGATRON_LOGGING_LEVEL', None)
+    if env_logging_level is not None:
+        logging_level = int(env_logging_level)
+    if args.logging_level is not None:
+        logging_level = args.logging_level
+
+    if logging_level is not None:
+        logger.info(f'Setting logging level to {logging_level}')
+        logging.getLogger().setLevel(logging_level)
