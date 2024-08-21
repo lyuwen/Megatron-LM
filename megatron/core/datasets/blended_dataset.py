@@ -10,6 +10,7 @@ from typing import Dict, List, Optional, Tuple, Union
 
 import numpy
 import torch
+from torch import multiprocessing as mp
 
 from megatron.core.datasets.blended_megatron_dataset_config import BlendedMegatronDatasetConfig
 from megatron.core.datasets.megatron_dataset import MegatronDataset
@@ -19,6 +20,14 @@ from megatron.core.utils import log_single_rank
 logger = logging.getLogger(__name__)
 
 _VERBOSE = False
+
+
+def _build_shuffle_index(
+    num_samples: int, numpy_random_state: numpy.random.RandomState, queue: mp.Queue
+) -> numpy.ndarray:
+    dataset_shuffle_index = numpy.arange(num_samples, dtype=numpy.int64)
+    numpy_random_state.shuffle(dataset_shuffle_index)
+    queue.put(dataset_shuffle_index)
 
 
 class BlendedDataset(torch.utils.data.Dataset):
@@ -86,14 +95,14 @@ class BlendedDataset(torch.utils.data.Dataset):
 
         self.built_anew_on_cache_miss = False
 
-        self.dataset_index, self.dataset_sample_index = self._build_indices()
+        self.dataset_index, self.dataset_sample_index, self.dataset_shuffle_index = self._build_indices()
 
     def __len__(self) -> int:
         return self.dataset_index.shape[0]
 
     def __getitem__(self, idx: int) -> Dict[str, Union[int, numpy.ndarray]]:
-        dataset_id = self.dataset_index[idx]
-        dataset_sample_id = self.dataset_sample_index[idx]
+        dataset_id = self.dataset_index[self.dataset_shuffle_index[idx]]
+        dataset_sample_id = self.dataset_sample_index[self.dataset_shuffle_index[idx]]
         return {"dataset_id": dataset_id, **self.datasets[dataset_id][dataset_sample_id]}
 
     def _build_indices(self) -> Tuple[numpy.ndarray, numpy.ndarray]:
@@ -116,10 +125,11 @@ class BlendedDataset(torch.utils.data.Dataset):
             path_to_description = get_path_to("description.txt")
             path_to_dataset_index = get_path_to("dataset_index.npy")
             path_to_dataset_sample_index = get_path_to("dataset_sample_index.npy")
+            path_to_dataset_shuffle_index = get_path_to("dataset_shuffle_index.npy")
             cache_hit = all(
                 map(
                     os.path.isfile,
-                    [path_to_description, path_to_dataset_index, path_to_dataset_sample_index],
+                    [path_to_description, path_to_dataset_index, path_to_dataset_sample_index, path_to_dataset_shuffle_index],
                 )
             )
         else:
@@ -138,6 +148,17 @@ class BlendedDataset(torch.utils.data.Dataset):
             )
             t_beg = time.time()
             from megatron.core.datasets import helpers
+
+            numpy_random_state = numpy.random.RandomState(self.config.random_seed)
+            ctx = mp.get_context("fork")
+            manager = mp.Manager()
+            queue = manager.Queue()
+            if self.size is not None:
+                size = self.size
+            else:
+                size = sum(self.weights)
+            shuffle_process = ctx.Process(target=_build_shuffle_index, args=(size, numpy_random_state, queue))
+            shuffle_process.start()
 
             if self.size is not None:
                 # LFu
@@ -170,6 +191,10 @@ class BlendedDataset(torch.utils.data.Dataset):
                     dataset_index, dataset_sample_index, self.weights, len(self.datasets)
                 )
 
+            shuffle_process.join()
+            dataset_shuffle_index = queue.get()
+            manager.shutdown()
+
             if path_to_cache:
                 os.makedirs(path_to_cache, exist_ok=True)
                 # Write the description
@@ -178,6 +203,7 @@ class BlendedDataset(torch.utils.data.Dataset):
                 # Save the indexes
                 numpy.save(path_to_dataset_index, dataset_index, allow_pickle=True)
                 numpy.save(path_to_dataset_sample_index, dataset_sample_index, allow_pickle=True)
+                numpy.save(path_to_dataset_shuffle_index, dataset_shuffle_index, allow_pickle=True)
             else:
                 log_single_rank(
                     logger,
@@ -188,7 +214,7 @@ class BlendedDataset(torch.utils.data.Dataset):
             t_end = time.time()
             log_single_rank(logger, logging.DEBUG, f"\t> time elapsed: {t_end - t_beg:4f} seconds")
 
-            return dataset_index, dataset_sample_index
+            return dataset_index, dataset_sample_index, dataset_shuffle_index
 
         log_single_rank(logger, logging.INFO, f"Load the {type(self).__name__} indices")
 
@@ -212,4 +238,16 @@ class BlendedDataset(torch.utils.data.Dataset):
         t_end = time.time()
         log_single_rank(logger, logging.DEBUG, f"\t> time elapsed: {t_end - t_beg:4f} seconds")
 
-        return dataset_index, dataset_sample_index
+        log_single_rank(
+            logger,
+            logging.INFO,
+            f"\tLoad the dataset shuffle index from {path_to_dataset_shuffle_index}",
+        )
+        t_beg = time.time()
+        dataset_shuffle_index = numpy.load(
+            path_to_dataset_shuffle_index, allow_pickle=True, mmap_mode='r'
+        )
+        t_end = time.time()
+        log_single_rank(logger, logging.DEBUG, f"\t> time elapsed: {t_end - t_beg:4f} seconds")
+
+        return dataset_index, dataset_sample_index, dataset_shuffle_index
