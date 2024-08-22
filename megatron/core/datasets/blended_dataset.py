@@ -16,6 +16,7 @@ from megatron.core.datasets.blended_megatron_dataset_config import BlendedMegatr
 from megatron.core.datasets.megatron_dataset import MegatronDataset
 from megatron.core.datasets.utils import normalize
 from megatron.core.utils import log_single_rank
+from megatron.core.datasets.indices_builder import AsyncShuffleBuilder
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +53,7 @@ class BlendedDataset(torch.utils.data.Dataset):
         weights: List[Union[int, float]],
         size: Optional[int],
         config: BlendedMegatronDatasetConfig,
+        async_shuffle: Optional[AsyncShuffleBuilder] = None,
     ) -> None:
         assert len(datasets) == len(weights)
         assert len(datasets) < 32767
@@ -95,6 +97,7 @@ class BlendedDataset(torch.utils.data.Dataset):
 
         self.built_anew_on_cache_miss = False
 
+        self.async_shuffle = async_shuffle
         self.dataset_index, self.dataset_sample_index, self.dataset_shuffle_index = self._build_indices()
 
     def __len__(self) -> int:
@@ -150,15 +153,13 @@ class BlendedDataset(torch.utils.data.Dataset):
             from megatron.core.datasets import helpers
 
             numpy_random_state = numpy.random.RandomState(self.config.random_seed)
-            ctx = mp.get_context("fork")
-            manager = mp.Manager()
-            queue = manager.Queue()
-            if self.size is not None:
-                size = self.size
-            else:
-                size = sum(self.weights)
-            shuffle_process = ctx.Process(target=_build_shuffle_index, args=(size, numpy_random_state, queue))
-            shuffle_process.start()
+            if self.async_shuffle is None:
+              if self.size is not None:
+                  size = self.size
+              else:
+                  size = sum(self.weights)
+              self.async_shuffle(size, numpy_random_state, self.config)
+              self.async_shuffle.start()
 
             if self.size is not None:
                 # LFu
@@ -191,9 +192,12 @@ class BlendedDataset(torch.utils.data.Dataset):
                     dataset_index, dataset_sample_index, self.weights, len(self.datasets)
                 )
 
-            shuffle_process.join()
-            dataset_shuffle_index = queue.get()
-            manager.shutdown()
+            if self.async_shuffle is None:
+                dataset_shuffle_index = _build_shuffle_index(size, numpy_random_state, queue)
+            else:
+                self.async_shuffle.join()
+                dataset_shuffle_index = self.async_shuffle.get_result()
+                self.async_shuffle.shutdown()
 
             if path_to_cache:
                 os.makedirs(path_to_cache, exist_ok=True)

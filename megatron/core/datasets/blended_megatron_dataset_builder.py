@@ -7,6 +7,7 @@ from typing import Any, Callable, Iterable, List, Optional, Type, Union
 
 import numpy
 import torch
+from torch import multiprocessing as mp
 
 from megatron.core.datasets.blended_dataset import BlendedDataset
 from megatron.core.datasets.blended_megatron_dataset_config import BlendedMegatronDatasetConfig
@@ -14,6 +15,7 @@ from megatron.core.datasets.megatron_dataset import LowLevelDataset, MegatronDat
 from megatron.core.datasets.utils import Split, normalize
 from megatron.core.parallel_state import get_virtual_pipeline_model_parallel_rank
 from megatron.core.utils import log_single_rank
+from megatron.core.datasets.indices_builder import AsyncShuffleBuilder
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +26,41 @@ TopLevelDataset = Union[BlendedDataset, MidLevelDataset]
 DistributedDataset = Union[
     TopLevelDataset, MidLevelDataset, LowLevelDataset, torch.utils.data.Dataset
 ]
+
+
+class AsyncDatasetBuilder:
+    """ Build dataset asynchronously with multiprocessing
+    """
+
+
+    def __init__(self, cls, *args: List[str]):
+        self.cls = cls
+        self.manager = None
+        self.queue = None
+        self.process = None
+        self.is_started = False
+
+    @staticmethod
+    def build_dataset(args, queue):
+        dataset = self.cls(*args)
+        queue.put(dataset)
+
+    def start(self):
+        ctx = mp.get_context("fork")
+        self.manager = mp.Manager()
+        self.queue = manager.Queue()
+        self.process = ctx.Process(target=self.build_dataset, args=(self.args, queue))
+        self.process.start()
+        self.is_started = True
+
+    def join(self):
+        self.process.join()
+
+    def get_result(self):
+        self.join()
+        result = self.queue.get()
+        self.manager.shutdown()
+        self.is_started = False
 
 
 class BlendedMegatronDatasetBuilder(object):
@@ -196,6 +233,28 @@ class BlendedMegatronDatasetBuilder(object):
             else:
                 sizes_per_dataset = _get_size_per_split_per_dataset(weights, self.sizes)
 
+            # LFu:
+            # Start shuffle builder process if possible
+            async_shuffle_builders = [None for split in Split]
+            if not torch.distributed.is_initialized() or (torch.distributed.get_rank() == 0):
+                for i in range(len(Split)):
+                    if split[i] is not None:
+                        if self.sizes[i] is not None:
+                            size_per_dataset = list(zip(*sizes_per_dataset))[i]
+                            size_i = sum(size_per_dataset)
+                            numpy_random_state = numpy.random.RandomState(self.config.random_seed)
+                            log_single_rank(
+                                logger,
+                                logging.INFO,
+                                f"Start index shuffle builder process for split {Split[i].name}",
+                            )
+                            async_shuffle_builders[i] = AsyncShuffleBuilder(
+                                size_i,
+                                numpy_random_state,
+                                self.config,
+                            )
+                            async_shuffle_builders[i].start()
+
             if self.config.use_distributed_builder:
                 #  LFu: build each dataset in distributed
                 megatron_datasets = self._build_megatron_datasets_distributed(
@@ -238,6 +297,7 @@ class BlendedMegatronDatasetBuilder(object):
                         weights_i,
                         size_i,
                         self.config,
+                        async_shuffle_builders[i],
                     )
 
             return blended_datasets
