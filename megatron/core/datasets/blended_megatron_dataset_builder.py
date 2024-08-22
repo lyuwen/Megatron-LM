@@ -237,17 +237,26 @@ class BlendedMegatronDatasetBuilder(object):
             # Start shuffle builder process if possible
             async_shuffle_builders = [None for split in Split]
             if not torch.distributed.is_initialized() or (torch.distributed.get_rank() == 0):
-                for i in range(len(Split)):
+                for i, splitobj in enumerate(Split):
                     if split[i] is not None:
-                        if self.sizes[i] is not None:
+                        weights_i = weights
+                        if weights_i is not None and self.sizes[i] is not None:
                             size_per_dataset = list(zip(*sizes_per_dataset))[i]
                             size_i = sum(size_per_dataset)
-                            numpy_random_state = numpy.random.RandomState(self.config.random_seed)
+                        elif weights_i is None:
+                            if self.sizes[i] is not None:
+                                size_i = min(self.sizes[i], sum(weights_i))
+                            else:
+                                size_i = None  # => the size will be sum(weights_i)
+                        else:
+                            raise RuntimeError
+                        if size_i is not None:
                             log_single_rank(
                                 logger,
                                 logging.INFO,
-                                f"Start index shuffle builder process for split {Split[i].name}",
+                                f"Start index shuffle builder process for split {splitobj.name} with size {size_i}",
                             )
+                            numpy_random_state = numpy.random.RandomState(self.config.random_seed)
                             async_shuffle_builders[i] = AsyncShuffleBuilder(
                                 size_i,
                                 numpy_random_state,
@@ -257,6 +266,11 @@ class BlendedMegatronDatasetBuilder(object):
 
             if self.config.use_distributed_builder:
                 #  LFu: build each dataset in distributed
+                log_single_rank(
+                    logger,
+                    logging.INFO,
+                    f"Build each megatron dataset with distributed builder",
+                )
                 megatron_datasets = self._build_megatron_datasets_distributed(
                    prefixes, split, sizes_per_dataset
                 )

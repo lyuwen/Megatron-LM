@@ -1,3 +1,5 @@
+import logging
+import os
 import numpy
 import torch
 from torch import multiprocessing as mp
@@ -103,10 +105,10 @@ class AsyncShuffleBuilder:
             return
         ctx = mp.get_context("fork")
         self.manager = mp.Manager()
-        self.queue = manager.Queue()
+        self.queue = self.manager.Queue()
         self.process = ctx.Process(
             target=self.build_shuffle_index,
-            args=(self.num_samples, self.numpy_random_state, queue, self.get_cache_path()),
+            args=(self.num_samples, self.numpy_random_state, self.queue, self.get_cache_path()),
             )
         self.process.start()
         self.is_running = True

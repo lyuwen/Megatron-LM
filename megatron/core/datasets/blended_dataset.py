@@ -158,7 +158,7 @@ class BlendedDataset(torch.utils.data.Dataset):
                   size = self.size
               else:
                   size = sum(self.weights)
-              self.async_shuffle(size, numpy_random_state, self.config)
+              self.async_shuffle = AsyncShuffleBuilder(size, numpy_random_state, self.config)
               self.async_shuffle.start()
 
             if self.size is not None:
