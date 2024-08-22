@@ -1234,7 +1234,7 @@ def train(forward_step_func, model, optimizer, opt_param_scheduler,
 
         # Evaluation
         if args.eval_interval and iteration % args.eval_interval == 0 and \
-           args.do_valid or extra_valid_data_iterators:
+           (args.do_valid or extra_valid_data_iterators):
             timers('interval-time').stop()
             if args.use_distributed_optimizer and args.overlap_param_gather:
                 optimizer.disable_pre_hook()
