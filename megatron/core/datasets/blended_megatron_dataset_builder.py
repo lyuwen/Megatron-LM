@@ -420,6 +420,9 @@ class BlendedMegatronDatasetBuilder(object):
                     try:
                         megatron_datasets_split = future.result()
                         for j in range(len(megatron_datasets_split)):
+                            logger.info(f"Done building dataset {self.cls.__name__} split " \
+                                    "{megatron_datasets_split[j].index_split.name} from: " \
+                                    "{megatron_datasets_split[j].dataset_path}")
                             megatron_datasets[j].append(megatron_datasets_split[j])
                     except Exception as err:
                         raise err
