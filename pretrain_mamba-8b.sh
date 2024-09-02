@@ -2,7 +2,6 @@
 
 # Use: ./train.sh <data-path> <tokenizer-path>
 
-OUTPUT_DIR=/home/lfu/llm/test-training/mamba-test-4
 mkdir -p ${OUTPUT_DIR}
 GLOBAL_BATCH_SIZE=${GLOBAL_BATCH_SIZE:-1024}
 
@@ -184,8 +183,7 @@ options=" \
        --tensorboard-dir ${TENSORBOARD_DIR}"
 
 DISTRIBUTED_ARGS="--nproc_per_node $GPUS_PER_NODE --nnodes $NNODES \
-  --standalone \
+  --rdzv_id=333 --rdzv_backend=c10d --rdzv_endpoint $MASTER_ADDR:$MASTER_PORT \
   --tee 3 --log_dir ${OUTPUT_DIR}/logs/${DATETIME}"
-  # --rdzv_id=333 --rdzv_backend=c10d --rdzv_endpoint $MASTER_ADDR:$MASTER_PORT \
 
 torchrun ${DISTRIBUTED_ARGS} ./pretrain_mamba.py ${options}
