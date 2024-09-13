@@ -396,6 +396,10 @@ class BlendedMegatronDatasetBuilder(object):
         prefixes_on_rank = prefixes[rank::world_size]
         sizes_per_dataset_on_rank = sizes_per_dataset[rank::world_size]
         #
+        # In distributed dataset builder, turn off built on rank check temporarily
+        orig_is_built_on_rank = self.is_built_on_rank
+        self.is_built_on_rank = lambda : True
+        #
         # Helper function to wrap the threading logic
         def _threading_helper(
             megatron_datasets: List[List[Optional[MegatronDataset]]],
@@ -420,9 +424,10 @@ class BlendedMegatronDatasetBuilder(object):
                     try:
                         megatron_datasets_split = future.result()
                         for j in range(len(megatron_datasets_split)):
-                            logger.info(f"Done building dataset {self.cls.__name__} split " \
-                                    f"{megatron_datasets_split[j].index_split.name} from: " \
-                                    f"{megatron_datasets_split[j].dataset_path}")
+                            if megatron_datasets_split[j] is not None:
+                                logger.info(f"Done building dataset {self.cls.__name__} split " \
+                                        f"{megatron_datasets_split[j].index_split.name} from: " \
+                                        f"{megatron_datasets_split[j].dataset_path}")
                             megatron_datasets[j].append(megatron_datasets_split[j])
                     except Exception as err:
                         raise err
@@ -434,6 +439,7 @@ class BlendedMegatronDatasetBuilder(object):
         )
 
         torch.distributed.barrier()
+        self.is_built_on_rank = orig_is_built_on_rank
 
         megatron_datasets = [[] for _ in range(len(Split))]
         _threading_helper(
