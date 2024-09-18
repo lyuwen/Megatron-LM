@@ -75,6 +75,9 @@ class BlendedMegatronDatasetConfig:
     use_distributed_builder: bool = False
     """Use distributed dataset builder."""
 
+    aggressive_memory_strat: bool = False
+    """When using distributed dataset builder, use aggressive memory saving strategy."""
+
     def __post_init__(self) -> None:
         """Do asserts and set fields post init"""
         if self.blend_per_split is not None and any(self.blend_per_split):

@@ -428,7 +428,10 @@ class BlendedMegatronDatasetBuilder(object):
                                 logger.info(f"Done building dataset {self.cls.__name__} split " \
                                         f"{megatron_datasets_split[j].index_split.name} from: " \
                                         f"{megatron_datasets_split[j].dataset_path}")
-                            megatron_datasets[j].append(megatron_datasets_split[j])
+                            if self.config.aggressive_memory_strat:
+                              del megatron_datasets_split[j]
+                            else:
+                              megatron_datasets[j].append(megatron_datasets_split[j])
                     except Exception as err:
                         raise err
         # First build on all ranks
