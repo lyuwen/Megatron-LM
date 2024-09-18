@@ -28,6 +28,16 @@ def add_arguments(parser):
                        choices=['local', 'transformer_engine'],
                        help='Which Transformer implementation to use.')
 
+def initialize_distributed(tensor_model_parallel_size = 1, pipeline_model_parallel_size = 1):
+    from megatron.core import parallel_state
+    # Torch setup for distributed training
+    os.environ['MASTER_ADDR'] = "localhost"
+    os.environ['MASTER_PORT'] = "61234"
+    torch.distributed.init_process_group(world_size=1, rank=0)
+
+    # Megatron core distributed training initialization
+    parallel_state.initialize_model_parallel(tensor_model_parallel_size, pipeline_model_parallel_size)
+
 
 def _load_checkpoint(queue, args):
 
@@ -37,6 +47,8 @@ def _load_checkpoint(queue, args):
                      os.path.pardir)))
     if args.megatron_path is not None:
         sys.path.insert(0, args.megatron_path)
+
+    initialize_distributed()
 
     try:
         from megatron.training.arguments import parse_args, validate_args
