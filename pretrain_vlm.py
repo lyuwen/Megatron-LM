@@ -2,38 +2,33 @@
 """Pretrain vision language model."""
 from copy import deepcopy
 from functools import partial
-from types import SimpleNamespace
+import warnings
 
 import torch
 
 from megatron.core import parallel_state, tensor_parallel
 from megatron.core.datasets.blended_megatron_dataset_builder import BlendedMegatronDatasetBuilder
-from megatron.core.datasets.gpt_dataset import MockGPTLowLevelDataset
 from megatron.core.datasets.multimodal_dataset import MockMultimodalDataset, MultimodalDatasetConfig
 from megatron.core.enums import ModelType
-from megatron.core.models.multimodal.llava_model import LLaVAModel
-from megatron.core.models.multimodal.llava_spec import decoder_model_with_transformer_engine_default_spec, decoder_model_with_local_default_spec
-from megatron.core.models.vision.vit_layer_specs import get_vit_layer_with_transformer_engine_spec, get_vit_layer_with_local_spec
+from megatron.core.models.vision.clip_vit_model import get_num_image_embeddings
+from megatron.core.models.multimodal.llava_model import LLaVAModel, IMAGE_TOKEN_INDEX
+from megatron.core.models.multimodal.llava_spec import (
+    decoder_model_with_transformer_engine_default_spec,
+    decoder_model_with_local_default_spec,
+)
+from megatron.core.models.vision.vit_layer_specs import (
+    get_vit_layer_with_transformer_engine_spec,
+    get_vit_layer_with_local_spec,
+)
 from megatron.core.transformer.spec_utils import import_module
 from megatron.training import get_args, get_timers, get_tokenizer, pretrain, print_rank_0
 from megatron.training.arguments import core_transformer_config_from_args
 from pretrain_gpt import loss_func
 
 
-def get_num_image_tokens():
-    args = get_args()
-    add_class_token = not args.disable_vision_class_token
-
-    num_patches_per_dim_h = args.img_h // args.patch_dim
-    num_patches_per_dim_w = args.img_w // args.patch_dim
-    num_patches = num_patches_per_dim_h * num_patches_per_dim_w
-    num_image_tokens = num_patches + (1 if add_class_token else 0)
-    return num_image_tokens
-
-
 def model_provider(
-    pre_process=True, post_process=True, add_encoder=True, add_decoder=True,
-    parallel_output=True) -> LLaVAModel:
+    pre_process=True, post_process=True, add_encoder=True, add_decoder=True, parallel_output=True
+) -> LLaVAModel:
     """Builds the model.
 
     Note: currently, only LLaVA model is supported. Follow-up changes will make this configurable.
@@ -52,9 +47,20 @@ def model_provider(
     """
     args = get_args()
 
-    num_image_tokens = get_num_image_tokens()
-    args.decoder_seq_length = args.seq_length + num_image_tokens
-    args.seq_length = num_image_tokens
+    num_image_embeddings = get_num_image_embeddings(
+        args.img_h, args.img_w, args.patch_dim, args.disable_vision_class_token, 1
+    )
+    old_seq_length = args.seq_length
+    # decoder_seq_length denotes the language model sequence length.
+    args.decoder_seq_length = args.seq_length + num_image_embeddings
+
+    # seq_length and encoder_seq_length denote the vision model sequence length. Override if the user provided something else.
+    args.seq_length = args.encoder_seq_length = num_image_embeddings
+    if torch.distributed.get_rank() == 0 and old_seq_length != args.seq_length:
+        warnings.warn(
+            f"Changed seq_length and encoder_seq_length (vision model sequence length) from {old_seq_length} to num_image_tokens ({num_image_embeddings})"
+        )
+
     args.max_position_embeddings = max(args.max_position_embeddings, args.decoder_seq_length)
 
     print_rank_0('building a multimodal model ...')
@@ -79,19 +85,34 @@ def model_provider(
     # TODO: Make these configurable via input .yaml config.
     vision_transformer_config = deepcopy(language_transformer_config)
     vision_transformer_config.num_layers = args.encoder_num_layers
+    vision_transformer_config.first_pipeline_num_layers = None
+    vision_transformer_config.last_pipeline_num_layers = None
 
     vision_projection_type = "mlp"
     vision_projection_config = deepcopy(language_transformer_config)
 
     if args.encoder_pipeline_model_parallel_size > 0:
-        assert args.encoder_pipeline_model_parallel_size == 1, "ViT can only live on 1 pipeline stage."
-        vision_transformer_config.pipeline_model_parallel_size = args.encoder_pipeline_model_parallel_size
-        vision_projection_config.pipeline_model_parallel_size = args.encoder_pipeline_model_parallel_size
+        assert (
+            args.encoder_pipeline_model_parallel_size == 1
+        ), "ViT can only live on 1 pipeline stage."
+        vision_transformer_config.pipeline_model_parallel_size = (
+            args.encoder_pipeline_model_parallel_size
+        )
+        vision_projection_config.pipeline_model_parallel_size = (
+            args.encoder_pipeline_model_parallel_size
+        )
         if args.encoder_tensor_model_parallel_size > 0:
-            vision_transformer_config.tensor_model_parallel_size = args.encoder_tensor_model_parallel_size
-            vision_projection_config.tensor_model_parallel_size = args.encoder_tensor_model_parallel_size
+            vision_transformer_config.tensor_model_parallel_size = (
+                args.encoder_tensor_model_parallel_size
+            )
+            vision_projection_config.tensor_model_parallel_size = (
+                args.encoder_tensor_model_parallel_size
+            )
 
     vision_projection_modules = deepcopy(language_transformer_layer_spec.submodules.mlp.submodules)
+
+    if args.virtual_pipeline_model_parallel_size:
+        raise NotImplementedError("virtual pipeline model parallelism is not supported yet.")
 
     model = LLaVAModel(
         language_transformer_config=language_transformer_config,
@@ -107,6 +128,7 @@ def model_provider(
         parallel_output=parallel_output,
         language_position_embedding_type=args.position_embedding_type,
         language_rotary_percent=args.rotary_percent,
+        language_rope_scaling=args.use_rope_scaling,
         pre_process=pre_process,
         post_process=post_process,
         add_encoder=add_encoder,
@@ -114,6 +136,12 @@ def model_provider(
         img_h=args.img_h,
         img_w=args.img_w,
         patch_dim=args.patch_dim,
+    )
+
+    model.freeze(
+        freeze_language_model=args.freeze_LM,
+        freeze_vision_model=args.freeze_ViT,
+        freeze_vision_projection=False,
     )
 
     return model
@@ -133,7 +161,7 @@ def train_valid_test_datasets_provider(train_val_test_num_samples):
     config = MultimodalDatasetConfig(
         random_seed=args.seed,
         split=args.split,
-        sequence_length=args.decoder_seq_length-args.seq_length,
+        sequence_length=args.decoder_seq_length - args.seq_length,
         tokenizer=get_tokenizer(),
         reset_position_ids=args.reset_position_ids,
         reset_attention_mask=args.reset_attention_mask,
@@ -146,8 +174,10 @@ def train_valid_test_datasets_provider(train_val_test_num_samples):
     print_rank_0("> building train, validation, and test datasets for multimodal ...")
 
     train_ds, valid_ds, test_ds = BlendedMegatronDatasetBuilder(
-        MockMultimodalDataset, train_val_test_num_samples,
-        lambda: parallel_state.get_tensor_model_parallel_rank() == 0, config
+        MockMultimodalDataset,
+        train_val_test_num_samples,
+        lambda: parallel_state.get_tensor_model_parallel_rank() == 0,
+        config,
     ).build()
 
     print_rank_0("> finished creating multimodal datasets ...")
@@ -166,21 +196,27 @@ def _preprocess_data_for_llava(data):
     Returns:
         data (dict): Processed data sample suitable for the model.
     """
-    args = get_args()
-
-    # TODO: Move these to multimodal spec (added in a separate code change).
-    num_image_tokens = get_num_image_tokens()
-
-    data["loss_mask"] = torch.cat(
-        [torch.zeros(num_image_tokens, dtype=torch.float32), data["loss_mask"]]
+    # Prepend image token index to tokens.
+    data["tokens"] = torch.cat(
+        [
+            IMAGE_TOKEN_INDEX
+            * torch.ones(1, dtype=data["tokens"].dtype, device=data["tokens"].device),
+            data["tokens"],
+        ]
     )
-    data["labels"] = torch.cat([torch.zeros(num_image_tokens, dtype=torch.int64), data["labels"]])
-
-    full_seq_length = len(data["labels"])
-    attention_mask = torch.tril(torch.ones((1, full_seq_length, full_seq_length)))
-    attention_mask = attention_mask < 0.5
-    attention_mask[:, num_image_tokens:, num_image_tokens:] = data["attention_mask"]
-    data["attention_mask"] = attention_mask
+    # Prepend labels accordingly.
+    data["labels"] = torch.cat([data["tokens"][1].unsqueeze(0), data["labels"]])
+    # Zero loss mask for the image token index.
+    data["loss_mask"] = torch.cat(
+        [
+            torch.zeros(1, dtype=data["loss_mask"].dtype, device=data["loss_mask"].device),
+            data["loss_mask"],
+        ]
+    )
+    # Add one more position id.
+    data["position_ids"] = torch.cat(
+        [data["position_ids"], data["position_ids"][-1].unsqueeze(0) + 1]
+    )
 
     return data
 
@@ -202,14 +238,13 @@ def get_batch(data_iterator):
 
     data_i = tensor_parallel.broadcast_data(["tokens", "position_ids", "labels"], data, torch.int64)
     data_f = tensor_parallel.broadcast_data(["image", "loss_mask"], data, torch.float32)
-    data_b = tensor_parallel.broadcast_data(["attention_mask"], data, torch.bool)
 
     tokens = data_i["tokens"].long()
     position_ids = data_i["position_ids"].long()
     labels = data_i["labels"].long()
     images = data_f["image"].float()
     loss_mask = data_f["loss_mask"].float()
-    attention_mask = data_b["attention_mask"].bool()
+    attention_mask = None  # Use the attention mask type defined in layer spec. Typically no mask for the vision model and causal mask for the vision model.
 
     return tokens, position_ids, labels, images, loss_mask, attention_mask
 
@@ -232,7 +267,9 @@ def forward_step(data_iterator, model: LLaVAModel):
     tokens, position_ids, labels, images, loss_mask, attention_mask = get_batch(data_iterator)
     timers('batch-generator').stop()
 
-    output_tensor = model(images, tokens, position_ids, attention_mask, labels=labels)
+    output_tensor, loss_mask = model(
+        images, tokens, position_ids, attention_mask, labels, loss_mask
+    )
 
     return output_tensor, partial(loss_func, loss_mask)
 
@@ -240,7 +277,18 @@ def forward_step(data_iterator, model: LLaVAModel):
 def add_vlm_extra_args(parser):
     """Extra arguments."""
     group = parser.add_argument_group(title='vision language model specific arguments')
-    group.add_argument("--disable-vision-class-token", action="store_true", default=False)
+    group.add_argument(
+        '--freeze-LM', action='store_true', default=False, help="Freeze language model weights"
+    )
+    group.add_argument(
+        '--freeze-ViT', action='store_true', default=False, help="Freeze vision model (ViT) weights"
+    )
+    group.add_argument(
+        "--disable-vision-class-token",
+        action="store_true",
+        default=False,
+        help="Drop vision model class token",
+    )
     return parser
 
 
