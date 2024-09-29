@@ -1378,7 +1378,7 @@ def train(forward_step_func, model, optimizer, opt_param_scheduler,
             prefix = 'iteration {}'.format(iteration)
             timers('eval-time', log_level=0).start(barrier=True)
             if args.do_valid:
-            evaluate_and_print_results(prefix, forward_step_func,
+                evaluate_and_print_results(prefix, forward_step_func,
                                        valid_data_iterator, model,
                                        iteration, process_non_loss_data_func,
                                        config, verbose=False, write_to_tensorboard=True,
