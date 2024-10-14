@@ -16,7 +16,13 @@ from megatron.core.datasets.megatron_tokenizer import MegatronTokenizer
 from megatron.core.datasets.utils import Split
 from megatron.core.datasets.utils_s3 import S3Config, is_s3_path
 from megatron.core.utils import log_single_rank
-from megatron.core.datasets.gpt_dataset import GPTDatasetConfig, GPTDataset
+from megatron.core.datasets.gpt_dataset import (
+        GPTDatasetConfig,
+        GPTDataset,
+        _build_document_index,
+        _build_shuffle_index,
+        _get_ltor_masks_and_position_ids,
+        )
 from megatron.core.multimemmap import MuiltiMemMap, write as write_multmemmap
 
 logger = logging.getLogger(__name__)
@@ -234,7 +240,7 @@ class GPTDatasetMM(GPTDataset):
             f"\tLoad the document, sample, shuffle index from {os.path.basename(path_to_document_sample_shuffle_index)}",
         )
         t_beg = time.time()
-        self._multimemmap = MuiltiMemMap(path_to_document_index)
+        self._multimemmap = MuiltiMemMap(path_to_document_sample_shuffle_index)
         document_index, sample_index, shuffle_index = self._multimemmap.get_arrays()
         t_end = time.time()
         log_single_rank(logger, logging.DEBUG, f"\t> time elapsed: {t_end - t_beg:4f} seconds")

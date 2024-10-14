@@ -85,6 +85,9 @@ class AsyncShuffleBuilder:
                 logging.INFO,
                 f"Save shuffle index to file {path_to_dataset_shuffle_index}",
             )
+            dirname = os.path.dirname(path_to_dataset_shuffle_index)
+            if not os.path.exists(dirname):
+                os.makedirs(dirname, exist_ok=True)
             numpy.save(path_to_dataset_shuffle_index, self.get_result(), allow_pickle=True)
 
     @staticmethod
@@ -130,4 +133,5 @@ class AsyncShuffleBuilder:
         self.save()
 
     def shutdown(self):
-        self.manager.shutdown()
+        if self.manager is not None:
+            self.manager.shutdown()
