@@ -1,4 +1,5 @@
 import os
+import sys
 import argparse
 try:
   from loguru import logger
@@ -6,6 +7,7 @@ except ImportError:
   import logging
   logger = logging.getLogger(__name__)
   logging.basicConfig(encoding='utf-8', level=logging.INFO)
+import torch
 import torch.distributed.run as distrib_run
 
 
@@ -49,11 +51,19 @@ def parse_args(args=None):
     args.megatron_path = megatron_path
     logger.info(f"Megatron-Core library found in {megatron_path}, updating environ variable.")
     os.environ["PYTHONPATH"] = "{megatron_path}:" + os.environ.get("PYTHONPATH", "")
+    sys.path.insert(0, megatron_path)
     return args
 
 
 def main(args=None):
     args = parse_args()
+    from megatron.training.checkpointing import get_checkpoint_name, get_checkpoint_tracker_filename
+    ckpt_dir = args.load
+    with open(get_checkpoint_tracker_filename(ckpt_dir), 'rt') as f:
+        iteration = int(f.read())
+    ckpt_base = get_checkpoint_name(ckpt_dir, iteration, False, 1, 0, 0, 1, 0, return_base_dir=True)
+    data = torch.load(f"{ckpt_base}/common.pt")
+    ckpt_args = data['args']
     margs = [
         f"--nproc_per_node={args.nproc_per_node}",
         f"--nnodes={args.nnodes}",
@@ -76,11 +86,12 @@ def main(args=None):
         f"--use-checkpoint-args",
         f"--ckpt-convert-format={args.ckpt_format}",
         f"--ckpt-convert-save={args.save}",
+        f"--rotary-base={ckpt_args.rotary_base}",
         ]
     logger.info(f"Running command: torchrun %s" % (" ".join(margs)))
 
     os.environ["CUDA_DEVICE_MAX_CONNECTIONS"] = "1"
-    # distrib_run.main(margs)
+    distrib_run.main(margs)
 
 
 if __name__ == '__main__':
