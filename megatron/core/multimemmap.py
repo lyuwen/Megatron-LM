@@ -92,10 +92,15 @@ class MuiltiMemMap:
                 offset=array_meta['offset'],
                 ))
         return arrays
-            
-    def __del__(self):
+
+
+    def close(self):
         self.mmap.close()
         self.fp.close()
+
+            
+    def __del__(self):
+        self.close()
         
         
 if __name__ == '__main__':
