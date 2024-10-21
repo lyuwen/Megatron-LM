@@ -289,8 +289,12 @@ def main():
   if is_first_rank():
     df.reset_index(inplace=True)
     torch.save(df, "%s.pt" % os.path.splitext(script_args.output_file)[0])
-    df.to_excel(script_args.output_file, engine="xlsxwriter")
-    # df.to_csv(script_args.output_file, encoding="utf-8")
+    if script_args.output_file.endswith("xlsx"):
+      df.to_excel(script_args.output_file, engine="xlsxwriter")
+    elif script_args.output_file.endswith("csv")
+      df.to_csv(script_args.output_file, encoding="utf-8")
+    else:
+      logger.warn(f"Unsupported file format, will skip: {script_args.output_file}")
 
   dist.destroy_process_group()
 

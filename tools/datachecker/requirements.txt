@@ -4,3 +4,4 @@ transformers
 numpy
 pandas
 torch
+xlsxwriter
