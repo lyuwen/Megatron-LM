@@ -1,0 +1,7 @@
+tqdm
+accelerate
+transformers
+numpy
+pandas
+torch
+xlsxwriter

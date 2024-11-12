@@ -7,7 +7,7 @@ if __name__ == "__main__":
   total = 0
   with open(args.file, "r") as f:
     for l in f:
-      if l.startswith("#"):
+      if l.startswith("#") or not l.strip():
         continue
       total += int(l.split()[0])
   print(total)

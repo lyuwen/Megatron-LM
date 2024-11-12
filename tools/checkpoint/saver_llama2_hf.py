@@ -49,6 +49,7 @@ def save_checkpoint(queue: mp.Queue, args):
         max_position_embeddings = mag_conf.max_position_embeddings,
         rms_norm_eps            = mag_conf.norm_epsilon,
         tie_word_embeddings     = not mag_conf.untie_embeddings_and_output_weights,
+        rope_theta              = mag_conf.rotary_base,
         attention_bias          = mag_conf.add_bias_linear,
         torch_dtype             = torch_dtype,
         model_type              = "llama",

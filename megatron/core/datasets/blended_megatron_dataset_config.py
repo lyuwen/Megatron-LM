@@ -69,6 +69,15 @@ class BlendedMegatronDatasetConfig:
     tokenizer: Optional[MegatronTokenizer] = None
     """The MegatronTokenizer instance or None. Required for datasets which do online tokenization."""
 
+    use_fast_blend_indices: bool = False
+    """Use optimized blend indices builder."""
+
+    use_distributed_builder: bool = False
+    """Use distributed dataset builder."""
+
+    aggressive_memory_strat: bool = False
+    """When using distributed dataset builder, use aggressive memory saving strategy."""
+
     def __post_init__(self) -> None:
         """Do asserts and set fields post init"""
         if self.blend_per_split is not None and any(self.blend_per_split):
