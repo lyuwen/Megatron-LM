@@ -17,6 +17,7 @@ from megatron.core.datasets.utils import get_blend_from_list
 from megatron.legacy.data.data_samplers import build_pretraining_data_loader
 from megatron.core.datasets.gpt_dataset import GPTDatasetConfig
 from megatron.core.datasets.gpt_dataset import MockGPTDataset, GPTDataset
+from megatron.core.datasets.gpt_dataset_mm import GPTDatasetMM
 import megatron.legacy.model
 from megatron.core.models.gpt import GPTModel
 from megatron.training import pretrain
@@ -224,6 +225,8 @@ def train_valid_test_datasets_provider(train_val_test_num_samples):
 
     if args.mock_data:
         dataset_type = MockGPTDataset
+    elif args.use_gpt_dataset_mm:
+        dataset_type = GPTDatasetMM
     else:
         dataset_type = GPTDataset
 
@@ -316,6 +319,9 @@ def add_extra_args(parser):
                        )
     group.add_argument('--extra-valid-data-names', type=str, default=None, action="append",
                        help='Names of the dataset lists containing additional validation datasets. '
+                       )
+    group.add_argument('--use-gpt-dataset-mm', default=None, action="store_true",
+                       help='Use the efficiently memory mapped GPTDatasetMM implmentation. '
                        )
 
     return parser
