@@ -1,6 +1,6 @@
 # From GitHub Gist: https://gist.github.com/devymex/734ff89ffb7ba047de177201ba90b3d1
 import os, torch, torch.multiprocessing as mp
-from transformers import AutoModelForCausalLM, LlamaConfig
+from transformers import AutoModelForCausalLM, LlamaConfig, AutoTokenizer
 
 CHECK_EQUAL_WITH_HF = '' # A pretrain directory eg. '/data/models/llama-2-hf/7b-chat'
 
@@ -8,6 +8,8 @@ def add_arguments(parser):
     group = parser.add_argument_group(title='Llama-2 HF saver.')
     group.add_argument('--megatron-path', type=str, default=None,
                        help='Base directory of megatron checkpoint')
+    group.add_argument('--tokenizer-name-or-path', type=str, default=None,
+                       help='Name or path of the tokenizer')
 
 def save_checkpoint(queue: mp.Queue, args):
     def queue_get(name=None):
@@ -39,6 +41,19 @@ def save_checkpoint(queue: mp.Queue, args):
     assert mag_conf.swiglu == True
     assert mag_conf.rotary_percent == 1.0
 
+    tokenizer = None
+    bos_token_id = 1
+    eos_token_id = 2
+    pad_token_id = None
+    if args.tokenizer_name_or_path is None and os.path.isdir(mag_conf.tokenizer_model):
+        args.tokenizer_name_or_path = mag_conf.tokenizer_model
+    if args.tokenizer_name_or_path is not None:
+        print(f"Loading tokenizer from {args.tokenizer_name_or_path}.")
+        tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_name_or_path)
+        bos_token_id = getattr(tokenizer, "bos_token_id", bos_token_id)
+        eos_token_id = getattr(tokenizer, "eos_token_id", eos_token_id)
+        pad_token_id = getattr(tokenizer, "pad_token_id", pad_token_id)
+
     llama_conf = LlamaConfig(
         vocab_size              = mag_conf.padded_vocab_size,
         hidden_size             = mag_conf.hidden_size,
@@ -48,6 +63,9 @@ def save_checkpoint(queue: mp.Queue, args):
         num_key_value_heads     = mag_conf.num_query_groups,
         max_position_embeddings = mag_conf.max_position_embeddings,
         rms_norm_eps            = mag_conf.norm_epsilon,
+        bos_token_id            = bos_token_id,
+        eos_token_id            = eos_token_id,
+        pad_token_id            = pad_token_id,
         tie_word_embeddings     = not mag_conf.untie_embeddings_and_output_weights,
         rope_theta              = mag_conf.rotary_base,
         attention_bias          = mag_conf.add_bias_linear,
@@ -57,6 +75,9 @@ def save_checkpoint(queue: mp.Queue, args):
         transformers_version    = "4.33.1",
         )
     llama_conf.save_pretrained(args.save_dir)
+    if tokenizer is not None:
+        print(f"Save tokenizer to {args.save_dir}.")
+        tokenizer.save_pretrained(args.save_dir)
 
     state_dict = {}
     def set_hf_param(name, tensor: torch.Tensor):
