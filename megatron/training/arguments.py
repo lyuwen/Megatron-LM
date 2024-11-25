@@ -1052,7 +1052,9 @@ def _add_training_args(parser):
                        '  --warmup-seq-length 0:2048,100:4096'
                        'will start the training with sequence length 2048,'
                        'and then increase the sequence length to 4096 starting at '
-                       'the 101st iteration.')
+                       'the 100th iteration. '
+                       'NOTE: Sequence length warmup is currently implemented by '
+                       'discarding extra tokens in the sequence.')
     group.add_argument('--decrease-batch-size-if-needed', action='store_true', default=False,
                        help='If set, decrease batch size if microbatch_size * dp_size'
                        'does not divide batch_size. Useful for KSO (Keep Soldiering On)'

@@ -14,6 +14,8 @@ _GLOBAL_SEQUENCE_LENGTH_SCHEDULER: Union[
     "WarmupSequenceLengthScheduler",
 ] = None
 
+_ITERATION = 0
+
 
 def set_sequence_length_scheduler(sequence_length, schedule=None) -> None:
     global _GLOBAL_SEQUENCE_LENGTH_SCHEDULER
@@ -24,11 +26,21 @@ def set_sequence_length_scheduler(sequence_length, schedule=None) -> None:
         _GLOBAL_SEQUENCE_LENGTH_SCHEDULER = WarmupSequenceLengthScheduler(sequence_length, schedule)
 
 
+def set_iteration(iteration: int):
+    global _ITERATION = iteration
+
+
 def get_sequence_length_scheduler() -> None:
     return _GLOBAL_SEQUENCE_LENGTH_SCHEDULER
 
 
-def get_sequence_length(iteration: int) -> int:
+def get_sequence_length(iteration: int = None) -> int:
+    if iteration is None:
+        iteration = _ITERATION
+    return get_sequence_length_scheduler().get_sequence_length(iteration)
+
+
+def is_full_length(iteration: int) -> bool:
     return get_sequence_length_scheduler().get_sequence_length(iteration)
 
 
@@ -50,6 +62,9 @@ class WarmupSequenceLengthScheduler:
     Use a warmup schedule that starts with a smaller sequence length, and
     increase at certain steps.
     This is said to make the initial training more stable.
+
+    Note: Sequence length warmup is currently implemented by discarding extra
+    tokens in the sequence. Thus a portion of the training data is wasted.
 
     Example to schedule a sequence length warmup:
         1. schedule = "0:4096,60:8192"
@@ -78,5 +93,5 @@ class WarmupSequenceLengthScheduler:
         # If the iteration is beyong schedule limit, return full sequence length directly.
         if iteration > self._schedule_values[-1]:
             return self.sequence_length
-        index = bisect.bisect_right(self._schedule_points, iteration)
+        index = bisect.bisect_left(self._schedule_points, iteration)
         return self._schedule_values[index]

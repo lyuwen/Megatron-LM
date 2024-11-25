@@ -33,6 +33,7 @@ from megatron.core.models.gpt.gpt_layer_specs import (
     get_gpt_layer_local_spec,
     get_gpt_layer_with_transformer_engine_spec,
 )
+from megatron.core.sequence_length_scheduler import get_sequence_length, get_sequence_length_scheduler
 
 
 stimer = StragglerDetector()
@@ -104,6 +105,16 @@ def get_batch(data_iterator):
 
     # get batches based on the TP rank you are on
     batch = get_batch_on_this_tp_rank(data_iterator)
+
+    # only slice the sequence if the length is smaller, minimize side effects
+    full_seq_len = get_sequence_length_scheduler().sequence_length
+    current_seq_len = get_sequence_length()
+    if current_seq_len < full_seq_len:
+        batch['tokens'] = batch['tokens'][:, :current_seq_len]
+        batch['labels'] = batch['labels'][:, :current_seq_len]
+        batch['loss_mask'] = batch['loss_mask'][:, :current_seq_len]
+        batch['attention_mask'] = batch['attention_mask'][:, :, :current_seq_len, :current_seq_len]
+        batch['position_ids'] = batch['position_ids'][:, :current_seq_len]
 
     # slice batch along sequence dimension for context parallelism
     batch = get_batch_on_this_cp_rank(batch)

@@ -64,6 +64,8 @@ from . import one_logger_utils
 
 from . import ft_integration
 
+from megatron.core.sequence_length_scheduler import set_sequence_length_scheduler, set_iteration as set_seqlen_iteration
+
 stimer = StragglerDetector()
 
 def print_datetime(string):
@@ -300,6 +302,10 @@ def pretrain(
     timers('train/valid/test-data-iterators-setup').stop()
     print_datetime('after dataloaders are built')
     app_metrics['app_build_dataiters_finish_time'] = one_logger_utils.get_timestamp_in_ms()
+
+    # Setup sequence length warmup
+    set_sequence_length_scheduler(args.seq_length, args.warmup_seq_length)
+    print_rank_0('Set up sequence length scheduler.')
 
     # Track if training is enabled. Can only be done once args.do_train is assigned after dataloader is built.
     one_logger_utils.track_config_flags(args.train_iters, args.skip_train, args.do_train,
@@ -1178,6 +1184,8 @@ def train(forward_step_func, model, optimizer, opt_param_scheduler,
                                          checkpointing_context, train_data_iterator=train_data_iterator)
         num_microbatches = get_num_microbatches()
         update_num_microbatches(args.consumed_train_samples, consistency_check=True, verbose=True)
+
+        set_seqlen_iteration(iteration)
 
         args.curr_iteration = iteration
         loss_dict, skipped_iter, grad_norm, num_zeros_in_grad = \
