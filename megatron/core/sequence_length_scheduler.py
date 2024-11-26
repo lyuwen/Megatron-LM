@@ -4,6 +4,7 @@
 
 
 import bisect
+import numpy as np
 #  import logging
 from typing import Union
 
@@ -15,6 +16,7 @@ _GLOBAL_SEQUENCE_LENGTH_SCHEDULER: Union[
 ] = None
 
 _ITERATION = 0
+_CONSUMED_TOKENS = 0
 
 
 def set_sequence_length_scheduler(sequence_length, schedule=None) -> None:
@@ -27,7 +29,8 @@ def set_sequence_length_scheduler(sequence_length, schedule=None) -> None:
 
 
 def set_iteration(iteration: int):
-    global _ITERATION = iteration
+    global _ITERATION
+    _ITERATION = iteration
 
 
 def get_sequence_length_scheduler() -> None:
@@ -44,13 +47,23 @@ def is_full_length(iteration: int) -> bool:
     return get_sequence_length_scheduler().get_sequence_length(iteration)
 
 
+def update_consumed_tokens(value: int | tuple[int]):
+    global _CONSUMED_TOKENS
+    _CONSUMED_TOKENS += value
+    #  _CONSUMED_TOKENS += np.prod(value, dtype=int)
+
+
+def get_consumed_tokens():
+    return _CONSUMED_TOKENS
+
+
 class ConstantSequenceLengthScheduler:
-  """ Constant sequence length scheduler.
+    """ Constant sequence length scheduler.
     """
 
 
     def __init__(self, sequence_length: int, schedule: None = None) -> None:
-        self.sequence_length
+        self.sequence_length = sequence_length
 
 
     def get_sequence_length(self, iteration: int) -> int:
@@ -93,5 +106,5 @@ class WarmupSequenceLengthScheduler:
         # If the iteration is beyong schedule limit, return full sequence length directly.
         if iteration > self._schedule_values[-1]:
             return self.sequence_length
-        index = bisect.bisect_left(self._schedule_points, iteration)
+        index = bisect.bisect_left(self._schedule_points[1:], iteration)
         return self._schedule_values[index]

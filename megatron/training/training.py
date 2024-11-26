@@ -64,7 +64,7 @@ from . import one_logger_utils
 
 from . import ft_integration
 
-from megatron.core.sequence_length_scheduler import set_sequence_length_scheduler, set_iteration as set_seqlen_iteration
+from megatron.core.sequence_length_scheduler import set_sequence_length_scheduler, set_iteration as set_seqlen_iteration, get_consumed_tokens
 
 stimer = StragglerDetector()
 
@@ -925,6 +925,16 @@ def training_log(loss_dict, total_loss_dict, learning_rate, decoupled_learning_r
             iteration, args.train_iters)
         log_string += ' consumed samples: {:12d} |'.format(
             args.consumed_train_samples)
+        # Log consumed tokens
+        log_string += ' consumed tokens: {:15,d} |'.format(
+            get_consumed_tokens())
+        if writer:
+            writer.add_scalar('consumed-tokens',
+                              get_consumed_tokens(), iteration)
+        if wandb_writer:
+            wandb_writer.log({'consumed-tokens': get_consumed_tokens()},
+                             iteration)
+        # End of Log consumed tokens
         if args.skipped_train_samples > 0:
             log_string += ' skipped samples: {:12d} |'.format(
                 args.skipped_train_samples)
