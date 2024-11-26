@@ -34,7 +34,10 @@ from megatron.core.models.gpt.gpt_layer_specs import (
     get_gpt_layer_local_spec,
     get_gpt_layer_with_transformer_engine_spec,
 )
-from megatron.core.sequence_length_scheduler import get_sequence_length, get_sequence_length_scheduler, update_consumed_tokens
+from megatron.core.sequence_length_scheduler import (
+    get_sequence_length,
+    get_sequence_length_scheduler,
+    )
 
 
 stimer = StragglerDetector()
@@ -116,7 +119,6 @@ def get_batch(data_iterator):
         batch['loss_mask'] = batch['loss_mask'][:, :current_seq_len].contiguous()
         batch['attention_mask'] = batch['attention_mask'][:, :, :current_seq_len, :current_seq_len].contiguous()
         batch['position_ids'] = batch['position_ids'][:, :current_seq_len].contiguous()
-    update_consumed_tokens(np.prod(batch['tokens'].shape, dtype=int) * mpu.get_data_parallel_world_size())
 
     # slice batch along sequence dimension for context parallelism
     batch = get_batch_on_this_cp_rank(batch)

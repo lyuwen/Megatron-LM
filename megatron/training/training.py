@@ -64,7 +64,13 @@ from . import one_logger_utils
 
 from . import ft_integration
 
-from megatron.core.sequence_length_scheduler import set_sequence_length_scheduler, set_iteration as set_seqlen_iteration, get_consumed_tokens
+from megatron.core.sequence_length_scheduler import (
+    set_sequence_length_scheduler,
+    set_iteration as set_seqlen_iteration,
+    get_consumed_tokens,
+    get_sequence_length,
+    update_consumed_tokens,
+    )
 
 stimer = StragglerDetector()
 
@@ -1205,10 +1211,12 @@ def train(forward_step_func, model, optimizer, opt_param_scheduler,
                        optimizer,
                        opt_param_scheduler,
                        config)
+        curr_sequence_length = get_sequence_length()
         iteration += 1
         batch_size = mpu.get_data_parallel_world_size() * \
                      args.micro_batch_size * \
                      get_num_microbatches()
+        update_consumed_tokens(batch_size * curr_sequence_length) # update consumed tokens
         args.consumed_train_samples += batch_size
         num_skipped_samples_in_batch = (get_current_global_batch_size() -
                                         get_current_running_global_batch_size())
