@@ -47,7 +47,7 @@ def is_full_length(iteration: int) -> bool:
     return get_sequence_length_scheduler().get_sequence_length(iteration)
 
 
-def update_consumed_tokens(value: int | tuple[int]):
+def update_consumed_tokens(value: int):
     global _CONSUMED_TOKENS
     _CONSUMED_TOKENS += value
     #  _CONSUMED_TOKENS += np.prod(value, dtype=int)
@@ -55,6 +55,11 @@ def update_consumed_tokens(value: int | tuple[int]):
 
 def get_consumed_tokens():
     return _CONSUMED_TOKENS
+
+
+def restore_consumed_tokens(value: int):
+    global _CONSUMED_TOKENS
+    _CONSUMED_TOKENS = value
 
 
 class ConstantSequenceLengthScheduler:

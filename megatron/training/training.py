@@ -70,6 +70,7 @@ from megatron.core.sequence_length_scheduler import (
     get_consumed_tokens,
     get_sequence_length,
     update_consumed_tokens,
+    restore_consumed_tokens,
     )
 
 stimer = StragglerDetector()
@@ -642,6 +643,8 @@ def setup_model_and_optimizer(model_provider_func,
     else:
         args.iteration = 0
         args.num_floating_point_operations_so_far = 0
+
+    restore_consumed_tokens(getattr(args, "consumed_train_tokens", 0))
 
     # get model without FP16 and/or DDP wrappers
     if args.iteration == 0 and len(unwrapped_model) == 1 \
@@ -1217,6 +1220,7 @@ def train(forward_step_func, model, optimizer, opt_param_scheduler,
                      args.micro_batch_size * \
                      get_num_microbatches()
         update_consumed_tokens(batch_size * curr_sequence_length) # update consumed tokens
+        args.consumed_train_tokens = get_consumed_tokens()
         args.consumed_train_samples += batch_size
         num_skipped_samples_in_batch = (get_current_global_batch_size() -
                                         get_current_running_global_batch_size())
