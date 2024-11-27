@@ -17,6 +17,9 @@ import time
 # The earliest we can measure the start time.
 _TRAIN_START_TIME = time.time()
 import torch
+import functools
+from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, ShardingStrategy
+from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
 
 from megatron.core import mpu, tensor_parallel
 from megatron.core.utils import check_param_hashes_across_dp_replicas, get_model_config, StragglerDetector
@@ -26,7 +29,7 @@ from megatron.legacy.model import Float16Module
 from megatron.core.distributed import DistributedDataParallelConfig
 from megatron.core.distributed import DistributedDataParallel as DDP
 from megatron.core.distributed import finalize_model_grads
-from megatron.core.enums import ModelType
+from megatron.core.enums import ModelType, DPStrategy
 from megatron.core.optimizer import get_megatron_optimizer, OptimizerConfig
 from megatron.training.initialize import initialize_megatron
 from megatron.training.initialize import write_args_to_tensorboard
@@ -72,6 +75,7 @@ from megatron.core.sequence_length_scheduler import (
     update_consumed_tokens,
     restore_consumed_tokens,
     )
+from megatron.core.transformer.transformer_layer import TransformerLayer, TransformerLayerSubmodules
 
 stimer = StragglerDetector()
 
@@ -444,7 +448,7 @@ def update_train_iters(args):
     print_rank_0('setting training iterations to {}'.format(args.train_iters))
 
 
-def get_model(model_provider_func, model_type=ModelType.encoder_or_decoder, wrap_with_ddp=True):
+def get_model(model_provider_func, model_type=ModelType.encoder_or_decoder, strategy=DPStrategy.DDP):
     """Build the model."""
     args = get_args()
     args.model_type = model_type
@@ -520,7 +524,7 @@ def get_model(model_provider_func, model_type=ModelType.encoder_or_decoder, wrap
     if args.fp16 or args.bf16:
         model = [Float16Module(model_module, args) for model_module in model]
 
-    if wrap_with_ddp:
+    if strategy == DPStrategy.DDP:
         config = get_model_config(model[0])
         ddp_config = DistributedDataParallelConfig(
             grad_reduce_in_fp32=args.accumulate_allreduce_grads_in_fp32,
@@ -541,6 +545,22 @@ def get_model(model_provider_func, model_type=ModelType.encoder_or_decoder, wrap
         if args.data_parallel_random_init:
             for model_module in model:
                 model_module.broadcast_params()
+    elif strategy == DPStrategy.FSDP:
+        auto_wrap_policy = functools.partial(
+            transformer_auto_wrap_policy,
+            # Transformer layer class to wrap
+            transformer_layer_cls=set([TransformerLayer]),
+        )
+        model = [FSDP(model_chunk,
+                      sharding_strategy=ShardingStrategy.FULL_SHARD,
+                      auto_wrap_policy=auto_wrap_policy,
+                      #  mixed_precision=None,
+                      use_orig_params=True,
+                      process_group=mpu.get_data_parallel_group(),
+                 ) \
+                 for (model_chunk_idx, model_chunk) in enumerate(model)]
+    else:
+        raise ValueError("strategy={strategy is not supported.}")
 
     return model
 
@@ -611,7 +631,7 @@ def setup_model_and_optimizer(model_provider_func,
     timers = get_timers()
     one_logger = get_one_logger()
 
-    model = get_model(model_provider_func, model_type)
+    model = get_model(model_provider_func, model_type, strategy=args.data_parallel_strategy)
     unwrapped_model = unwrap_model(model)
 
     kwargs = {}

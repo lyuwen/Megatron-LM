@@ -20,6 +20,7 @@ from megatron.core.models.retro.utils import (
 from megatron.core.transformer import TransformerConfig
 from megatron.training.activations import squared_relu
 from megatron.training.utils import update_use_dist_ckpt
+from megatron.core.enums import DPStrategy
 
 from megatron.core.datasets.indexed_dataset import set_bin_suffix
 
@@ -1560,6 +1561,9 @@ def _add_distributed_args(parser):
                         help='If set, distributed ranks initialize order is changed '
                         'from tp-dp-pp to tp-pp-dp. Make sure EP and CP aren\'t used '
                         'with this option enabled')
+    group.add_argument('--data-parallel-strategy', type=DPStrategy, default=DPStrategy.DDP,
+                       choices=["DDP", "FSDP"],
+                       help='Data parallel strategy.')
     return parser
 
 

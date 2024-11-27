@@ -8,3 +8,8 @@ class ModelType(enum.Enum):
     encoder_and_decoder = 2
     retro_encoder = 3
     retro_decoder = 4
+
+
+class DPStrategy(enum.StrEnum):
+    FSDP = "FSDP"
+    DDP  = "DDP"
