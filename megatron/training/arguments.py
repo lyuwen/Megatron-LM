@@ -1045,6 +1045,16 @@ def _add_training_args(parser):
                        ' (1024 - 16) / 8 = 126 intervals will increase'
                        'the batch size linearly to 1024. In each interval'
                        'we will use approximately 300000 / 126 = 2380 samples.')
+    group.add_argument('--warmup-seq-length', type=str, default=None,
+                       help='Warmup up sequence length to improve stability.'
+                       'Usage: --warmup-seq-length step0:seq_len0,step1:seq_len1... '
+                       'For example:'
+                       '  --warmup-seq-length 0:2048,100:4096'
+                       'will start the training with sequence length 2048,'
+                       'and then increase the sequence length to 4096 starting at '
+                       'the 100th iteration. '
+                       'NOTE: Sequence length warmup is currently implemented by '
+                       'discarding extra tokens in the sequence.')
     group.add_argument('--decrease-batch-size-if-needed', action='store_true', default=False,
                        help='If set, decrease batch size if microbatch_size * dp_size'
                        'does not divide batch_size. Useful for KSO (Keep Soldiering On)'

@@ -39,6 +39,10 @@ from megatron.core import mpu
 from megatron.core.tensor_parallel import param_is_not_tensor_parallel_duplicate
 from megatron.legacy.model import Float16Module
 from megatron.legacy.model.module import param_is_not_shared
+from megatron.core.sequence_length_scheduler import (
+    get_sequence_length,
+    get_sequence_length_scheduler,
+    )
 
 
 ALL_MODULE_WRAPPER_CLASSNAMES = (DDP, Float16Module)
@@ -307,12 +311,23 @@ def get_batch_on_this_tp_rank(data_iterator):
        if item is not None:
            torch.distributed.broadcast(item, mpu.get_tensor_model_parallel_src_rank(), group=mpu.get_tensor_model_parallel_group())
 
+    full_seq_length = get_sequence_length_scheduler().sequence_length
+    current_seq_length = get_sequence_length()
+
     if mpu.get_tensor_model_parallel_rank() == 0:
 
        if data_iterator is not None:
            data = next(data_iterator)
        else:
            data = None
+
+       # only slice the sequence if the length is smaller, minimize side effects
+       if current_seq_length < full_seq_length:
+           data['tokens'] = data['tokens'][:, :current_seq_length].contiguous()
+           data['labels'] = data['labels'][:, :current_seq_length].contiguous()
+           data['loss_mask'] = data['loss_mask'][:, :current_seq_length].contiguous()
+           data['attention_mask'] = data['attention_mask'][:, :, :current_seq_length, :current_seq_length].contiguous()
+           data['position_ids'] = data['position_ids'][:, :current_seq_length].contiguous()
 
        batch = {
            'tokens': data["tokens"].cuda(non_blocking = True),
@@ -341,16 +356,27 @@ def get_batch_on_this_tp_rank(data_iterator):
 
     else:
 
-       tokens=torch.empty((args.micro_batch_size,args.seq_length), dtype = torch.int64 , device = torch.cuda.current_device())
-       labels=torch.empty((args.micro_batch_size,args.seq_length), dtype = torch.int64 , device = torch.cuda.current_device())
-       loss_mask=torch.empty((args.micro_batch_size,args.seq_length), dtype = torch.float32 , device = torch.cuda.current_device())
+       tokens=torch.empty((args.micro_batch_size,current_seq_length), dtype = torch.int64 , device = torch.cuda.current_device())
+       labels=torch.empty((args.micro_batch_size,current_seq_length), dtype = torch.int64 , device = torch.cuda.current_device())
+       loss_mask=torch.empty((args.micro_batch_size,current_seq_length), dtype = torch.float32 , device = torch.cuda.current_device())
        if args.create_attention_mask_in_dataloader:
            attention_mask=torch.empty(
-                (args.micro_batch_size,1,args.seq_length,args.seq_length), dtype = torch.bool , device = torch.cuda.current_device()
+                (args.micro_batch_size,1,current_seq_length,current_seq_length), dtype = torch.bool , device = torch.cuda.current_device()
             )
        else:
            attention_mask=None
-       position_ids=torch.empty((args.micro_batch_size,args.seq_length), dtype = torch.int64 , device = torch.cuda.current_device())
+       position_ids=torch.empty((args.micro_batch_size,current_seq_length), dtype = torch.int64 , device = torch.cuda.current_device())
+
+       # tokens=torch.empty((args.micro_batch_size,args.seq_length), dtype = torch.int64 , device = torch.cuda.current_device())
+       # labels=torch.empty((args.micro_batch_size,args.seq_length), dtype = torch.int64 , device = torch.cuda.current_device())
+       # loss_mask=torch.empty((args.micro_batch_size,args.seq_length), dtype = torch.float32 , device = torch.cuda.current_device())
+       # if args.create_attention_mask_in_dataloader:
+       #     attention_mask=torch.empty(
+       #          (args.micro_batch_size,1,args.seq_length,args.seq_length), dtype = torch.bool , device = torch.cuda.current_device()
+       #      )
+       # else:
+       #     attention_mask=None
+       # position_ids=torch.empty((args.micro_batch_size,args.seq_length), dtype = torch.int64 , device = torch.cuda.current_device())
 
        if args.pipeline_model_parallel_size == 1:
            _broadcast(tokens)

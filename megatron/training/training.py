@@ -64,6 +64,15 @@ from . import one_logger_utils
 
 from . import ft_integration
 
+from megatron.core.sequence_length_scheduler import (
+    set_sequence_length_scheduler,
+    set_iteration as set_seqlen_iteration,
+    get_consumed_tokens,
+    get_sequence_length,
+    update_consumed_tokens,
+    restore_consumed_tokens,
+    )
+
 stimer = StragglerDetector()
 
 def print_datetime(string):
@@ -300,6 +309,10 @@ def pretrain(
     timers('train/valid/test-data-iterators-setup').stop()
     print_datetime('after dataloaders are built')
     app_metrics['app_build_dataiters_finish_time'] = one_logger_utils.get_timestamp_in_ms()
+
+    # Setup sequence length warmup
+    set_sequence_length_scheduler(args.seq_length, args.warmup_seq_length)
+    print_rank_0('Set up sequence length scheduler.')
 
     # Track if training is enabled. Can only be done once args.do_train is assigned after dataloader is built.
     one_logger_utils.track_config_flags(args.train_iters, args.skip_train, args.do_train,
@@ -631,6 +644,8 @@ def setup_model_and_optimizer(model_provider_func,
         args.iteration = 0
         args.num_floating_point_operations_so_far = 0
 
+    restore_consumed_tokens(getattr(args, "consumed_train_tokens", 0))
+
     # get model without FP16 and/or DDP wrappers
     if args.iteration == 0 and len(unwrapped_model) == 1 \
         and hasattr(unwrapped_model[0], 'init_state_dict_from_bert'):
@@ -678,7 +693,8 @@ def train_step(forward_step_func, data_iterator,
         data_iterator=data_iterator,
         model=model,
         num_microbatches=get_num_microbatches(),
-        seq_length=args.seq_length,
+        seq_length=get_sequence_length(),
+        # seq_length=args.seq_length,
         micro_batch_size=args.micro_batch_size,
         decoder_seq_length=args.decoder_seq_length,
         forward_only=False)
@@ -919,6 +935,16 @@ def training_log(loss_dict, total_loss_dict, learning_rate, decoupled_learning_r
             iteration, args.train_iters)
         log_string += ' consumed samples: {:12d} |'.format(
             args.consumed_train_samples)
+        # Log consumed tokens
+        log_string += ' consumed tokens: {:15,d} |'.format(
+            get_consumed_tokens())
+        if writer:
+            writer.add_scalar('consumed-tokens',
+                              get_consumed_tokens(), iteration)
+        if wandb_writer:
+            wandb_writer.log({'consumed-tokens': get_consumed_tokens()},
+                             iteration)
+        # End of Log consumed tokens
         if args.skipped_train_samples > 0:
             log_string += ' skipped samples: {:12d} |'.format(
                 args.skipped_train_samples)
@@ -1179,6 +1205,8 @@ def train(forward_step_func, model, optimizer, opt_param_scheduler,
         num_microbatches = get_num_microbatches()
         update_num_microbatches(args.consumed_train_samples, consistency_check=True, verbose=True)
 
+        set_seqlen_iteration(iteration)
+
         args.curr_iteration = iteration
         loss_dict, skipped_iter, grad_norm, num_zeros_in_grad = \
             train_step(forward_step_func,
@@ -1187,10 +1215,13 @@ def train(forward_step_func, model, optimizer, opt_param_scheduler,
                        optimizer,
                        opt_param_scheduler,
                        config)
+        curr_sequence_length = get_sequence_length()
         iteration += 1
         batch_size = mpu.get_data_parallel_world_size() * \
                      args.micro_batch_size * \
                      get_num_microbatches()
+        update_consumed_tokens(batch_size * curr_sequence_length) # update consumed tokens
+        args.consumed_train_tokens = get_consumed_tokens()
         args.consumed_train_samples += batch_size
         num_skipped_samples_in_batch = (get_current_global_batch_size() -
                                         get_current_running_global_batch_size())
