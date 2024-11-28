@@ -10,6 +10,12 @@ class ModelType(enum.Enum):
     retro_decoder = 4
 
 
-class DPStrategy(enum.StrEnum):
+class DPStrategy(enum.Enum):
     FSDP = "FSDP"
     DDP  = "DDP"
+
+
+    def __eq__(self, other):
+        if isinstance(other, str):
+            return self.name == other
+        return super().__eq__(other)
