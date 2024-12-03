@@ -187,7 +187,7 @@ class BlendedMegatronDatasetBuilder(object):
                     for i, dataset_and_size in enumerate(zip(dataset_indices, sizes)):
                         if len(dataset.datasets[dataset_and_size[0]]) < dataset_and_size[1]:
                             raise IndexError(
-                                f"The {dataset.split.name} blend oversamples (N = {dataset_and_size[1]}) {type(dataset_and_size[0]).__name__} {i} (len = {len(dataset_and_size[0])}). "
+                                f"The {dataset.split.name} blend oversamples (N = {dataset_and_size[1]}) {type(dataset_and_size[0]).__name__} {i} (len = {dataset_and_size[0]}). "
                                 f"Set renormalize_blend_weights to True and re-run. File an issue if the problem is not resolved."
                             )
 
