@@ -97,7 +97,7 @@ class BlendedDataset(torch.utils.data.Dataset):
 
         self.built_anew_on_cache_miss = False
 
-        self.async_shuffle = async_shuffle
+        self.async_shuffle = async_shuffle or None
         self.dataset_index, self.dataset_sample_index, self.dataset_shuffle_index = self._build_indices()
 
     def __len__(self) -> int:
