@@ -1,34 +1,24 @@
 # Copyright (c) 2024, NVIDIA CORPORATION. All rights reserved.
-from megatron.core.fusions.fused_bias_dropout import get_bias_dropout_add
-from megatron.core.models.gpt.gpt_layer_specs import _get_mlp_module_spec
-from megatron.core.tensor_parallel.layers import ColumnParallelLinear, RowParallelLinear
-from megatron.core.transformer.attention import (
-    CrossAttention,
-    CrossAttentionSubmodules,
-    SelfAttention,
-    SelfAttentionSubmodules,
-)
-from megatron.core.transformer.custom_layers.transformer_engine import (
-    TEColumnParallelLinear,
+from typing import Optional
+
+from megatron.core.extensions.transformer_engine import (
     TEDotProductAttention,
     TELayerNormColumnParallelLinear,
     TENorm,
     TERowParallelLinear,
 )
+from megatron.core.fusions.fused_bias_dropout import get_bias_dropout_add
+from megatron.core.models.gpt.gpt_layer_specs import get_mlp_module_spec
+from megatron.core.tensor_parallel.layers import ColumnParallelLinear, RowParallelLinear
+from megatron.core.transformer.attention import SelfAttention, SelfAttentionSubmodules
 from megatron.core.transformer.dot_product_attention import DotProductAttention
 from megatron.core.transformer.enums import AttnMaskType
 from megatron.core.transformer.identity_op import IdentityOp
-from megatron.core.transformer.mlp import MLP, MLPSubmodules
 from megatron.core.transformer.spec_utils import ModuleSpec
-from megatron.core.transformer.transformer_block import (
-    TransformerBlockSubmodules,
-    get_num_layers_to_build,
-)
-from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core.transformer.transformer_layer import TransformerLayer, TransformerLayerSubmodules
 
 try:
-    import apex
+    import apex  # pylint: disable=unused-import
 
     from megatron.core.fusions.fused_layer_norm import FusedLayerNorm
 
@@ -37,17 +27,17 @@ try:
 except ImportError:
     import warnings
 
-    from megatron.core.transformer.torch_layer_norm import WrappedTorchLayerNorm
+    from megatron.core.transformer.torch_norm import WrappedTorchNorm
 
-    warnings.warn(f'Apex is not installed. Falling back to Torch LayerNorm')
-    LNImpl = WrappedTorchLayerNorm
+    warnings.warn('Apex is not installed. Falling back to Torch Norm')
+    LNImpl = WrappedTorchNorm
 
 
 def decoder_model_with_transformer_engine_default_spec(
-    num_experts: int = None, moe_grouped_gemm: bool = False, qk_layernorm: bool = False
+    num_experts: Optional[int] = None, moe_grouped_gemm: bool = False, qk_layernorm: bool = False
 ) -> ModuleSpec:
     """LLava decoder TE spec (uses Transformer Engine components)."""
-    mlp = _get_mlp_module_spec(
+    mlp = get_mlp_module_spec(
         use_te=True, num_experts=num_experts, moe_grouped_gemm=moe_grouped_gemm
     )
     return ModuleSpec(
@@ -72,10 +62,10 @@ def decoder_model_with_transformer_engine_default_spec(
 
 
 def decoder_model_with_local_default_spec(
-    num_experts: int = None, moe_grouped_gemm: bool = False, qk_layernorm: bool = False
+    num_experts: Optional[int] = None, moe_grouped_gemm: bool = False, qk_layernorm: bool = False
 ) -> ModuleSpec:
     """LLava decoder local spec."""
-    mlp = _get_mlp_module_spec(
+    mlp = get_mlp_module_spec(
         use_te=False, num_experts=num_experts, moe_grouped_gemm=moe_grouped_gemm
     )
     return ModuleSpec(

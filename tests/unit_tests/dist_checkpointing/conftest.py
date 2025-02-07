@@ -1,11 +1,18 @@
-from pathlib import Path
 from unittest import mock
 
 import pytest
 
 from megatron.core.dist_checkpointing.strategies.base import StrategyAction, get_default_strategy
-from tests.unit_tests.dist_checkpointing import TempNamedDir
-from tests.unit_tests.test_utilities import Utils
+
+
+def pytest_sessionfinish(session, exitstatus):
+    if exitstatus == 5:
+        session.exitstatus = 0
+
+
+@pytest.fixture(scope="class")
+def tmp_dir_per_class(tmp_path_factory):
+    return tmp_path_factory.mktemp("data")
 
 
 @pytest.fixture(scope='session', autouse=True)

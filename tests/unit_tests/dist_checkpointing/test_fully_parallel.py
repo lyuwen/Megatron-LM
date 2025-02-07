@@ -1,8 +1,11 @@
 # Copyright (c) 2023, NVIDIA CORPORATION. All rights reserved.
 from pathlib import Path
+from typing import List, Tuple
+from unittest import mock
 
 import pytest
 import torch
+import torch.distributed
 
 from megatron.core import parallel_state
 from megatron.core.dist_checkpointing import ShardedTensor
@@ -11,7 +14,13 @@ from megatron.core.dist_checkpointing.dict_utils import (
     map_reduce,
     nested_values,
 )
-from megatron.core.dist_checkpointing.mapping import is_main_replica
+from megatron.core.dist_checkpointing.exchange_utils import _get_empty_tensor_for_exchange
+from megatron.core.dist_checkpointing.mapping import (
+    ShardedObject,
+    ShardedStateDict,
+    ShardedTensorFactory,
+    is_main_replica,
+)
 from megatron.core.dist_checkpointing.strategies.base import (
     LoadShardedStrategy,
     SaveShardedStrategy,
@@ -31,11 +40,9 @@ class MockSaveStrategy(SaveShardedStrategy):
         self.save_keys = set()
 
     def save(self, sharded_state_dict, ckpt_dir):
-        self.save_keys = {
-            sh_ten.key
-            for sh_ten in nested_values(sharded_state_dict)
-            if is_main_replica(sh_ten.replica_id)
-        }
+        for sh_ten in nested_values(sharded_state_dict):
+            if is_main_replica(sh_ten.replica_id):
+                self.save_keys.add(sh_ten.key)
 
 
 class MockLoadStrategy(LoadShardedStrategy):
@@ -45,17 +52,19 @@ class MockLoadStrategy(LoadShardedStrategy):
         self.load_keys = set()
 
     def load(self, sharded_state_dict, ckpt_dir):
-        self.load_keys = {
-            sh_ten.key
-            for sh_ten in nested_values(sharded_state_dict)
-            if is_main_replica(sh_ten.replica_id)
-        }
+        for sh_ten in nested_values(sharded_state_dict):
+            if is_main_replica(sh_ten.replica_id):
+                self.load_keys.add(sh_ten.key)
 
         def load_rand(x):
-            assert isinstance(x, ShardedTensor)
-            x.init_data(self.device)
-            x.data.fill_(Utils.rank)
-            return x.data
+            assert isinstance(x, ShardedTensor) or isinstance(x, ShardedObject)
+            if isinstance(x, ShardedTensor):
+                x.init_data(self.device)
+                x.data.fill_(Utils.rank)
+                return x.data
+            else:
+                x.data = [Utils.rank]
+                return x.data
 
         return dict_list_map_outplace(load_rand, sharded_state_dict)
 
@@ -277,8 +286,9 @@ class TestFullyParallelSaveAndLoad:
 
         assert loaded_state_dict.keys() == state_dict.keys()
 
-    @pytest.mark.skip(reason="Tests are flaky and need to be debugged")
     @pytest.mark.parametrize('state_dict_device', ['cpu', 'cuda'])
+    @pytest.mark.flaky
+    @pytest.mark.flaky_in_dev
     def test_memory_usage(self, state_dict_device, tmp_path_dist_ckpt):
         Utils.initialize_model_parallel(2, 1)
 
@@ -287,13 +297,14 @@ class TestFullyParallelSaveAndLoad:
 
         mem_alloc = []
 
-        class ParallelLoadWithMemUsage(FullyParallelLoadStrategyWrapper):
-            def _get_empty_tensor_for_exchange(self, *args, **kwargs) -> torch.Tensor:
-                ret = super()._get_empty_tensor_for_exchange(*args, **kwargs)
-                mem_alloc.append(torch.cuda.memory_allocated())
-                return ret
+        real_get_empty_tensor_for_exchange = _get_empty_tensor_for_exchange
 
-        load_strategy = ParallelLoadWithMemUsage(mock_strategy)
+        def mock_get_empty_tensor_for_exchange(*args, **kwargs) -> torch.Tensor:
+            ret = real_get_empty_tensor_for_exchange(*args, **kwargs)
+            mem_alloc.append(torch.cuda.memory_allocated())
+            return ret
+
+        load_strategy = FullyParallelLoadStrategyWrapper(mock_strategy)
         torch.distributed.barrier()
 
         # Each tensor is 4MB, 40MB in total.
@@ -309,7 +320,10 @@ class TestFullyParallelSaveAndLoad:
 
         mem_alloc_start = torch.cuda.memory_allocated()
 
-        with TempNamedDir(tmp_path_dist_ckpt / 'mock_dir') as ckpt_dir_A:
+        with mock.patch(
+            'megatron.core.dist_checkpointing.exchange_utils._get_empty_tensor_for_exchange',
+            new=mock_get_empty_tensor_for_exchange,
+        ), TempNamedDir(tmp_path_dist_ckpt / 'mock_dir') as ckpt_dir_A:
             _ = load_strategy.load(sharded_state_dict, ckpt_dir_A)
 
         # Each rank is expected to do 7 * 10 empty allocations
@@ -321,3 +335,70 @@ class TestFullyParallelSaveAndLoad:
         )
 
         Utils.destroy_model_parallel()
+
+    def test_only_necessary_exchanges_performed_during_load(self, tmp_path_dist_ckpt):
+        Utils.initialize_model_parallel(2, 1)
+
+        # State dict with 2 expected exchanges
+        sharded_state_dict_baseline_two_exchanges = {
+            'needed_by_all_A': ShardedTensor.from_rank_offsets(
+                'needed_by_all_A',
+                torch.ones(4, dtype=torch.float, device='cuda'),
+                replica_id=Utils.rank,
+            ),
+            'needed_by_all_B': ShardedTensor.from_rank_offsets(
+                'needed_by_all_B',
+                torch.ones(4, dtype=torch.float, device='cuda'),
+                replica_id=Utils.rank,
+            ),
+        }
+        # State dict with 1 expected exchange
+        sharded_state_dict_baseline_one_exchange = {
+            'needed_by_all': sharded_state_dict_baseline_two_exchanges['needed_by_all_A']
+        }
+        # State dict with 1 expected exchanges even though there are 2 tensors to load (1 is unique for each rank)
+        sharded_state_dict_test_one_exchange = sharded_state_dict_baseline_one_exchange.copy()
+        sharded_state_dict_test_one_exchange['unique'] = ShardedTensor.from_rank_offsets(
+            'unique',
+            torch.ones(4, dtype=torch.float, device='cuda'),
+            (0, Utils.rank, Utils.world_size),
+        )
+
+        expected_call_counts: List[Tuple[ShardedStateDict, int]] = [
+            (sharded_state_dict_baseline_one_exchange, 1),
+            (sharded_state_dict_baseline_two_exchanges, 2),
+            (sharded_state_dict_test_one_exchange, 1),
+        ]
+
+        mock_strategy = MockLoadStrategy()
+        with TempNamedDir(tmp_path_dist_ckpt / 'mock_dir') as ckpt_dir:
+            for sharded_state_dict, expected_count in expected_call_counts:
+                load_strategy = FullyParallelLoadStrategyWrapper(
+                    mock_strategy, None, do_cache_distribution=True, exchange_algo='broadcast'
+                )
+                with mock.patch(
+                    'megatron.core.dist_checkpointing.strategies.fully_parallel.torch.distributed.broadcast'
+                ) as broadcast_mock:
+                    _ = load_strategy.load(sharded_state_dict, ckpt_dir)
+                    assert broadcast_mock.call_count == expected_count
+
+        Utils.destroy_model_parallel()
+
+    def test_broadcast_sharded_objects(self, tmp_path_dist_ckpt):
+
+        sharded_state_dict = {
+            f'Obj_{i}': ShardedObject(f'Obj_{i}', None, (1,), (0,), replica_id=abs(Utils.rank - i))
+            for i in range(Utils.world_size)
+        }
+
+        with TempNamedDir(tmp_path_dist_ckpt / 'test_broadcast_sharded_objects') as ckpt_dir:
+            load_strategy = MockLoadStrategy()
+            load_strategy = FullyParallelLoadStrategyWrapper(load_strategy, None)
+
+            loaded_state_dict = load_strategy.load(sharded_state_dict, ckpt_dir)
+
+            # each rank is supposed to only load obj_rank because of how replica_id is set
+            assert load_strategy.base_strategy.load_keys == set({f'Obj_{Utils.rank}'})
+
+            # since each rank only loaded their Obj they were broadcasted
+            assert set(sharded_state_dict.keys()) == set(loaded_state_dict.keys())

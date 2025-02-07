@@ -20,8 +20,8 @@ MODEL_ARGS:
   --train-iters: 100
   --timing-log-level: 2
   --lr-decay-iters: 990000
-  --save: ${CHECKPOINT_PATH}
-  --load: ${CHECKPOINT_PATH}
+  --save: ${CHECKPOINT_SAVE_PATH}
+  --load: ${CHECKPOINT_LOAD_PATH}
   --data-path: ${DATA_PATH}/my-bert_00_text_sentence
   --vocab-file: ${DATA_PATH}/vocab.txt
   --split: 949,50,1
@@ -37,13 +37,14 @@ MODEL_ARGS:
   --pipeline-model-parallel-size: 4
   --num-layers-per-virtual-pipeline-stage: 2
   --use-legacy-models: true
-  --transformer-impl: local  
-  --deterministic-mode: true  
-  --use-checkpoint-args: true  
+  --transformer-impl: local
+  --deterministic-mode: true
+  --use-checkpoint-args: true
   --use-checkpoint-opt_param-scheduler: true
   --no-gradient-accumulation-fusion: true
   --data-cache-path: ${DATA_CACHE_PATH}
-  --fp16: true  
+  --fp16: true
   --apply-query-key-layer-scaling: true
   --ckpt-format: torch
+  --attention-backend: unfused
 TEST_TYPE: ckpt-resume

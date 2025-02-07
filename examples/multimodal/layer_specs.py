@@ -12,11 +12,11 @@ from megatron.core.transformer.spec_utils import ModuleSpec
 from megatron.core.transformer.transformer_layer import TransformerLayer, TransformerLayerSubmodules
 
 try:
-    from megatron.core.transformer.custom_layers.transformer_engine import (
+    from megatron.core.extensions.transformer_engine import (
+        TEColumnParallelLinear,
         TEDotProductAttention,
-        TEColumnParallelLinear,
         TELayerNormColumnParallelLinear,
-        TEColumnParallelLinear,
+        TENorm,
         TERowParallelLinear,
     )
 
@@ -26,33 +26,53 @@ except ImportError:
 
 try:
     import apex
+
     from megatron.core.fusions.fused_layer_norm import FusedLayerNorm
+    from megatron.core.transformer.torch_norm import WrappedTorchNorm
 
     HAVE_APEX = True
     LNImpl = FusedLayerNorm
 except ImportError:
-    from megatron.core.transformer.torch_layer_norm import WrappedTorchLayerNorm
-
     import warnings
-    warnings.warn(f'Apex is not installed. Falling back to Torch LayerNorm')
-    LNImpl = WrappedTorchLayerNorm
+
+    from megatron.core.transformer.torch_norm import WrappedTorchNorm
+
+    warnings.warn(f'Apex is not installed. Falling back to Torch Norm')
+    LNImpl = WrappedTorchNorm
 
 
-class TorchLayerNormWrapper(torch.nn.LayerNorm):
-    def __init__(self, config, hidden_size, eps):
-        super().__init__(hidden_size, eps)
+def get_layer_spec(is_vit, normalization) -> ModuleSpec:
+    attn_mask_type = AttnMaskType.no_mask if is_vit else AttnMaskType.causal
+    if normalization == "LayerNorm":
+        norm = LNImpl
+    elif normalization == "RMSNorm":
+        if HAVE_TE:
+            norm = TENorm
+        else:
+            version = torch.__version__.split('.')
+            version_geq_2_4 = (
+                int(TORCH_VERSION[0]) > 2
+                or (
+                    int(TORCH_VERSION[0]) == 2
+                    and int(TORCH_VERSION[1]) >= 4
+                )
+            )
+            assert version_geq_2_4, "Torch version >= 2.4.0 is required for RMSNorm"
+            if HAVE_APEX:
+                warnings.warn(f'Apex does not support RMSNorm. Falling back to Torch Norm')
+            norm = WrappedTorchNorm
+    else:
+        raise RuntimeError("unknown normalization", normalization)
 
-
-def get_layer_spec(is_vit=False) -> ModuleSpec:
-    mlp = get_mlp_module_spec(use_te=False)
+    mlp = get_mlp_module_spec(use_te=False)  # doesn't include norm.
 
     return ModuleSpec(
         module=TransformerLayer,
         submodules=TransformerLayerSubmodules(
-            input_layernorm=LNImpl if not is_vit else TorchLayerNormWrapper,
+            input_layernorm=norm,
             self_attention=ModuleSpec(
                 module=SelfAttention,
-                params={"attn_mask_type": AttnMaskType.causal},
+                params={"attn_mask_type": attn_mask_type},
                 submodules=SelfAttentionSubmodules(
                     linear_qkv=ColumnParallelLinear,
                     core_attention=DotProductAttention,
@@ -62,7 +82,7 @@ def get_layer_spec(is_vit=False) -> ModuleSpec:
                 ),
             ),
             self_attn_bda=get_bias_dropout_add,
-            pre_mlp_layernorm=LNImpl if not is_vit else TorchLayerNormWrapper,
+            pre_mlp_layernorm=norm,
             mlp=mlp,
             mlp_bda=get_bias_dropout_add,
         ),
@@ -72,7 +92,7 @@ def get_layer_spec(is_vit=False) -> ModuleSpec:
 def get_layer_spec_te(is_vit=False) -> ModuleSpec:
     attn_mask_type = AttnMaskType.no_mask if is_vit else AttnMaskType.causal
 
-    mlp = get_mlp_module_spec_te()
+    mlp = get_norm_mlp_module_spec_te()
     return ModuleSpec(
         module=TransformerLayer,
         submodules=TransformerLayerSubmodules(
@@ -94,6 +114,7 @@ def get_layer_spec_te(is_vit=False) -> ModuleSpec:
         ),
     )
 
+
 def get_mlp_module_spec(use_te: bool = True) -> ModuleSpec:
     # Dense MLP w/ or w/o TE modules.
     return ModuleSpec(
@@ -105,11 +126,10 @@ def get_mlp_module_spec(use_te: bool = True) -> ModuleSpec:
     )
 
 
-def get_mlp_module_spec_te() -> ModuleSpec:
+def get_norm_mlp_module_spec_te() -> ModuleSpec:
     return ModuleSpec(
         module=MLP,
         submodules=MLPSubmodules(
-            linear_fc1=TELayerNormColumnParallelLinear,
-            linear_fc2=TERowParallelLinear,
+            linear_fc1=TELayerNormColumnParallelLinear, linear_fc2=TERowParallelLinear
         ),
     )

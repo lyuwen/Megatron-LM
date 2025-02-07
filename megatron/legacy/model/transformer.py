@@ -1,33 +1,46 @@
 # Copyright (c) 2024, NVIDIA CORPORATION. All rights reserved.
 
 """Transformer."""
-from contextlib import nullcontext
-import os
 import math
+import os
+from contextlib import nullcontext
+from typing import Optional
+
 import numpy as np
 import torch
 import torch.nn.functional as F
-from typing import Optional
 
 from megatron import core
-from megatron.training import get_timers, get_args
-from .module import MegatronModule
 from megatron.core import mpu, tensor_parallel
 from megatron.core.enums import ModelType
 from megatron.legacy.model.enums import AttnMaskType, LayerType, AttnType
 from megatron.legacy.model.fused_softmax import FusedScaleMaskSoftmax
 from megatron.legacy.model.fused_bias_gelu import bias_gelu_impl
-from megatron.core.models.common.embeddings.rotary_pos_embedding import RotaryEmbedding, apply_rotary_pos_emb
-from megatron.core.num_microbatches_calculator import get_num_microbatches
-from megatron.legacy.model.utils import attention_mask_func, openai_gelu, erf_gelu, get_norm
-from megatron.core.tensor_parallel import (
-    gather_from_sequence_parallel_region_to_moe,
-    reduce_scatter_to_sequence_parallel_region_from_moe,
-    get_cuda_rng_tracker,
-    get_data_parallel_rng_tracker_name
-)
-from megatron.core.parallel_state import get_tensor_model_parallel_group, get_tensor_and_expert_parallel_group
+from megatron.core.models.common.embeddings import apply_rotary_pos_emb
 from megatron.core.jit import jit_fuser
+from megatron.core.num_microbatches_calculator import get_num_microbatches
+from megatron.core.parallel_state import (
+    get_expert_tensor_and_model_parallel_group,
+    get_tensor_model_parallel_group,
+)
+from megatron.core.tensor_parallel import (
+    gather_from_sequence_parallel_region,
+    reduce_scatter_to_sequence_parallel_region,
+    get_cuda_rng_tracker,
+    get_data_parallel_rng_tracker_name,
+)
+from megatron.legacy.model.enums import AttnMaskType, AttnType, LayerType
+from megatron.legacy.model.fused_bias_gelu import bias_gelu_impl
+from megatron.legacy.model.fused_softmax import FusedScaleMaskSoftmax
+from megatron.legacy.model.utils import (
+    attention_mask_func,
+    erf_gelu,
+    get_norm,
+    openai_gelu,
+)
+from megatron.training import get_args, get_timers
+
+from .module import MegatronModule
 
 try:
     from einops import rearrange
@@ -38,7 +51,9 @@ try:
     from flash_attn.flash_attn_interface import flash_attn_unpadded_func
 except ImportError:
     try:
-        from flash_attn.flash_attn_interface import flash_attn_varlen_func as flash_attn_unpadded_func
+        from flash_attn.flash_attn_interface import (
+            flash_attn_varlen_func as flash_attn_unpadded_func,
+        )
     except ImportError:
         flash_attn_unpadded_func = None
 
@@ -206,10 +221,11 @@ class SwitchMLP(MegatronModule):
         for i in range(self.num_local_experts):
             self.local_experts.append(ParallelMLP(config, is_expert=True))
 
+        self.tp_ep_group = get_expert_tensor_and_model_parallel_group()
+
     def gather_indices(self, local_indices):
         """ Gather tensors and concatinate along the first dimension."""
-        group = get_tensor_and_expert_parallel_group()
-        world_size = torch.distributed.get_world_size(group=group)
+        world_size = torch.distributed.get_world_size(group=self.tp_ep_group)
         # Bypass the function if we are using only 1 GPU.
         if world_size == 1:
             return local_indices
@@ -221,7 +237,7 @@ class SwitchMLP(MegatronModule):
         output = torch.empty(dim_size, dtype=local_indices.dtype,
                              device=torch.cuda.current_device())
         torch.distributed._all_gather_base(
-            output, local_indices.contiguous(), group=group
+            output, local_indices.contiguous(), group=self.tp_ep_group
         )
         return output
 
@@ -254,7 +270,7 @@ class SwitchMLP(MegatronModule):
         # Each vector could be routed differently
         if self.sequence_parallel or (self.expert_parallel_size > 1):
             global_hidden_states = \
-                gather_from_sequence_parallel_region_to_moe(hidden_states)
+                gather_from_sequence_parallel_region(hidden_states, group=self.tp_ep_group)
             global_indices = self.gather_indices(max_ind)
         else:
             global_hidden_states = hidden_states
@@ -276,10 +292,10 @@ class SwitchMLP(MegatronModule):
 
         if self.sequence_parallel or (self.expert_parallel_size > 1):
             output_total = \
-                reduce_scatter_to_sequence_parallel_region_from_moe(output_total)
+                reduce_scatter_to_sequence_parallel_region(output_total, group=self.tp_ep_group)
             if self.add_bias:
                 output_bias_total = \
-                    reduce_scatter_to_sequence_parallel_region_from_moe(output_bias_total)
+                    reduce_scatter_to_sequence_parallel_region(output_bias_total, group=self.tp_ep_group)
 
                 # bias is duplicated across tensor parallelism ranks;
                 # reduce scatter reduces bias across tensor parallel_ranks
@@ -1284,7 +1300,7 @@ class NoopTransformerLayer(MegatronModule):
     """A single 'no-op' transformer layer.
 
     The sole purpose of this layer is for when a standalone embedding layer
-    is used (i.e., args.standalone_embedding_stage == True). In this case,
+    is used (i.e., args.account_for_embedding_in_pipeline_split == True). In this case,
     zero transformer layers are assigned when pipeline rank == 0. Additionally,
     when virtual pipeline rank >= 1, zero total model parameters are created
     (virtual rank 0 contains the input embedding). This results in the model's
@@ -1323,7 +1339,7 @@ def _get_num_layers(args, model_type, is_decoder=False):
         # or no layers at all (virtual pp rank >= 1).
         num_layers = (
             0
-            if args.standalone_embedding_stage
+            if args.account_for_embedding_in_pipeline_split
             and mpu.get_pipeline_model_parallel_rank() == 0 else
             args.num_layers // args.transformer_pipeline_model_parallel_size
         )
@@ -1392,20 +1408,16 @@ class ParallelTransformer(MegatronModule):
         if self.transformer_impl == 'transformer_engine':
             global transformer_engine
             import transformer_engine
-            from importlib.metadata import version
-            from pkg_resources import packaging
 
-            te_version = packaging.version.Version(version("transformer-engine"))
-            if te_version >= packaging.version.Version("0.8.0"):
+            if core.utils.is_te_min_version("0.8.0"):
                 self.transformer_engine_v_0_8 = True
-            if te_version >= packaging.version.Version("0.10.0"):
+            if core.utils.is_te_min_version("0.10.0"):
                 self.transformer_engine_v_0_10 = True
-            if te_version >= packaging.version.Version("0.11.0"):
+            if core.utils.is_te_min_version("0.11.0"):
                 self.transformer_engine_v_0_11 = True
 
-            del version, packaging
-
-            assert not args.squared_relu, "TransformerEngine does not support squared relu activation."
+            assert not args.squared_relu, ("TransformerEngine does not support squared "
+                                           "relu activation.")
 
         self.use_fp8 = args.fp8 is not None
         self.fp8_recipe = None
@@ -1413,7 +1425,7 @@ class ParallelTransformer(MegatronModule):
         if self.use_fp8:
             assert args.transformer_impl == 'transformer_engine', \
                 'transformer-engine required for fp8 training and inference'
-            self.fp8_group = mpu.get_amax_reduction_group()
+            self.fp8_group = mpu.get_amax_reduction_group(tp_only_amax_red=config.tp_only_amax_red)
             if args.fp8 == "e4m3":
                 fp8_format = transformer_engine.common.recipe.Format.E4M3
             elif args.fp8 == "hybrid":
@@ -1544,7 +1556,7 @@ class ParallelTransformer(MegatronModule):
 
         if self.num_layers == 0:
             # When a standalone embedding stage is used (e.g.,
-            # args.standalone_embedding_stage == True), virtual pipeline ranks
+            # args.account_for_embedding_in_pipeline_split == True), virtual pipeline ranks
             # on pipeline rank 0 will have zero transformer layers assigned to
             # them. This results in the model's input and output tensors to be
             # the same, which will cause failure for certain output tensor

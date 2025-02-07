@@ -1,6 +1,6 @@
 # Megatron Core MoE Key Features
 
-Megatron-Core offers rich parallelism mappings, combining Expert Parallelism with tensor, data, sequence, and pipeline parallelism. This boosts Mixtral 8X7B bf16 training to achieve **438 TFLOPS** as of MCore v0.8.
+Megatron-Core offers rich parallelism mappings, combining Expert Parallelism with tensor, data, sequence, and pipeline parallelism. This boosts Mixtral 8X7B bf16 training to achieve **468 TFLOPS** as of MCore v0.9.
 
 
 ### Parallelism
@@ -19,12 +19,14 @@ Megatron-Core offers rich parallelism mappings, combining Expert Parallelism wit
 - Load Balancing algorithms:
     - Sinkhorn (S-BASE)
     - Aux loss / Load balancing loss
+    - Aux-loss-free load balancing strategy
 
 ### Performance Optimizations
 - GroupedGEMM when num local experts > 1
     - Supported dtype: bf16
     - Performance improvements for larger MoE models
 - Enable `--tp-comm-overlap` for MoE
+- FP8 training support
 
 ### Token Dispatch Mechanism
 - Dropless / No token drop
@@ -34,11 +36,15 @@ Megatron-Core offers rich parallelism mappings, combining Expert Parallelism wit
 - Checkpoint converter for Mixtral models, see the [example](https://github.com/NVIDIA/Megatron-LM/tree/main/examples/mixtral) for details.
 - Distributed checkpoining
 - Per-layer logging
+- Upcycling Support
+- Granular upcycling
 
 ## Upcoming features
-- Token permutation / unpermutation fusion
-- Fused Sinkhorn Kernel
-- FP8 training support
+- New Parallelism for Large-scale MoE training
+- FP8 support for GroupedGEMM
+- Token permutation / Unpermutation fusion
+- TopK Router Fusion
+- MoE Layer Frequency
 
 # User Guide
 
@@ -48,19 +54,30 @@ Megatron-Core offers rich parallelism mappings, combining Expert Parallelism wit
 | --- | --- |
 | --num-experts | Number of Experts in MoE (None means no MoE) |
 | --expert-model-parallel-size | Degree of expert model parallelism. Default is 1. |
+| --moe-ffn-hidden-size | MoE Feed-Forward Network hidden size. Default is None. |
+| --expert-tensor-parallel-size | Degree of tensor model parallelism of expert layer. Default is same to --tensor-model-parallel-size. |
+| --moe-layer-freq | Frequency between MoE layers and Dense layers. Accepts either: 1) An integer N for 1:N ratio (one expert layer for every N-1 dense layers), 2) A string "N" for the same ratio, or 3) A string with Python list expression for custom patterns like `([1]*3+[0]*1)*3` which gives [1,1,1,0,1,1,1,0,1,1,1,0] where 1=expert layer and 0=dense layer. Examples: `([0]+[1]*23)` for 1 dense layer followed by 23 experts layers, `([1]*3+[0]*2)*2` for three expert layers followed by two dense layers, repeated twice. Default is 1. |
 | --moe-grouped-gemm | When there are multiple experts per rank, launch multiple local GEMM kernels in multiple streams to improve the utilization and performance with GroupedLinear in TransformerEngine. |
-| --moe-router-load-balancing-type | Determines the load balancing strategy for the router. "aux_loss" corresponds to the load balancing loss used in GShard and SwitchTransformer, "sinkhorn" corresponds to the balancing algorithm used in S-BASE, and "none" implies no load balancing. The default is "aux_loss". |
+| --moe-router-load-balancing-type | Determines the load balancing strategy for the router. "aux_loss" corresponds to the load balancing loss used in GShard and SwitchTransformer; "seq_aux_loss" corresponds to the load balancing loss used in DeepSeekV2, which computes the loss for each individual sample; "sinkhorn" corresponds to the balancing algorithm used in S-BASE, and "none" implies no load balancing. The default is "aux_loss". |
 | --moe-router-topk | Number of experts to route to for each token. The default is 2. |  
+| --moe-router-score-function | Score function for MoE routing. Can be "softmax" or "sigmoid". Default is "softmax". |
+| --moe-router-pre-softmax | Enable pre-softmax routing for MoE, which means softmax is before the top-k selection. By default, softmax is done after top-k. |
+| --moe-router-topk-limited-devices | Number of expert parallel ranks to consider for each token during routing. Perform top-k routing on a subset of expert parallel ranks by first selecting N ranks for each token, then conducting top-k selection among experts on these devices. None means no device limitation. Default is None, which means no limited devices. |
+| --moe-router-topk-scaling-factor | Scaling factor for routing score in top-k selection, only works when --moe-router-pre-softmax enabled. Defaults to None, which means no scaling. |
+| --moe-router-enable-expert-bias | TopK routing with dynamic per-expert bias in the aux-loss-free load balancing strategy. The routing decision is based on the sum of the routing scores and the expert bias. See https://arxiv.org/abs/2408.15664 for details. |
+| --moe-router-bias-update-rate | The expert bias is updated based on the number of assigned tokens to each expert in a global batch, where the bias is increased for experts with less assigned tokens and decreased for experts with more assigned tokens. Default is 1e-3 same as that used in DeepSeekV3. |
 | --moe-aux-loss-coeff | Scaling coefficient for the aux loss: a starting value of 1e-2 is recommended. Default is 0.0. |
 | --moe-z-loss-coeff | Scaling coefficient for the z-loss: a starting value of 1e-3 is recommended. Default is None. |
 | --moe-input-jitter-eps | Add noise to the input tensor by applying jitter with a specified epsilon value. Default is None. |
-| --moe-token-dispatcher-type | Determines the token dispatcher type. Choices are "allgather" and "alltoall". Default is "allgather". |
+| --moe-token-dispatcher-type | Determines the token dispatcher type. Choices are "allgather", "alltoall" and "alltoall_seq". Default is "allgather". We recommend using 'alltoall' if expert parallelism is applied. We have upgraded the "alltoall" dispatcher in place during MCore v0.9, while retaining the original implementation, renamed as "alltoall_seq".|
 | --moe-per-layer-logging | Enable per-layer logging for MoE, currently supports auxiliary loss and z loss. |
 | --moe-expert-capacity-factor | The capacity factor for each expert, None means no token will be dropped. Default is None. |
 | --moe-pad-expert-input-to-capacity | Pads the input for each expert to match the expert capacity length, effective only after the --moe-expert-capacity-factor is set. |
 | --moe-token-drop-policy | The policy to drop tokens. Can be either "probs" or "position". If "probs", the tokens with the lowest probabilities will be dropped. If "position", tokens at the end of each batch will be dropped. |
 | --moe-layer-recompute | Enable activation checkpointing for moe_layer, should be used when memory is not sufficient. |
-| --moe-extended-tp | (Experimental) Alternative parallelization strategy for expert parallelism. Instead of distributing experts across *expert_model_parallel_size*, each expert is sharded along extendended tensor parallel domain (tensor_model_paralle_size * expert_model_parallel_size). It avoids the load balancing problem with MOE training. Only avaiable with `--moe-token-dispatcher-type allgather`. |
+| --moe-shared-expert-intermediate-size | Set shared expert total ffn hidden size. It should be equal to `num_shared_experts * ffn_size_of_each_shared_expert` if there are multiple shared experts. None means no shared expert. |
+| --moe-shared-expert-overlap | (Experimental, may changed) If this is set, the communications/computations in the shared experts and the dispatcher will overlap (The `alltoall` dispatcher is needed.) Otherwise, the shared expert runs after the routed experts. |
+| --moe-use-upcycling | Load the dense model checkpoint, convert it into an MoE model at runtime and start training. The converted model will be saved to the path specified by `--save` before training begins. Upcycling is implemented on the top of distributed checkpointing, so it supports parallel modes different from the dense model.|
 
 
 ## Usage
@@ -87,36 +104,82 @@ To enable the token drop mechanism, such as GShard and SwitchTransformer, includ
 ```
 
 The following figure illustrates differenting dropping strategies in MCore:
-![Token Droppling Strategies](../../../../docs/source/images/moe/token_drop.png)
+<!-- This image is uncommented for now as Sphinx cannot resolve this path. Sphinx imports this markdown file, and from the imported location this relative path does not exist anymore. Ideally, this markdown should not live here but rather in the `docs/` directory that Sphinx uses. -->
+<!-- ![Token Droppling Strategies](../../../../docs/source/images/moe/token_drop.png) -->
 
 1. The default dropless strategy will not drop or pad any token.
-2. By setting `--moe-expert-capacity-factor`, the tokens exceed the capcacity of expert will be dropped based on their selected probabilities. 
+2. By setting `--moe-expert-capacity-factor`, the tokens exceed the capacity of expert will be dropped based on their selected probabilities. 
    The dropping is performed before the token exchange operation between EP ranks when EP > 1. 
    The formula of capacity is `capacity = num_tokens_per_rank * topk * capacity_factor / num_experts`.
 3. By setting `--moe-pad-expert-input-to-capacity`, the experts with tokens less than capacity will be padded to the capacity.
 
 ### Fine-tuning Mixtral Models
 Megatron-Core has full support for Mixtral MoE models, and we provide the checkpoint converter for Mixtral models from huggingface format to MCore format. 
-See more details in the [mixtral example](../../../../examples/mixtral/README.md).
+<!-- See more details in the [mixtral example](../../../../examples/mixtral/README.md). -->
 
 ### Distributed Checkpointing
 MCore v0.7 introduced fully parallel and asynchronous saving capabilities to distributed checkpointing, 
 which addresses the issues of low efficiency in the traditional checkpoint saving methods. 
-It also solved the problem of incompatibility between checkpoints of differnt parallel mappings in the traditional format.
+It also solved the problem of incompatibility between checkpoints of different parallel mappings in the traditional format.
 With the new distributed checkpointing solution, MCore can achieve flexible parallelism configurations by saving and loading the unified format checkpoints.
 Compared to native PyTorch solution, MCore achieves up to 50x reduction in checkpointing overhead.
 
-With MCore v0.8, MoE supports Distributed Checkpointing, which means users can save and load with any combination of parallelism and it is currently available, including expert parallel.
-1. Loading weight and distributed optimizer states with TPxPPxEP resharding is supported in version 0.8.
-2. GroupedMLP is also supported, including the ability to switch between GroupedMLP/SequentialMLP when loading and saving.
-    - When switching between GroupedMLP and SequentialMLP, loading distributed optimizer states is currently unsupported; this feature will be added in version 0.9.
-Besides these limitations, Distributed Checkpointing is fully functional.
+From MCore v0.8, MoE supports Distributed Checkpointing, which means users can save and load with any combination of parallelism and it is currently available, including expert parallel.
+1. Loading weight and distributed optimizer states with TPxCPxEPxPP resharding with SequentialMLP is supported in version 0.8.
+2. GroupedMLP weight resharding is supported in version 0.8.0 and optimizer state resharding is supported in version 0.10.0. Switching between GroupedMLP/SequentialMLP when loading and saving is partially supported.
+3. TEGroupedMLP has fully support on distributed checkpointing and is fully exchangable with SequentialMLP in version 0.9.0.
+4. Optimizer state resharding cannot do across EP=1 with EP>1 due to the different optimizer type.
 
 Usage
-- `--use-dist-ckpt` The main argument, it will attempt to save and load using distributed checkpointing.
+- `--ckpt-format torch_dist` The main argument, it will attempt to save and load using distributed checkpointing.
 - `--auto-detect-ckpt-format` With this, it can load both distributed checkpointing and legacy checkpointing.
 
-## Dropless MoE training script example:
+Checkpoint compatibility across SequentialMLP, GroupedMLP, and TEGroupedMLP:
+```text
+    ┌───────────────┐          ┌───────────────┐          ┌───────────────┐     
+    │   GroupedMLP  │          │ SequentialMLP │          │ TEGroupedMLP  │     
+    │               │          │               │          │               │     
+    │               │          │               │          │               │     
+    │ ┌───────────┐ │          │ ┌───────────┐ │          │ ┌───────────┐ │     
+    │ │legacy ckpt│ │          │ │legacy ckpt│ │          │ │legacy ckpt│ │     
+    │ └─────┬─────┘ │          │ └─────┬─────┘ │          │ └─────┬─────┘ │     
+    │       ▼       │          │       ▼       │          │       ▼       │     
+    │  ┌─────────┐  │          │  ┌─────────┐  │          │  ┌─────────┐  │     
+    │  │dist ckpt│  │          │  │dist ckpt│  │          │  │dist ckpt│  │     
+┌──►│  │ weight  │  │◄────────►│  │ weight  │  │◄────────►│  │ weight  │  │◄──┐ 
+│   │  └─────────┘  │          │  └─────────┘  │          │  └─────────┘  │   │ 
+└───┼───────────────┼──────────┼───────────────┼──────────┼───────────────┼───┘ 
+    │┌─────────────┐│          │┌─────────────┐│          │┌─────────────┐│     
+    ││  dist ckpt  ││          ││  dist ckpt  ││          ││  dist ckpt  ││     
+    ││optim states ││          ││optim states ││◄────────►││optim states ││     
+    │└─────────────┘│          │└─────────────┘│          │└─────────────┘│     
+    └───────────────┘          └───────────────┘          └───────────────┘     
+```
+
+Best practices for distributed checkpointing:
+1. Convert a legacy checkpoint to a distributed checkpoint. To achieve this, we can add both `--ckpt-format torch_dist --auto-detect-ckpt-format`, then it will load the legacy one and save as the distributed checkpoint format later when the training progress tries to save checkpoints.
+2. Convert checkpoint of the legacy GroupedMLP to TEGroupedMLP. This is only supported for the weight parts. To achieve this, we can use the above method to convert the legacy checkpoint to a distributed checkpoint of the legacy GroupedMLP. After updating the libraries and using TEGroupedMLP, we can directly load the previously saved checkpoint by adding argument `--no-load-optim`.
+
+### Shared Experts
+MCore v0.9 introduced the shared expert feature. We can enable this feature by setting suitable `--moe-shared-expert-intermediate-size`.
+
+The parallelism patterns of the shared experts follow the settings of the dense part, i.e., the attention module. The shared experts are not distributed but replicated in EP ranks.
+
+We also have an experimental feature that tries to overlap the communications and computations in the shared experts and the dispatcher.
+We can set `--moe-shared-expert-overlap` and use `alltoall` dispatcher to enable it.
+The overlapping relies on the envirionment setting `CUDA_DEVICE_MAX_CONNECTIONS=1`.
+The `AllGather` and `ReduceScatter` communications in the shared experts are overlapped with `permute`/`unpermute` in the dispatcher.
+The `MLP` computation part in the shared experts are overlapped with the `AlltoAll` communications in the dispatcher.
+Both the forward and the backward pass can overlap. But to get the overlapping in the backward pass, the PyTorch version should `>= 2.2.0`.
+
+### Upcycling
+Use `--moe-use-upcycling` to enable upcycling, which loads the dense model from the `--load` directory, converts it to an MoE model at runtime, and starts training. The converted model is saved to the `--save` path before training begins. Upcycling is built on distributed checkpointing, supporting parallel modes different from existing dense checkpoints, such as arbitrary expert parallelism during upcycling.
+
+We currently only support the default upcycling strategy, which duplicates the existing MLP to multiple experts, with each expert starting from a copy of the MLP. In the future, we will support more state-of-the-art upcycling strategies, such as Granular upcycling from [our recent research work](https://arxiv.org/abs/2410.07524).
+
+Note: The MoE model structure is defined through script arguments. All MoE-related arguments (such as `--num-experts`) can be customized; however, other model structure arguments must be consistent with those of the dense model.
+
+## MoE training example:
 <details>
 <summary>Click here. </summary>
 
@@ -203,8 +266,9 @@ TRAINING_ARGS=(
 )
 
 MODEL_PARALLEL_ARGS=(
-    --tensor-model-parallel-size 2
-    --pipeline-model-parallel-size 1
+    --tensor-model-parallel-size 1
+    --pipeline-model-parallel-size 4
+    --num-layers-per-virtual-pipeline-stage 8
     --sequence-parallel
     --use-distributed-optimizer
 )
@@ -240,7 +304,7 @@ torchrun ${DISTRIBUTED_ARGS[@]} pretrain_gpt.py \
 
 # Performance Best Practice
 
-### Tuning Guide of Paralell Mappings
+### Tuning Guide of Parallel Mappings
 
 To find a good parallel mapping that help you achieve a high throughput of a new model, there are some general rule that could help. Here is an overview of properties in different aspects for each parallel strategy.
 
@@ -267,23 +331,38 @@ Here we provide some general rules to get better performance:
 4. Prefer EP over TP for the expert layer when possible:
     - TP saves more memory than EP, but EP can achieve better GEMM efficiency and less communication overhead than TP.
     - If EP size increased to the number of expert, the local token permutation/un-permutation for experts computation are omitted.
-    - Simplify the computation graph of moe layers, more convenient for performing potential comm-computation overlapping.
+    - Simplify the computation graph of MoE layers, more convenient for performing potential comm-computation overlapping.
     - In practice, EP8TP1 is better than EP4TP2 for 8x7B.
 5. Enable Context Parallelism for long context training.
     - The efficiency of CP largely depends on whether its communication can be overlapped with computation. 
-    - Emperically, use CP when sequence length >= 8K.
+    - Empirically, use CP when sequence length >= 8K.
 
+### MoE Parallel Folding
+
+MoE Parallel Folding separates the MoE related parallel groups from Dense groups.
+1. Traditional MoE parallel groups are entangled with dense by using a 5-dimension parallel group generator with default order `tp-cp-ep-dp-pp`. The EP group in MoE is a sub-group of DP in Attention.
+2. With MoE Parallel Folding, we use a parallel group generator with `tp-cp-dp-pp` for Attention, and another with `tp-ep-dp-pp` for MoE. The EPxTP group in MoE is a sub-group of DPxCPxTP in Attention.
+
+By setting `--expert-tensor-parallel-size`, we can set MoE-specific TP size.
+
+#### Advantages of MoE Parallel Folding
+1. The CP and EP group are folded together by defualt, such that:
+    1. It reduces the minimal required GPUs to turn on both CP and EP. For example, the traditional way with (CP=8, EP=8) needs at least 64 GPUs, for now it only requires 8 GPUs.
+    2. The CP and EP communication can be both put in the NVLink domain.
+2. We can set different TP sizes for Attention and MoE part.
+    1. For MoE, EP is often more efficient than TP. But in the traditional way, only using EP can get OOM for most models.
+    2. With MoE parallel folding, we can turn on TP for Attention part and setting TP=1 for MoE models, which often gets better MFU.
 
 ### End-to-End Training Practice
 **Use the latest NVIDIA PyTorch or NeMo Docker Image**
 - [NGC PyTorch Image](https://catalog.ngc.nvidia.com/orgs/nvidia/containers/pytorch)
 - [NGC NeMo Image](https://catalog.ngc.nvidia.com/orgs/nvidia/containers/nemo)
 
-**OOM Caused by Token Distribution Imbalance when Training From Scratch**  
-MoE suffers from a severe load imbalance issue when the router is under-trained, leading to the model easily running out of memory (OOM), which typically occurs in the first 100~300 steps when training from scratch. 
-Therefore, there are two recommended ways during the first 200 steps to avoid the OOM problem, which can be removed after the token distribution is more stable:
-1. Use Extended-TP(`-moe-extended-tp`) to replace EP with TP in MoELayer, this can prevent the load imbalancing between EP ranks. Since current ETP implementation has some memeory overhead, you can further enable activation recomputation only for MoE Layer by adding `--moe-layer-recompute`.
-2. Setting capacity factor to a relatively small number like 1.0 by adding `--moe-token-capacity-factor 1.0`.
+**Token Dispatcher Choices**
+- Token Dispatcher sends tokens to the designated expert, involves tensor rearangement and communications.
+- Dispatcher `allgather` is the default option. It achieves better performance and efficiency when only tensor parallelism is used or when the Top-k value is very large.
+- Dispatcher `alltoall` is recommended if expert parallelism is applied.
+- Dispatcher `alltoall_seq` is the original implementation of `alltoall` and is retained for potential compatibility risk.
 
 **Enable Communication Overlap**
 - Enable `--overlap-param-gather` and `--overlap-grad-reduce` with distributed optimizer.
@@ -293,6 +372,12 @@ Therefore, there are two recommended ways during the first 200 steps to avoid th
 **Enable GroupedGEMM when num_local_experts>1 with `--moe-grouped-gemm`**
 - GroupedGEMM has higher efficiency than vanilla sequential GEMMs for each expert.
 - Recommend to use the TE version of Grouped GEMM (by upgrading to MCore v0.8 and TE v1.9), which support Gradient Accumulation Fusion and FP8 Training.
+
+**OOM Caused by Token Distribution Imbalance when Training From Scratch**  
+MoE suffers from a severe load imbalance issue when the router is under-trained, leading to the model easily running out of memory (OOM), which typically occurs in the first 100~300 steps when training from scratch. 
+Therefore, there are two recommended ways during the first 200 steps to avoid the OOM problem, which can be removed after the token distribution is more stable:
+1. Increase the `expert-tensor-parallel-size` and decrease `expert-model-parallel-size` to replace EP with TP in MoELayer, this can prevent the load imbalancing between EP ranks. Since current ETP implementation has some memeory overhead, you can further enable activation recomputation only for MoE Layer by adding `--moe-layer-recompute`.
+2. Setting capacity factor to a relatively small number like 1.0 by adding `--moe-token-capacity-factor 1.0`.
 
 ### Reference Best Parallel Mapping
 
@@ -309,4 +394,4 @@ Server:
 - InfiniBand 8x400 Gbit/s
 
 Docker Image:
-- PyTorch 24.04 with TransformerEngine v1.9
+- PyTorch 24.09 with TransformerEngine v1.11

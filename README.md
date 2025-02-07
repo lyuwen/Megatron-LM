@@ -11,46 +11,59 @@ Megatron-LM & Megatron-Core
 <div align="left">
 
 # Latest News
+
 - **[2024/7]** Megatron-Core v0.7 improves scalability and training resiliency and adds support for multimodal training ([blog](https://developer.nvidia.com/blog/train-generative-ai-models-more-efficiently-with-new-nvidia-megatron-core-functionalities/)). 
 - **[2024/6]** Megatron-Core added supports for Mamba-based models. Check out our paper [An Empirical Study of Mamba-based Language Models](https://arxiv.org/pdf/2406.07887) and [code example](https://github.com/NVIDIA/Megatron-LM/tree/ssm/examples/mamba).
 - **[2024/1 Announcement]** NVIDIA has released the core capabilities in **Megatron-LM** into [**Megatron-Core**](https://github.com/NVIDIA/Megatron-LM/tree/main/megatron/core) in this repository. Megatron-Core expands upon Megatron-LM's GPU-optimized techniques with more cutting-edge innovations on system-level optimizations, featuring composable and modular APIs. Explore the [Megatron-Core intro](#megatron-core) for more details.
 
 # Table of Contents
-   * [Megatron Overview](#megatron-overview)
-	   * [Megatron-LM](#megatron-lm)
-      * [Megatron-Core](#megatron-core)
-   * [Training Speed and Scalability](#training-speed-and-scalability)
-   * [Setup](#setup)
-      * [Downloading Checkpoints](#downloading-checkpoints)
-   * [Usage](#usage)
-   * [Training](#training)
-      * [Data Preprocessing](#data-preprocessing)
-      * [BERT Pretraining](#bert-pretraining)
-      * [GPT Pretraining](#gpt-pretraining)
-      * [T5 Pretraining](#t5-pretraining)
-      * [Distributed Pretraining](#distributed-pretraining)
-      * [Activation Checkpointing and Recomputation](#activation-checkpointing-and-recomputation)
-      * [Distributed Optimizer](#distributed-optimizer)
-      * [FlashAttention](#flashattention)
-      * [GPT-3 Example](#gpt-3-example)
-      * [Retro and InstructRetro](#retro-and-instructretro)
-   * [Evaluation and Tasks](#evaluation-and-tasks)
-      * [GPT Text Generation](#gpt-text-generation)
-      * [GPT Evaluation](#gpt-evaluation)
-         * [WikiText Perplexity Evaluation](#wikitext-perplexity-evaluation)
-         * [LAMBADA Cloze Accuracy](#lambada-cloze-accuracy)
-      * [BERT Task Evaluation](#bert-task-evaluation)
-         * [RACE Evaluation](#race-evaluation)
-         * [MNLI Evaluation](#mnli-evaluation)
-      * [Llama-2 Inference and Finetuning](#llama-2-inference-and-finetuning)
-   * [Datasets](#datasets)
-      * [Collecting Wikipedia Training Data](#collecting-wikipedia-training-data)
-      * [Collecting GPT Webtext Data](#collecting-gpt-webtext-data)
-   * [Reproducibility](#reproducibility)
-   * [Projects using Megatron](#projects-using-megatron)
+
+- [Megatron-LM \& Megatron-Core](#megatron-lm--megatron-core)
+- [Latest News](#latest-news)
+- [Table of Contents](#table-of-contents)
+- [Megatron Overview](#megatron-overview)
+  - [Megatron-LM](#megatron-lm)
+  - [Megatron-Core](#megatron-core)
+- [Training Speed and Scalability](#training-speed-and-scalability)
+- [Setup](#setup)
+  - [Downloading Checkpoints](#downloading-checkpoints)
+- [Usage](#usage)
+- [Training](#training)
+  - [Data Preprocessing](#data-preprocessing)
+  - [BERT Pretraining](#bert-pretraining)
+  - [GPT Pretraining](#gpt-pretraining)
+  - [T5 Pretraining](#t5-pretraining)
+  - [Distributed Pretraining](#distributed-pretraining)
+  - [Activation Checkpointing and Recomputation](#activation-checkpointing-and-recomputation)
+  - [Distributed Optimizer](#distributed-optimizer)
+  - [FlashAttention](#flashattention)
+  - [GPT-3 Example](#gpt-3-example)
+  - [Retro and InstructRetro](#retro-and-instructretro)
+  - [Mamba-based Language Models](#mamba-based-language-models)
+  - [Mixture of Experts](#mixture-of-experts)
+- [Evaluation and Tasks](#evaluation-and-tasks)
+  - [GPT Text Generation](#gpt-text-generation)
+    - [Detoxify GPT via Self-generation](#detoxify-gpt-via-self-generation)
+  - [GPT Evaluation](#gpt-evaluation)
+    - [WikiText Perplexity Evaluation](#wikitext-perplexity-evaluation)
+    - [LAMBADA Cloze Accuracy](#lambada-cloze-accuracy)
+  - [BERT Task Evaluation](#bert-task-evaluation)
+    - [RACE Evaluation](#race-evaluation)
+    - [MNLI Evaluation](#mnli-evaluation)
+  - [Llama-2 Inference and Finetuning](#llama-2-inference-and-finetuning)
+- [Model Optimization and Deployment](#model-optimization-and-deployment)
+  - [Quantization and TensorRT-LLM Deployment](#quantization-and-tensorrt-llm-deployment)
+- [Datasets](#datasets)
+  - [Collecting Wikipedia Training Data](#collecting-wikipedia-training-data)
+  - [Collecting GPT Webtext Data](#collecting-gpt-webtext-data)
+- [Reproducibility](#reproducibility)
+- [Checkpoint conversion](#checkpoint-conversion)
+  - [Model class conversion](#model-class-conversion)
+  - [Checkpoint format conversion](#checkpoint-format-conversion)
+- [Projects Using Megatron](#projects-using-megatron)
 
 # Megatron Overview
-This repository comprises two essential components: **Megatron-LM** and **Megatron-Core**. Megatron-LM serves as a ressearch-oriented framework leveraging Megatron-Core for large language model (LLM) training. Megatron-Core, on the other hand, is a library of GPU optimized training techniques that comes with formal product support including versioned APIs and regular releases. You can use Megatron-Core alongside Megatron-LM or [Nvidia NeMo Framework](https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/main/nlp/nemo_megatron/mcore_customization.html) for an end-to-end and cloud-native solution. Alternatively, you can integrate Megatron-Core's building blocks into your preferred training framework.
+This repository comprises two essential components: **Megatron-LM** and **Megatron-Core**. Megatron-LM serves as a research-oriented framework leveraging Megatron-Core for large language model (LLM) training. Megatron-Core, on the other hand, is a library of GPU optimized training techniques that comes with formal product support including versioned APIs and regular releases. You can use Megatron-Core alongside Megatron-LM or [Nvidia NeMo Framework](https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/main/nlp/nemo_megatron/mcore_customization.html) for an end-to-end and cloud-native solution. Alternatively, you can integrate Megatron-Core's building blocks into your preferred training framework.
 
 ## Megatron-LM
 First introduced in 2019, Megatron ([1](https://arxiv.org/pdf/1909.08053.pdf), [2](https://arxiv.org/pdf/2104.04473.pdf), and [3](https://arxiv.org/pdf/2205.05198)) sparked a wave of innovation in the AI community, enabling researchers and developers to utilize the underpinnings of this library to further LLM advancements. Today, many of the most popular LLM developer frameworks have been inspired by and built directly leveraging the open-source Megatron-LM library, spurring a wave of foundation models and AI startups. Some of the most popular LLM frameworks built on top of Megatron-LM include [Colossal-AI](https://github.com/hpcaitech/ColossalAI), [HuggingFace Accelerate](https://github.com/huggingface/accelerate), and [NVIDIA NeMo Framework](https://www.nvidia.com/en-us/ai-data-science/generative-ai/nemo-framework/). A list of projects that have directly used Megatron can be found [here](#projects-using-megatron).
@@ -156,27 +169,28 @@ Further command line arguments are described in the source file [`preprocess_dat
 ## BERT Pretraining
 
 
-The [`examples/pretrain_bert.sh`](./examples/pretrain_bert.sh) script runs single GPU 345M parameter BERT pretraining. Debugging is the primary use for single GPU training, as the code base and command line arguments are optimized for highly distributed training. Most of the arguments are fairly self-explanatory. By default, the learning rate decays linearly over the training iterations starting at `--lr` to a minimum set by `--min-lr` over `--lr-decay-iters` iterations. The fraction of training iterations used for warmup is set by `--lr-warmup-fraction`. While this is single GPU training, the batch size specified by `--micro-batch-size` is a single forward-backward path batch-size and the code will perform gradient accumulation steps until it reaches `global-batch-size` which is the batch size per iteration. The data is partitioned into a 949:50:1 ratio for training/validation/test sets (default is 969:30:1). This partitioning happens on the fly, but is consistent across runs with the same random seed (1234 by default, or specified manually with `--seed`). We use `train-iters` as the training iterations requested. Alternatively, one can provide `--train-samples` which is total number of samples to train on. If this option is present, then instead of providing `--lr-decay-iters`, one will need to provide `--lr-decay-samples`.
+The [`examples/bert/train_bert_340m_distributed.sh`](examples/bert/train_bert_340m_distributed.sh) script runs single GPU 345M parameter BERT pretraining. Debugging is the primary use for single GPU training, as the code base and command line arguments are optimized for highly distributed training. Most of the arguments are fairly self-explanatory. By default, the learning rate decays linearly over the training iterations starting at `--lr` to a minimum set by `--min-lr` over `--lr-decay-iters` iterations. The fraction of training iterations used for warmup is set by `--lr-warmup-fraction`. While this is single GPU training, the batch size specified by `--micro-batch-size` is a single forward-backward path batch-size and the code will perform gradient accumulation steps until it reaches `global-batch-size` which is the batch size per iteration. The data is partitioned into a 949:50:1 ratio for training/validation/test sets (default is 969:30:1). This partitioning happens on the fly, but is consistent across runs with the same random seed (1234 by default, or specified manually with `--seed`). We use `train-iters` as the training iterations requested. Alternatively, one can provide `--train-samples` which is total number of samples to train on. If this option is present, then instead of providing `--lr-decay-iters`, one will need to provide `--lr-decay-samples`.
 
 The logging, checkpoint-saving, and evaluation interval options are specified. Note that the `--data-path` now includes the additional `_text_sentence` suffix added in preprocessing, but does not include the file extensions.
 
 Further command line arguments are described in the source file [`arguments.py`](./megatron/training/arguments.py).
 
-To run `examples/pretrain_bert.sh`, make any desired modifications including setting the environment variables for `CHECKPOINT_PATH`, `VOCAB_FILE`, and `DATA_PATH`. Make sure to set these variables to their paths in the container. Then launch the container with Megatron and necessary paths mounted (as explained in [Setup](#setup)) and run the example script.
+To run `train_bert_340m_distributed.sh`, make any desired modifications including setting the environment variables for `CHECKPOINT_PATH`, `VOCAB_FILE`, and `DATA_PATH`. Make sure to set these variables to their paths in the container. Then launch the container with Megatron and necessary paths mounted (as explained in [Setup](#setup)) and run the example script.
 
 ## GPT Pretraining
 
-The `examples/pretrain_gpt.sh` script runs single GPU 345M parameter GPT pretraining. As mentioned above, single GPU training is primarily intended for debugging purposes, as the code is optimized for distributed training.
+The `examples/gpt3/train_gpt3_175b_distributed.sh` script runs single GPU 345M parameter GPT pretraining. As mentioned above, single GPU training is primarily intended for debugging purposes, as the code is optimized for distributed training.
 
 It follows largely the same format as the previous BERT script with a few notable differences: the tokenization scheme used is BPE (which requires a merge table and a `json` vocabulary file) instead of WordPiece, the model architecture allows for longer sequences (note that the max position embedding must be greater than or equal to the maximum sequence length), and the `--lr-decay-style` has been set to cosine decay.  Note that the `--data-path` now includes the additional `_text_document` suffix added in preprocessing, but does not include the file extensions.
 
 Further command line arguments are described in the source file [`arguments.py`](./megatron/training/arguments.py).
 
-`examples/pretrain_gpt.sh` can be launched the same way as described for BERT. Set the env vars and make any other modifications, launch the container with appropriate mounts, and run the script.
+`train_gpt3_175b_distributed.sh` can be launched the same way as described for BERT. Set the env vars and make any other modifications, launch the container with appropriate mounts, and run the script.
+More details in [`examples/gpt3/README.md`](./examples/gpt3/README.md)
 
 ## T5 Pretraining
 
-Very similar to BERT and GPT, the `examples/pretrain_t5.sh` script runs single GPU "base" (~220M parameter) T5 pretraining. The primary difference from BERT and GPT is the addition of the following arguments to accommodate the T5 architecture:
+Very similar to BERT and GPT, the `examples/t5/train_t5_220m_distributed.sh` script runs single GPU "base" (~220M parameter) T5 pretraining. The primary difference from BERT and GPT is the addition of the following arguments to accommodate the T5 architecture:
 
 * `--kv-channels` sets the inner dimension of the "key" and "value" matrices of all attention mechanisms in the model. For BERT and GPT this defaults to the hidden size divided by the number of attention heads, but can be configured for T5.
 
@@ -186,9 +200,11 @@ Very similar to BERT and GPT, the `examples/pretrain_t5.sh` script runs single G
 
 All of the other arguments remain as they were for BERT and GPT pretraining. Run this example with the same steps described above for the other scripts.
 
+More details in [`examples/t5/README.md`](./examples/t5/README.md)
+
 ## Distributed Pretraining
 
-The `examples/pretrain_{bert,gpt,t5}_distributed.sh` scripts use the PyTorch distributed launcher for distributed training. As such, multi-node training can be achieved by properly setting environment variables. See the official PyTorch [documentation](https://pytorch.org/docs/stable/elastic/run.html#launcher-api) for further description of these [environment variables](https://pytorch.org/docs/stable/distributed.html#environment-variable-initialization). By default, multi-node training uses the [nccl](https://developer.nvidia.com/nccl) distributed backend. A simple set of additional arguments and the use of the PyTorch distributed module with the `torchrun` elastic launcher (equivalent to `python -m torch.distributed.run`) are the only additional requirements to adopt distributed training. See any of `examples/pretrain_{bert,gpt,t5}_distributed.sh` for more details.
+The `pretrain_{bert,gpt,t5}_distributed.sh` scripts use the PyTorch distributed launcher for distributed training. As such, multi-node training can be achieved by properly setting environment variables. See the official PyTorch [documentation](https://pytorch.org/docs/stable/elastic/run.html#launcher-api) for further description of these [environment variables](https://pytorch.org/docs/stable/distributed.html#environment-variable-initialization). By default, multi-node training uses the [nccl](https://developer.nvidia.com/nccl) distributed backend. A simple set of additional arguments and the use of the PyTorch distributed module with the `torchrun` elastic launcher (equivalent to `python -m torch.distributed.run`) are the only additional requirements to adopt distributed training. See any of `pretrain_{bert,gpt,t5}_distributed.sh` for more details.
 
 We use two types of parallelism: data and model parallelism. Our data parallelism implementation is in `megatron/core/distributed`, and supports overlapping of the gradient reduction with the backward pass when the `--overlap-grad-reduce` command-line option is used.
 
@@ -246,7 +262,7 @@ pip install flash-attn
 
 ## GPT-3 Example
 
-In `examples/pretrain_gpt3_175B.sh` we have provided an example of how to configure Megatron to train [GPT-3](https://arxiv.org/abs/2005.14165) with 175 billion parameters on 1024 GPUs. The script is designed for [slurm](https://slurm.schedmd.com/documentation.html) with [pyxis](https://github.com/NVIDIA/pyxis) plugin but can be easily adopted to any other scheduler. It uses 8-way tensor parallelism and 16-way pipeline parallelism. With options `global-batch-size 1536` and `rampup-batch-size 16 16 5859375`, the training will start with global batch size 16 and linearly increase the global batch size to 1536 over 5,859,375 samples with incremental steps 16. The training dataset can be either a single set or a multiple datasets combined with a set of weights.
+In `examples/gpt3/train_gpt3_175b_distributed.sh` we have provided an example of how to configure Megatron to train [GPT-3](https://arxiv.org/abs/2005.14165) with 175 billion parameters on 1024 GPUs. The script is designed for [slurm](https://slurm.schedmd.com/documentation.html) with [pyxis](https://github.com/NVIDIA/pyxis) plugin but can be easily adopted to any other scheduler. It uses 8-way tensor parallelism and 16-way pipeline parallelism. With options `global-batch-size 1536` and `rampup-batch-size 16 16 5859375`, the training will start with global batch size 16 and linearly increase the global batch size to 1536 over 5,859,375 samples with incremental steps 16. The training dataset can be either a single set or a multiple datasets combined with a set of weights.
 
 With full global batch size of 1536 on 1024 A100 GPUs, each iteration takes around 32 seconds resulting in 138 teraFLOPs per GPU which is 44% of the theoretical peak FLOPs.
 
@@ -270,11 +286,11 @@ In this repo, we provide an end-to-end reproduction guide to implement Retro and
 - **Instruction tuning**, where we provide an open-source instruction tuning dataset and the training recipe for instruction tuning on Retro.
 - **Downstream task evaluation**, where we provide the text generation and evaluation scripts for zero-shot question answering tasks.
 
-Please see [tools/retro/README.md](tools/retro/README.md) for a detailed overview.
+See [tools/retro/README.md](tools/retro/README.md) for a detailed overview.
 
 ## Mamba-based Language Models
 
-Please see [examples/mamba](./examples/mamba) for details.
+See [examples/mamba](./examples/mamba) for details.
 
 <!--
 ## REALM Pipeline
@@ -356,6 +372,17 @@ python tools/create_doc_index.py \
 
 -->
 
+## Mixture of Experts
+MoE (Mixture of Experts) is a powerful LLM architecture implemented in the Megatron-Core framework, designed to enhance the efficiency and scalability of large language models. It leverages **Expert Parallelism**, allowing multiple experts to be distributed across different workers, where each worker processes distinct batches of training samples. This method significantly increases computational throughput, enabling models to achieve high performance metrics, such as 47% MFU during BF16 training for 8x7B on H100.
+
+Key Features of MoE:
+- **Parallelism Techniques**: MoE combines various parallelism strategies, including Expert Parallelism, Data Parallelism, Tensor Parallelism, Sequence Paralleism, Pipeline Parallelism, and Context Parallelism. This combination allows for handling larger model variants effectively.
+- **Router and Load Balancing**: The system employs advanced routing mechanisms like the Top-K router and utilizes load balancing algorithms to optimize token distribution among experts.
+- **Performance Optimizations**: Techniques such as GroupedGEMM and FP8 training enhance the efficiency of MoE models, particularly when multiple experts are involved.
+- **Token Dispatch Mechanism**: MoE supports both dropless and token drop strategies to manage token distribution effectively across experts.
+
+For a comprehensive overview of MoE training configurations and optimizations, please refer to the detailed README located at [megatron/core/transformer/moe/README.md](./megatron/core/transformer/moe/README.md).
+
 # Evaluation and Tasks
 
 We provide several command line arguments, detailed in the scripts listed below, to handle various zero-shot and fine-tuned downstream tasks. However, you can also finetune your model from a pretrained checkpoint on other corpora as desired. To do so, simply add the `--finetune` flag and adjust the input files and training parameters within the original training script. The iteration count will be reset to zero, and the optimizer and internal state will be reinitialized. If the fine-tuning is interrupted for any reason, be sure to remove the `--finetune` flag before continuing, otherwise the training will start again from the beginning.
@@ -376,7 +403,7 @@ Several downstream tasks are described for both GPT and BERT models below. They 
 
 ## GPT Text Generation
 
-We have included a simple REST server to use for text generation in `tools/run_text_generation_server.py`. You run it much like you would start a pretraining job, specifying an appropriate pretrained checkpoint. There are also few optional parameters: `temperature`, `top-k`and `top-p`. See `--help` or the source file for more information. See [examples/run_text_generation_server_345M.sh](examples/run_text_generation_server_345M.sh) for an example of how to run the server.
+We have included a simple REST server to use for text generation in `tools/run_text_generation_server.py`. You run it much like you would start a pretraining job, specifying an appropriate pretrained checkpoint. There are also few optional parameters: `temperature`, `top-k`and `top-p`. See `--help` or the source file for more information. See [examples/inference/run_text_generation_server_345M.sh](examples/inference/run_text_generation_server_345M.sh) for an example of how to run the server.
 
 Once the server is running you can use `tools/text_generation_cli.py` to query it, it takes one argument which is the host the server is running on.
 
@@ -393,9 +420,9 @@ curl 'http://localhost:5000/api' -X 'PUT' -H 'Content-Type: application/json; ch
 See [megatron/inference/text_generation_server.py](megatron/inference/text_generation_server.py) for more API options.
 
 ### Detoxify GPT via Self-generation
-We include an example in `examples/detxoify_lm/` to detoxify language models by leveraging the generative power of language models.
+We include an example in `examples/academic_paper_scripts/detxoify_lm/` to detoxify language models by leveraging the generative power of language models.
 
-See [examples/detxoify_lm/README.md](examples/detxoify_lm/README.md) for step-by-step tutorials on how to perform domain-adaptive training and detoxify LM using self-generated corpus.
+See [examples/academic_paper_scripts/detxoify_lm/README.md](examples/academic_paper_scripts/detxoify_lm/README.md) for step-by-step tutorials on how to perform domain-adaptive training and detoxify LM using self-generated corpus.
 
 
 ## GPT Evaluation
@@ -534,7 +561,7 @@ python tasks/main.py \
 
 The Llama-2 [family of models](https://ai.meta.com/llama/) are an open-source set of pretrained & finetuned (for chat) models that have achieved strong results across a wide set of benchmarks. At the time of release, Llama-2 models achieved among the best results for open-source models, and were competitive with the closed-source GPT-3.5 model (see https://arxiv.org/pdf/2307.09288.pdf).
 
-The Llama-2 checkpoints can be loaded into Megatron for inference and finetuning. See documentation [here](docs/llama2.md).
+The Llama-2 checkpoints can be loaded into Megatron for inference and finetuning. See documentation [here](docs/llama_mistral.md).
 
 # Model Optimization and Deployment
 Megatron-Core (MCore) `GPTModel` family supports advanced quantization algorithms and high-performance inference through TensorRT-LLM.
@@ -563,7 +590,63 @@ There are currently three known Megatron optimizations that break reproducibilit
 
 In addition, determinisim has only been verified in NGC PyTorch containers up to and newer than 23.12. If you observe nondeterminism in Megatron training under other circumstances please open an issue.
 
-## Projects Using Megatron
+# Checkpoint conversion
+
+We support two forms of model conversion:
+
+1. Model class conversion (i.e., the `GPTModel` in `model.legacy` vs. `model.core`)
+2. Checkpoint format conversion (i.e., distributed vs. non-distributed checkpoint)
+
+## Model class conversion
+
+Megatron supports converting between different model classes, including internal model classes (we currently have the older `legacy` models, and the newer `core` models) and external model classes (such as Meta, Huggingface, Mistral, and Mixtral models). Additionally, during this conversion, one can update the parallel state of the model (i.e., changing tensor and pipeline model parallelism).
+
+ We provide the tool `tools/checkpoint/convert.py` to convert between model classes. Some important arguments include:
+
+- `--model-type`: `GPT` or `BERT`
+- `--loader`: format of the existing checkpoint. Supported formats include:
+  - `legacy`: our older model classes (under `megatron.legacy.model`)
+  - `core`: our newer model classes (under `megatron.core.models`)
+  - `llama_mistral`: for loading Llama and Mistral models (supports Meta and Huggingface formats)
+  - `mixtral_hf`: for loading Mixtral models (Huggingface only)
+- `--load-dir`: directory for loading the existing checkpoint
+- `--saver`: `legacy` or `core` (see descriptions under `--loader`)
+- `--save-dir`: directory for saving the new checkpoint
+- `--target-tensor-parallel-size`: new tensor model parallel size
+- `--target-pipeline-parallel-size`: new pipeline model parallel size
+
+For more argument details, please see the main script (`convert.py`), loader scripts (`loader_core.py`, `loader_legacy.py`, `loader_llama_mistral.py`, `loader_mixtral_hf.py`), or saver scripts (`saver_core.py`, `saver_legacy.py`).
+
+An example command for converting a GPT model from the old format (`legacy`) to the new format (`core`) would look as follows:
+
+```
+python tools/checkpoint/convert.py \
+>   --model-type GPT \
+>   --loader legacy \
+>   --load-dir ${LEGACY_FORMAT_DIR} \
+>   --saver core \
+>   --save-dir ${CORE_FORMAT_DIR} \
+>   --target-tensor-parallel-size ${TP} \
+>   --target-pipeline-parallel-size ${PP} \
+```
+
+For examples of converting Llama/Mistral models into Megatron, please see [here](docs/llama_mistral.md).
+
+## Checkpoint format conversion
+
+Megatron offers multiple checkpoint formats, including:
+
+- `torch`: Basic checkpoint format with sequential read & writes, and is tied to a specific tensor/pipeline model parallel state (TP/PP states, respectively). (While a specific checkpoint is tied to a specific TP/PP state, a checkpoint can still be manually converted via the model class converter described above).
+- `torch_dist`: Distributed checkpoint format, for fast parallel reads & writes, and also is parallel state agnostic (i.e., one can load the same checkpoint to different TP/PP setups).
+
+Generally speaking, `torch_dist` is the more modern and recommended checkpoint format due to its speed. However, depending on the use case, it may be desirable to convert between these two formats. To do so, launch your *training* script (e.g., via `pretrain_gpt.py`) as you normally would, but with two additional arguments:
+
+- `--ckpt-convert-format ${FORMAT}`: `${FORMAT}` can be one of `torch` or `torch_dist`, as described above.
+- `--ckpt-convert-save ${PATH_TO_SAVE_NEW_FORMAT}`: this path should be different than your existing `--load`/`--save` paths, to avoid overwriting the existing checkpoint. After converting, use this new path for your `--load`/`--save` paths.
+
+The general idea of this checkpoint format converter is that it launches the model just as one normally would for training, but before running any training iterations, it saves to the new checkpoint format, and then exits. It is important to note that all other launch args should remain the same, in order for the system to understand the previous checkpoint format.
+
+# Projects Using Megatron
 Below are some of the projects where we have directly used Megatron:
 * [BERT and GPT Studies Using Megatron](https://arxiv.org/pdf/1909.08053.pdf)
 * [BioMegatron: Larger Biomedical Domain Language Model](https://www.aclweb.org/anthology/2020.emnlp-main.379.pdf)
