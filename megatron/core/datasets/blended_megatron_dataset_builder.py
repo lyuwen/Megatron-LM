@@ -263,7 +263,7 @@ class BlendedMegatronDatasetBuilder(object):
                     if split[i] is not None:
                         weights_i = weights
                         if weights_i is not None and self.sizes[i] is not None:
-                            size_per_dataset = list(zip(*sizes_per_dataset))[i]
+                            size_per_dataset = list(zip(*sizes_per_dataset_target))[i]
                             size_i = sum(size_per_dataset)
                         elif weights_i is None:
                             if self.sizes[i] is not None:
@@ -294,12 +294,12 @@ class BlendedMegatronDatasetBuilder(object):
                     f"Build each megatron dataset with distributed builder",
                 )
                 megatron_datasets = self._build_megatron_datasets_distributed(
-                   prefixes, split, sizes_per_dataset
+                   prefixes, split, sizes_per_dataset_buffer
                 )
             else:
                 # Build each dataset in parallel
                 megatron_datasets = self._build_megatron_datasets_parallel(
-                    prefixes, split, sizes_per_dataset
+                    prefixes, split, sizes_per_dataset_buffer
                 )
 
             # Build the top-level datasets
