@@ -391,7 +391,7 @@ def pretrain(
             = build_train_valid_test_data_iterators(
                 train_valid_test_dataset_provider)
     # Extra validations
-    if (args.extra_valid_datalist is not None) and extra_valid_data_iterators_builder:
+    if (getattr(args, "extra_valid_datalist", None) is not None) and extra_valid_data_iterators_builder:
       print_rank_0('Build extra valid dataset ...')
       extra_valid_data_iterators, extra_valid_data_samples, extra_valid_data_names = \
           extra_valid_data_iterators_builder()
