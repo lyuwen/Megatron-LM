@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Union
 
 import torch
+import torch.nn.functional as F
 
 from megatron.core import parallel_state
 from megatron.core.models.common.embeddings import (
@@ -15,7 +16,7 @@ from megatron.core.models.common.embeddings import (
 )
 from megatron.core.tensor_parallel.mappings import gather_from_sequence_parallel_region
 from megatron.core.transformer.attention import Attention
-from megatron.core.transformer.enums import AttnMaskType
+from megatron.core.transformer.enums import AttnMaskType, AttnBackend
 from megatron.core.transformer.spec_utils import ModuleSpec, build_module
 from megatron.core.transformer.transformer_config import MLATransformerConfig
 
@@ -86,7 +87,8 @@ class MultiLatentAttention(Attention):
             attention_type=self.attention_type,
             softmax_scale=self.softmax_scale,
             k_channels=self.q_head_dim,
-            v_channels=self.config.v_head_dim,
+            v_channels=self.q_head_dim if self.config.attention_backend == AttnBackend.flash else self.config.v_head_dim,
+            # v_channels=self.config.v_head_dim,
             cp_comm_type=cp_comm_type,
         )
 
@@ -116,6 +118,7 @@ class MultiLatentAttention(Attention):
         attention_bias=None,
         packed_seq_params=None,
         position_ids=None,
+        sequence_len_offset=None,
     ):
         """Forward pass for multi-latent attention"""
         assert rotary_pos_emb is None, "Rotary position embeddings should not be passed into MLA."
@@ -151,6 +154,9 @@ class MultiLatentAttention(Attention):
         # ==================================
         # core attention computation
         # ==================================
+        # LFu: Pad value_states in MLA when attention backend is Flash Attention
+        if self.q_head_dim != self.config.v_head_dim and self.config.attention_backend == AttnBackend.flash:
+            value = F.pad(value, [0, self.q_head_dim - self.config.v_head_dim])
         # Need corresponding TE change
         if self.checkpoint_core_attention and self.training:
             core_attn_out = self._checkpointed_attention_forward(
@@ -165,6 +171,13 @@ class MultiLatentAttention(Attention):
                 packed_seq_params=packed_seq_params,
                 attn_mask_type=attn_mask_type,
             )
+        # LFu: Remove padding
+        if self.q_head_dim != self.config.v_head_dim and self.config.attention_backend == AttnBackend.flash:
+            q_len, bsz, nh = hidden_states.size()
+            n = nh // self.config.v_head_dim
+            core_attn_out = core_attn_out.reshape((q_len, bsz, n, self.q_head_dim))
+            core_attn_out = core_attn_out[:, :, :, : self.config.v_head_dim]
+            core_attn_out = core_attn_out.reshape((q_len, bsz, nh))
 
         if packed_seq_params is not None:
             # reshape to same output shape as unpacked case
