@@ -248,6 +248,7 @@ def pretrain(
     get_position_embedding_ranks=None,
     non_loss_data_func=None,
     extra_valid_data_iterators_builder=None,
+    num_floating_point_operations=num_floating_point_operations,
 ):
     """Main training program.
 
@@ -441,6 +442,7 @@ def pretrain(
                 process_non_loss_data_func, config, checkpointing_context,
                 non_loss_data_func,
                 extra_valid_data_iterators=extra_valid_data_iterators,
+                num_floating_point_operations=num_floating_point_operations,
                 )
 
         print_datetime('after training is done')
@@ -924,7 +926,9 @@ def train_step(forward_step_func, data_iterator,
 
 def training_log(loss_dict, total_loss_dict, learning_rate, decoupled_learning_rate, iteration,
                  loss_scale, report_memory_flag, skipped_iter,
-                 grad_norm, params_norm, num_zeros_in_grad):
+                 grad_norm, params_norm, num_zeros_in_grad,
+                 num_floating_point_operations=num_floating_point_operations,
+                 ):
     """Log training information such as losses, timing, ...."""
     args = get_args()
     timers = get_timers()
@@ -1397,6 +1401,7 @@ def train(forward_step_func, model, optimizer, opt_param_scheduler,
           train_data_iterator, valid_data_iterator,
           process_non_loss_data_func, config, checkpointing_context, non_loss_data_func,
           extra_valid_data_iterators=None,
+          num_floating_point_operations=num_floating_point_operations,
           ):
     """Training function: run train_step desired number of times, run validation, checkpoint."""
     args = get_args()
@@ -1639,7 +1644,9 @@ def train(forward_step_func, model, optimizer, opt_param_scheduler,
                                           decoupled_learning_rate,
                                           iteration, loss_scale,
                                           report_memory_flag, skipped_iter,
-                                          grad_norm, params_norm, num_zeros_in_grad)
+                                          grad_norm, params_norm, num_zeros_in_grad,
+                                          num_floating_point_operations=num_floating_point_operations,
+                                          )
 
         # Evaluation.
         if args.eval_interval and iteration % args.eval_interval == 0 and \
