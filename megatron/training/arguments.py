@@ -1320,6 +1320,12 @@ def _add_training_args(parser):
                        'whole transformer layer is recomputed, '
                        '2) selective: core attention part of the transformer '
                        'layer is recomputed.')
+    # LFu: add cpu offloading args
+    group.add_argument("--cpu-offloading", default=False, action="store_true",
+                       help="Use activation checkpointing.")
+    group.add_argument("--cpu-offloading-num-layers", type=int, default=0,
+                       help="The num of layers to be moved to CPU")
+    #
     group.add_argument('--no-check-for-nan-in-loss-and-grad', action='store_false',
                        help='Check for NaNs in loss and grad',
                        dest='check_for_nan_in_loss_and_grad')
