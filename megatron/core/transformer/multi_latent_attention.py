@@ -173,11 +173,12 @@ class MultiLatentAttention(Attention):
             )
         # LFu: Remove padding
         if self.q_head_dim != self.config.v_head_dim and self.config.attention_backend == AttnBackend.flash:
-            q_len, bsz, nh = hidden_states.size()
-            n = nh // self.config.v_head_dim
-            core_attn_out = core_attn_out.reshape((q_len, bsz, n, self.q_head_dim))
+            q_len, bsz, _ = hidden_states.size()
+            # raise ValueError(f"{hidden_states.size()=}, {core_attn_out.shape=}")
+            # n = nh // self.config.v_head_dim
+            core_attn_out = core_attn_out.reshape((q_len, bsz, self.config.num_attention_heads, self.q_head_dim))
             core_attn_out = core_attn_out[:, :, :, : self.config.v_head_dim]
-            core_attn_out = core_attn_out.reshape((q_len, bsz, nh))
+            core_attn_out = core_attn_out.reshape((q_len, bsz, self.config.num_attention_heads * self.config.v_head_dim))
 
         if packed_seq_params is not None:
             # reshape to same output shape as unpacked case
