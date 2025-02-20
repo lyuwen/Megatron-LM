@@ -1132,11 +1132,16 @@ def training_log(loss_dict, total_loss_dict, learning_rate, decoupled_learning_r
             elapsed_time_per_iteration * 1000.0)
         if args.log_throughput:
             log_string += f' throughput per GPU (TFLOP/s/GPU): {throughput:.1f} |'
+            # Log tokens trained per GPU-second
+            tokens_per_gpu_second = args.seq_length * args.global_batch_size / args.world_size / elapsed_time_per_iteration
+            log_string += f' token throughput per GPU (tokens/s/GPU): {tokens_per_gpu_second:.1f} |'
             if args.log_timers_to_tensorboard:
                 if writer:
                     writer.add_scalar('throughput', throughput, iteration)
+                    writer.add_scalar('tokens/s/GPU', tokens_per_gpu_second, iteration)
                 if wandb_writer:
                     wandb_writer.log({'throughput': throughput}, iteration)
+                    wandb_writer.log({'tokens/s/GPU': tokens_per_gpu_second}, iteration)
         # Decoupled_learning_rate should be not None only on first and last pipeline stage.
         log_string += f' learning rate: {learning_rate:.6E} |'
         if args.decoupled_lr is not None and (mpu.is_pipeline_first_stage(ignore_virtual=True) or
