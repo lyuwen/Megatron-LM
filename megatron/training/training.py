@@ -105,6 +105,8 @@ from megatron.core.sequence_length_scheduler import (
     update_consumed_tokens,
     restore_consumed_tokens,
     )
+# LFu
+from megatron.core.transformer.moe.utils import get_moe_FLOPs
 
 stimer = StragglerDetector()
 
@@ -125,6 +127,9 @@ def print_datetime(string):
 
 
 def num_floating_point_operations(args, batch_size):
+    if args.num_experts is not None:
+        return get_moe_FLOPs(args, batch_size)
+
     # Attention projection size.
     query_projection_size = args.kv_channels * args.num_attention_heads
     query_projection_to_hidden_size_ratio = query_projection_size / args.hidden_size
