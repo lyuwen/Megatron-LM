@@ -39,6 +39,8 @@ from megatron.core.models.gpt.gpt_layer_specs import (
     get_gpt_layer_local_spec,
     get_gpt_layer_with_transformer_engine_spec,
 )
+# LFu
+from megatron.core.transformer.moe.utils import get_moe_model_size, get_moe_activated_size, get_moe_FLOPs
 
 
 stimer = StragglerDetector()
@@ -131,6 +133,13 @@ def model_provider(pre_process=True, post_process=True) -> Union[GPTModel, megat
                 rotary_base=args.rotary_base,
                 rope_scaling=args.use_rope_scaling
             )
+        if args.num_experts is not None:
+            print_rank_0("-" * 18 + " Model  Summary " + "-" * 18)
+            print_rank_0(f"Number of trainable parameters in the model (exclude embedding): {get_moe_model_size(args):,d}")
+            print_rank_0(f"Number of activated parameters in the model (exclude embedding): {get_moe_activated_size(args):,d}")
+            print_rank_0(f"Number of parameters in the embedding layer: {get_embedding_size(args):,d}")
+            print_rank_0(f"Model Structure:\n{model!s}")
+            print_rank_0("-" * 52)
 
     return model
 
