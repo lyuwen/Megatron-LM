@@ -2247,6 +2247,10 @@ def _add_moe_args(parser):
                        help='Use legacy GroupedMLP rather than TEGroupedMLP. Note: The legacy one will be deprecated soon.')
     group.add_argument('--moe-aux-loss-coeff', type=float, default=0.0,
                        help='Scaling coefficient for the aux loss: a starting value of 1e-2 is recommended.')
+    group.add_argument('--moe-device-balance-loss-coeff', type=float, default=0.0,
+                       help='Scaling coefficient for the device-level load balancing loss. Set as 0.05 in DeepSeek V2.')
+    group.add_argument('--moe-communication-balance-loss-coeff', type=float, default=0.0,
+                       help='Scaling coefficient for the communication balancing loss. Set as 0.02 in DeepSeek V2.')
     group.add_argument('--moe-z-loss-coeff', type=float, default=None,
                        help='Scaling coefficient for the z-loss: a starting value of 1e-3 is recommended.')
     group.add_argument('--moe-input-jitter-eps', type=float, default=None,

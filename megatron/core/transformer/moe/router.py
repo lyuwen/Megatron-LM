@@ -17,6 +17,7 @@ from megatron.core.transformer.moe.moe_utils import (
     switch_load_balancing_loss_func,
     topk_softmax_with_capacity,
     z_loss_func,
+    device_load_balancing_loss_func,
 )
 from megatron.core.transformer.transformer_config import TransformerConfig
 
@@ -247,6 +248,35 @@ class TopKRouter(Router):
             self.config.num_layers,
             reduce_group=sequence_partition_group,
         )
+
+        # LFu: Add device balancing loss
+        if self.config.moe_device_balance_loss_coeff or self.config.moe_communication_balance_loss_coeff:
+            moe_device_balance_loss_coeff = self.config.moe_device_balance_loss_coeff / parallel_state.get_tensor_model_parallel_world_size()
+            moe_communication_balance_loss_coeff = self.config.moe_communication_balance_loss_coeff / parallel_state.get_tensor_model_parallel_world_size()
+            device_loss, communication_loss = device_load_balancing_loss_func(
+                probs=scores,
+                routing_map=routing_map,
+                batch_size=bsz,
+                seq_length=seq_length,
+                topk=self.topk,
+                expert_model_parallel_size=self.config.expert_model_parallel_size,
+                moe_router_limited_devices=self.config.moe_router_topk_limited_devices
+            )
+            save_to_aux_losses_tracker(
+                "device_balancing_loss",
+                device_loss,
+                self.layer_number,
+                self.config.num_layers
+            )
+            save_to_aux_losses_tracker(
+                "communication_balancing_loss",
+                communication_loss,
+                self.layer_number,
+                self.config.num_layers
+            )
+            aux_loss += self.config.moe_device_balance_loss_coeff * device_loss
+            aux_loss += self.config.moe_communication_balance_loss_coeff * communication_loss
+        #
         activation = MoEAuxLossAutoScaler.apply(activation, aux_loss)
         return activation
 

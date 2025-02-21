@@ -110,6 +110,73 @@ def sequence_load_balancing_loss_func(
     return seq_aux_loss
 
 
+def device_load_balancing_loss_func(
+    probs: torch.Tensor,
+    routing_map: torch.Tensor,
+    batch_size: int,
+    seq_length: int,
+    topk: int,
+    expert_model_parallel_size: int,
+    moe_router_limited_devices: int = None,
+):
+    """
+    Calculate the auxiliary loss in sequence-level by computing the loss for each individual sample.
+    Refer to the DeepSeek-V2 huggingface repo
+    (https://huggingface.co/deepseek-ai/DeepSeek-V2) for details.
+
+    Args:
+        expert_model_parallel_size:
+            Number of group of experts. $D$ in Eq.26 ~ Eq.28.
+
+        moe_router_limited_devices:
+            $M$ in Eq.29 ~ Eq.31. The default value of it is None in
+            Megatron-LM. If this is None, the communication balance loss
+            is not included.
+    """
+
+    num_experts = probs.shape[1]
+
+    # The following implementation is not the most elegant one,
+    # but I would like to keep as many codes unchanged as possible
+    # as they are presented in Megatron-LM.
+
+    # Expert-level Balance Loss. Eq.23 ~ Eq.25.
+    probs_for_aux_loss = probs.view(seq_length, batch_size, -1) # (seq_len, bs, num_experts)
+    cost_coeff = routing_map.view(seq_length, batch_size, -1).sum(dim=0).float() # (bs, num_experts)
+    cost_coeff.div_(seq_length * topk / num_experts) # this is f_i in Eq.24
+    #  seq_aux_loss = (cost_coeff * probs_for_aux_loss.mean(dim=0)).sum(dim=1).mean()
+    #  seq_aux_loss *= moe_aux_loss_coeff
+
+    # Device-Level Balance Loss. Eq.26 ~ Eq.28
+    assert num_experts % expert_model_parallel_size == 0, \
+    "Expert models can not be partitioned on different devices."
+    cost_coeff_prime = cost_coeff.view(batch_size, expert_model_parallel_size, -1) # (bs, n_group, num_local_experts)
+    cost_coeff_prime = cost_coeff_prime.mean(dim=-1) # Eq. 27. (bs, n_group)
+    P = probs_for_aux_loss.mean(dim=0) # (bs, num_experts)
+    P_prime = P.view(batch_size, expert_model_parallel_size, -1).mean(dim=-1) #Eq.28, (bs, n_group)
+    device_level_balance_loss = (cost_coeff_prime * P_prime).sum(dim=1).mean()
+    #  device_level_balance_loss *= moe_device_balance_loss_coeff
+
+    # Communication Balance Loss. Eq.29 ~ Eq.31
+    # if the paramter moe-router-topk-limited-devices is not set,
+    # we do not compute this loss.
+    if moe_router_limited_devices is None:
+        communication_balance_loss = 0
+    else:
+        f_prime_prime = routing_map.view(
+            seq_length, batch_size, expert_model_parallel_size, -1
+        ).float().sum(dim=-1) # (seq_len, bs, n_group)
+        f_prime_prime = (f_prime_prime > 0).sum(dim=0).to(probs.dtype)
+        f_prime_prime.div_(seq_length * moe_router_limited_devices / expert_model_parallel_size) # Eq. 30
+        # P_prime_prime in Eq. 31 is the same as Eq.28,
+        # so we do not re-compute.
+        communication_balance_loss = (P_prime * f_prime_prime).sum(dim=1).mean()
+        #  communication_balance_loss *= moe_communication_balance_loss_coeff
+
+    return device_level_balance_loss, communication_balance_loss
+
+
+
 def z_loss_func(logits, z_loss_coeff):
     """Encourages the router's logits to remain small to enhance stability.
     Please refer to the ST-MoE paper (https://arxiv.org/pdf/2202.08906.pdf) for details.
