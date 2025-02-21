@@ -40,7 +40,12 @@ from megatron.core.models.gpt.gpt_layer_specs import (
     get_gpt_layer_with_transformer_engine_spec,
 )
 # LFu
-from megatron.core.transformer.moe.utils import get_moe_model_size, get_moe_activated_size, get_moe_FLOPs
+from megatron.core.transformer.moe.utils import (
+    get_moe_model_size,
+    get_moe_activated_size,
+    get_embedding_size,
+    get_moe_FLOPs,
+)
 
 
 stimer = StragglerDetector()
