@@ -110,6 +110,8 @@ class MultiLatentAttention(Attention):
             tp_comm_buffer_name='proj',
         )
 
+        self.checkpoint_mla_upproj = self.config.recompute_granularity == 'deepseek'
+
     def forward(
         self,
         hidden_states,
@@ -322,6 +324,10 @@ class MLASelfAttention(MultiLatentAttention):
             q_compressed, _ = self.linear_q_down_proj(hidden_states)
             q_compressed = self.q_layernorm(q_compressed)
             q, _ = self.linear_q_up_proj(q_compressed)
+            if self.checkpoint_mla_upproj and self.training:
+                q, _ = tensor_parallel.checkpoint(self.linear_q_proj, q_compressed)
+            else:
+                q, _ = self.linear_q_up_proj(q_compressed)
         else:
             # hidden_states:[s, b, 2048], q: [s, b, n * 192]
             q, _ = self.linear_q_proj(hidden_states)
@@ -349,7 +355,10 @@ class MLASelfAttention(MultiLatentAttention):
             k_pos_emb = gather_from_sequence_parallel_region(k_pos_emb)
 
         # kv: [s, b, 2048]
-        kv, _ = self.linear_kv_up_proj(self.kv_layernorm(kv_compressed))
+        if self.checkpoint_mla_upproj and self.training:
+            kv, _ = tensor_parallel.checkpoint(self.linear_kv_up_proj, self.kv_layernorm(kv_compressed))
+        else:
+            kv, _ = self.linear_kv_up_proj(self.kv_layernorm(kv_compressed))
 
         # kv: [s, b, n, 256]
         kv = kv.view(

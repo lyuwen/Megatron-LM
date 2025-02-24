@@ -1336,7 +1336,7 @@ def _add_training_args(parser):
                        help='recompute activation to allow for training '
                        'with larger models, sequences, and batch sizes.')
     group.add_argument('--recompute-granularity', type=str, default=None,
-                       choices=['full', 'selective'],
+                       choices=['full', 'selective', 'deepseek'],
                        help='Checkpoint activations to allow for training '
                        'with larger models, sequences, and batch sizes. '
                        'It is supported at two granularities 1) full: '

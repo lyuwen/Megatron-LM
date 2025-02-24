@@ -259,6 +259,8 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
         self.layer_number = layer_number + get_transformer_layer_offset(self.config)
         self.hidden_dropout = config.hidden_dropout if hidden_dropout is None else hidden_dropout
 
+        self.checkpoint_rmsnorm = self.config.recompute_granularity == 'deepseek'
+
         # [Module 1: Input Layernorm] Optional Layernorm on the input data
         # TODO: add pytorch only layernorm
         self.input_layernorm = build_module(
@@ -385,6 +387,10 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
 
         # Optional Input Layer norm
         input_layernorm_output = self.input_layernorm(hidden_states)
+        if self.checkpoint_rmsnorm and self.training:
+            input_layernorm_output = tensor_parallel.checkpoint(self.input_layernorm, hidden_states)
+        else:
+            input_layernorm_output = self.input_layernorm(hidden_states)
 
         # Self attention.
         attention_output_with_bias = self.self_attention(
@@ -434,7 +440,10 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
         residual = hidden_states
 
         # Optional Layer norm post the cross-attention.
-        pre_mlp_layernorm_output = self.pre_mlp_layernorm(hidden_states)
+        if self.checkpoint_rmsnorm and self.training:
+            pre_mlp_layernorm_output = tensor_parallel.checkpoint(self.pre_mlp_layernorm, hidden_states)
+        else:
+            pre_mlp_layernorm_output = self.pre_mlp_layernorm(hidden_states)
 
         # MLP.
         mlp_output_with_bias = self.mlp(pre_mlp_layernorm_output)
