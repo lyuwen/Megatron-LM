@@ -71,13 +71,19 @@ def get_moe_layer_FLOPs(config, batch_size: int) -> int:
 def get_moe_model_size(config) -> int:
     dense_size = get_dense_layer_size(config)
     moe_size = get_moe_total_layer_size(config)
-    return config.moe_layer_freq * dense_size + (config.num_layers - config.moe_layer_freq) * moe_size
+    if isinstance(config.moe_layer_freq, int):
+        return config.moe_layer_freq * dense_size + (config.num_layers - config.moe_layer_freq) * moe_size
+    else:
+        return sum([moe_size if flag else dense_size for flag in config.moe_layer_freq])
 
 
 def get_moe_activated_size(config) -> int:
     dense_size = get_dense_layer_size(config)
     moe_size = get_moe_activated_layer_size(config)
-    return config.moe_layer_freq * dense_size + (config.num_layers - config.moe_layer_freq) * moe_size
+    if isinstance(config.moe_layer_freq, int):
+        return config.moe_layer_freq * dense_size + (config.num_layers - config.moe_layer_freq) * moe_size
+    else:
+        return sum([moe_size if flag else dense_size for flag in config.moe_layer_freq])
 
 
 def get_embedding_size(config) -> int:
