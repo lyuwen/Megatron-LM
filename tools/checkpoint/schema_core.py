@@ -81,6 +81,7 @@ class CoreTESchema(CoreSchema):
             # Self attention.
             "self_attn_norm_weight" : "self_attention.linear_qkv.layer_norm_weight",
             "self_attn_norm_bias" : "self_attention.linear_qkv.layer_norm_bias",
+
             "self_attn_qkv_weight" : "self_attention.linear_qkv.weight",
             "self_attn_qkv_bias" : "self_attention.linear_qkv.bias",
 
@@ -126,18 +127,96 @@ class CoreMoETESchema(CoreSchema):
         })
 
 
+class CoreTEMLASchema(CoreSchema):
+
+    def __init__(self, model_type):
+        super().__init__(model_type, layer_schema={
+
+            # Self attention.
+            "self_attn_linear_q_proj_weight" : "self_attention.linear_q_proj.weight",
+            "self_attn_linear_q_proj_bias" : "self_attention.linear_q_proj.bias",
+            "self_attn_linear_q_down_proj_weight" : "self_attention.linear_q_down_proj.weight",
+            "self_attn_linear_q_down_proj_bias" : "self_attention.linear_q_down_proj.bias",
+            "self_attn_linear_q_up_proj_weight" : "self_attention.linear_q_up_proj.weight",
+            "self_attn_linear_q_up_proj_bias" : "self_attention.linear_q_up_proj.bias",
+            "self_attn_linear_kv_down_proj_weight" : "self_attention.linear_kv_down_proj.weight",
+            "self_attn_linear_kv_down_proj_bias" : "self_attention.linear_kv_down_proj.bias",
+            "self_attn_linear_kv_up_proj_weight" : "self_attention.linear_kv_up_proj.weight",
+            "self_attn_linear_kv_up_proj_bias" : "self_attention.linear_kv_up_proj.bias",
+
+            "self_attn_q_layernorm_weight" : "self_attention.q_layernorm.weight",
+            "self_attn_q_layernorm_bias" : "self_attention.q_layernorm.bias",
+            "self_attn_kv_layernorm_weight" : "self_attention.kv_layernorm.weight",
+            "self_attn_kv_layernorm_bias" : "self_attention.kv_layernorm.bias",
+
+            "self_attn_proj_weight" : "self_attention.linear_proj.weight",
+            "self_attn_proj_bias" : "self_attention.linear_proj.bias",
+
+            # MLP.
+            "mlp_norm_weight" : "mlp.linear_fc1.layer_norm_weight",
+            "mlp_norm_bias" : "mlp.linear_fc1.layer_norm_bias",
+            "mlp_fc1_weight" : "mlp.linear_fc1.weight",
+            "mlp_fc1_bias" : "mlp.linear_fc1.bias",
+            "mlp_fc2_weight" : "mlp.linear_fc2.weight",
+            "mlp_fc2_bias" : "mlp.linear_fc2.bias",
+
+        })
+
+
+class CoreMoETESchema(CoreSchema):
+
+    def __init__(self, model_type, num_experts, expert_model_parallel_size):
+        num_local_experts = num_experts // expert_model_parallel_size
+        super().__init__(model_type, layer_schema={
+
+            # Self atten
+            "self_attn_linear_q_proj_weight" : "self_attention.linear_q_proj.weight",
+            "self_attn_linear_q_proj_bias" : "self_attention.linear_q_proj.bias",
+            "self_attn_linear_q_down_proj_weight" : "self_attention.linear_q_down_proj.weight",
+            "self_attn_linear_q_down_proj_bias" : "self_attention.linear_q_down_proj.bias",
+            "self_attn_linear_q_up_proj_weight" : "self_attention.linear_q_up_proj.weight",
+            "self_attn_linear_q_up_proj_bias" : "self_attention.linear_q_up_proj.bias",
+            "self_attn_linear_kv_down_proj_weight" : "self_attention.linear_kv_down_proj.weight",
+            "self_attn_linear_kv_down_proj_bias" : "self_attention.linear_kv_down_proj.bias",
+            "self_attn_linear_kv_up_proj_weight" : "self_attention.linear_kv_up_proj.weight",
+            "self_attn_linear_kv_up_proj_bias" : "self_attention.linear_kv_up_proj.bias",
+
+            "self_attn_q_layernorm_weight" : "self_attention.q_layernorm.weight",
+            "self_attn_q_layernorm_bias" : "self_attention.q_layernorm.bias",
+            "self_attn_kv_layernorm_weight" : "self_attention.kv_layernorm.weight",
+            "self_attn_kv_layernorm_bias" : "self_attention.kv_layernorm.bias",
+
+            "self_attn_proj_weight" : "self_attention.linear_proj.weight",
+            "self_attn_proj_bias" : "self_attention.linear_proj.bias",
+
+            # MLP.
+            "mlp_norm_weight" : "pre_mlp_layernorm.weight",
+            "mlp_norm_bias" : "pre_mlp_layernorm.bias",
+
+            "router_weight" : "mlp.router.weight",
+
+            **{f"mlp_fc1_weight.{expert_idx}" : f"mlp.experts.local_experts.{expert_idx}.linear_fc1.weight" for expert_idx in range(num_local_experts) },
+            **{f"mlp_fc2_weight.{expert_idx}" : f"mlp.experts.local_experts.{expert_idx}.linear_fc2.weight" for expert_idx in range(num_local_experts) },
+
+        })
+
+
 def get_model_schema(
     model_type: T.Literal["GPT", "BERT"],
     transformer_impl: T.Literal["transformer_engine", "local"],
     num_experts: T.Optional[int] = None,
     expert_model_parallel_size: T.Optional[int] = None,
+    multi_latent_attention: T.Optional[bool] = False,
 ) -> CoreSchema:
     if num_experts is not None and num_experts > 0:
         # Only support TE setter for MOE
         assert transformer_impl == "transformer_engine"
         assert isinstance(expert_model_parallel_size, int)
-        return CoreMoETESchema(model_type, num_experts, expert_model_parallel_size)
+        if not multi_latent_attention:
+            return CoreMoETESchema(model_type, num_experts, expert_model_parallel_size)
+        else:
+            return CoreMoETEMLASchema(model_type, num_experts, expert_model_parallel_size)
     return {
         "local" : CoreLocalSchema,
-        "transformer_engine" : CoreTESchema,
+        "transformer_engine" : CoreTESchema if not multi_latent_attention else CoreTEMLASchema,
     }[transformer_impl](model_type)

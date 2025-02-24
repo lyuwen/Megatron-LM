@@ -240,6 +240,14 @@ def _load_checkpoint(queue, args):
     md.make_vocab_size_divisible_by = margs.make_vocab_size_divisible_by
     md.checkpoint_args = checkpoint_args
     md.use_legacy_models = margs.use_legacy_models
+    #
+    md.multi_latent_attention = margs.use_legacy_models
+    md.kv_lora_rank = margs.kv_lora_rank
+    md.q_lora_rank = margs.q_lora_rank
+    md.qk_head_dim = margs.qk_head_dim
+    md.qk_pos_emb_head_dim = margs.qk_pos_emb_head_dim
+    md.v_head_dim = margs.v_head_dim
+    md.rotary_scaling_factor = margs.rotary_scaling_factor
 
     # Get first pipe stage.
     mpu.set_pipeline_model_parallel_rank(0)
@@ -297,6 +305,30 @@ def _load_checkpoint(queue, args):
                 if md.linear_bias:
                     message["dense bias"] = layer["self_attn_proj_bias"]
                     message["mlp l1 bias"] = layer["mlp_fc2_bias"]
+
+                #
+                if md.multi_latent_attention:
+                    if md.q_lora_rank is None:
+                        message["q_proj_weight"] = layer["self_attn_linear_q_proj_weight"]
+                    else:
+                        message["q_down_proj_weight"] = layer["self_attn_linear_q_down_proj_weight"]
+                        message["q_up_proj_weight"] = layer["self_attn_linear_q_up_proj_weight"]
+                        message["q_layernorm_weight"] = layer["self_attn_q_layernorm_weight"]
+                    message["kv_down_proj_weight"] = layer["self_attn_linear_kv_down_proj_weight"]
+                    message["kv_up_proj_weight"] = layer["self_attn_linear_kv_up_proj_weight"]
+                    message["kv_layernorm_weight"] = layer["self_attn_kv_layernorm_weight"]
+                    #
+                    if md.qkv_bias:
+                        if md.q_lora_rank is None:
+                            message["q_proj_bias"] = layer["self_attn_linear_q_proj_bias"]
+                        else:
+                            message["q_down_proj_bias"] = layer["self_attn_linear_q_down_proj_bias"]
+                            message["q_up_proj_bias"] = layer["self_attn_linear_q_up_proj_bias"]
+                            message["q_layernorm_bias"] = layer["self_attn_q_layernorm_bias"]
+                        message["kv_down_proj_bias"] = layer["self_attn_linear_kv_down_proj_bias"]
+                        message["kv_up_proj_bias"] = layer["self_attn_linear_kv_up_proj_bias"]
+                        message["kv_layernorm_bias"] = layer["self_attn_kv_layernorm_bias"]
+                #
 
                 # Grab all parallel tensors for this layer
                 qkv_weight = []
