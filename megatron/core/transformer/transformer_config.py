@@ -550,7 +550,7 @@ class TransformerConfig(ModelParallelConfig):
             )
 
         if self.recompute_granularity is not None:
-            if self.recompute_granularity not in ['full', 'selective']:
+            if self.recompute_granularity not in ['full', 'selective', 'deepseek']:
                 raise ValueError(
                     f'When using recompute_granuarlity: {self.recompute_granularity} must be "full"'
                     'or "selective".'

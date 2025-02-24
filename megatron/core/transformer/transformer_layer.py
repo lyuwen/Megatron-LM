@@ -7,7 +7,7 @@ from typing import Dict, Optional, Union
 import torch
 import torch.distributed
 
-from megatron.core import parallel_state
+from megatron.core import parallel_state, tensor_parallel
 from megatron.core.dist_checkpointing.mapping import ShardedStateDict
 from megatron.core.dist_checkpointing.utils import apply_prefix_mapping
 from megatron.core.transformer.cuda_graphs import CudaGraphManager
@@ -386,9 +386,11 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
         residual = hidden_states
 
         # Optional Input Layer norm
-        input_layernorm_output = self.input_layernorm(hidden_states)
+        # input_layernorm_output = self.input_layernorm(hidden_states)
         if self.checkpoint_rmsnorm and self.training:
-            input_layernorm_output = tensor_parallel.checkpoint(self.input_layernorm, hidden_states)
+            def custom_forward(inp):
+                return self.input_layernorm(inp)
+            input_layernorm_output = tensor_parallel.checkpoint(custom_forward, False, hidden_states)
         else:
             input_layernorm_output = self.input_layernorm(hidden_states)
 
@@ -441,7 +443,7 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
 
         # Optional Layer norm post the cross-attention.
         if self.checkpoint_rmsnorm and self.training:
-            pre_mlp_layernorm_output = tensor_parallel.checkpoint(self.pre_mlp_layernorm, hidden_states)
+            pre_mlp_layernorm_output = tensor_parallel.checkpoint(self.pre_mlp_layernorm, False, hidden_states)
         else:
             pre_mlp_layernorm_output = self.pre_mlp_layernorm(hidden_states)
 

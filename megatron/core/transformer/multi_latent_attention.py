@@ -8,7 +8,7 @@ from typing import Union
 import torch
 import torch.nn.functional as F
 
-from megatron.core import parallel_state
+from megatron.core import parallel_state, tensor_parallel
 from megatron.core.models.common.embeddings import (
     YarnRotaryEmbedding,
     _yarn_get_mscale,
@@ -325,7 +325,9 @@ class MLASelfAttention(MultiLatentAttention):
             q_compressed = self.q_layernorm(q_compressed)
             q, _ = self.linear_q_up_proj(q_compressed)
             if self.checkpoint_mla_upproj and self.training:
-                q, _ = tensor_parallel.checkpoint(self.linear_q_proj, q_compressed)
+                def custom_forward(inp):
+                    return self.linear_q_up_proj(inp)
+                q, _ = tensor_parallel.checkpoint(custom_forward, False, q_compressed)
             else:
                 q, _ = self.linear_q_up_proj(q_compressed)
         else:
@@ -356,7 +358,9 @@ class MLASelfAttention(MultiLatentAttention):
 
         # kv: [s, b, 2048]
         if self.checkpoint_mla_upproj and self.training:
-            kv, _ = tensor_parallel.checkpoint(self.linear_kv_up_proj, self.kv_layernorm(kv_compressed))
+            def custom_forward(inp):
+                return self.linear_kv_up_proj(inp)
+            kv, _ = tensor_parallel.checkpoint(custom_forward, False, self.kv_layernorm(kv_compressed))
         else:
             kv, _ = self.linear_kv_up_proj(self.kv_layernorm(kv_compressed))
 
