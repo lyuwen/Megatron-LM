@@ -2260,6 +2260,8 @@ def _add_moe_args(parser):
                             'where 1 indicates an expert layer and 0 indicates a dense layer. '
                             'Examples: "([0]+[1]*23)": 1 dense layer followed by 23 experts layers, '
                             '"([1]*3+[0]*2)*2": Three expert layers followed by two dense layers, repeated twice.')
+    group.add_argument('--moe-first-k-dense-replace', type=int, default=None,
+                       help='Replace first k layers of the transformer with dense layers.')
     group.add_argument('--moe-ffn-hidden-size', type=int, default=None,
                        help='The hidden size of each expert\'s feed-forward network (ffn). '
                        'If not specified, defaults to the ffn_hidden_size.')

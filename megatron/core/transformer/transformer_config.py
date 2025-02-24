@@ -274,6 +274,9 @@ class TransformerConfig(ModelParallelConfig):
     "([1]*3+[0]*1)*3" evaluates to [1,1,1,0,1,1,1,0,1,1,1,0]
     where 1 indicates an expert layer and 0 indicates a dense layer."""
 
+    moe_first_k_dense_replace: int = None
+    """Replace first k layers of the transformer with dense layers."""
+
     moe_ffn_hidden_size: Optional[int] = None
     """MoE Feed-Forward Network hidden size"""
 

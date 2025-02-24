@@ -361,6 +361,9 @@ def get_gpt_decoder_block_spec(
         raise ValueError(
             f"Invalid moe_layer_freq: {type(config.moe_layer_freq)}, {config.moe_layer_freq}"
         )
+    if config.moe_first_k_dense_replace is not None:
+        for i in range(config.moe_first_k_dense_replace):
+            moe_layer_pattern[i] = 0
 
     # Create the layer specs for the model.
     layer_specs = []
