@@ -65,12 +65,12 @@ def save_checkpoint(queue: mp.Queue, args):
         num_attention_heads     = mag_conf.num_attention_heads,
         num_key_value_heads     = mag_conf.num_query_groups,
         #
-        kv_lora_rank            = mag_conf.kv_lora_rank
-        q_lora_rank             = mag_conf.q_lora_rank
-        qk_head_dim             = mag_conf.qk_head_dim
-        qk_pos_emb_head_dim     = mag_conf.qk_pos_emb_head_dim
-        v_head_dim              = mag_conf.v_head_dim
-        rotary_scaling_factor   = mag_conf.rotary_scaling_factor
+        kv_lora_rank            = mag_conf.kv_lora_rank,
+        q_lora_rank             = mag_conf.q_lora_rank,
+        qk_head_dim             = mag_conf.qk_head_dim,
+        qk_pos_emb_head_dim     = mag_conf.qk_pos_emb_head_dim,
+        v_head_dim              = mag_conf.v_head_dim,
+        rotary_scaling_factor   = mag_conf.rotary_scaling_factor,
         #
         max_position_embeddings = mag_conf.max_position_embeddings,
         rms_norm_eps            = mag_conf.norm_epsilon,
@@ -84,6 +84,8 @@ def save_checkpoint(queue: mp.Queue, args):
         model_type              = "llamamla",
         architectures           = ['LlamaMLAForCausalLM'],
         transformers_version    = "4.33.1",
+        auto_map                = {'AutoConfig': 'configuration_llamamla.LlamaMLAConfig',
+                                   'AutoModelForCausalLM': 'modeling_llamamla.LlamaMLAForCausalLM'},
         )
     llama_conf.save_pretrained(args.save_dir)
     if tokenizer is not None:
@@ -103,9 +105,9 @@ def save_checkpoint(queue: mp.Queue, args):
         set_hf_param(suffix + 'post_attention_layernorm', message["post norm weight"])
         set_hf_param(suffix + 'mlp.gate_proj', message["mlp l0 weight W"])
         set_hf_param(suffix + 'mlp.up_proj', message["mlp l0 weight V"])
-        #  qkv_weight = message["qkv weight"]
-        qkv_weight = qkv_weight.view(llama_conf.num_attention_heads, 3, -1, llama_conf.hidden_size)
-        qkv_weight = qkv_weight.transpose(0, 1).reshape(3, llama_conf.hidden_size, llama_conf.hidden_size)
+        # qkv_weight = message["qkv weight"]
+        # qkv_weight = qkv_weight.view(llama_conf.num_attention_heads, 3, -1, llama_conf.hidden_size)
+        # qkv_weight = qkv_weight.transpose(0, 1).reshape(3, llama_conf.hidden_size, llama_conf.hidden_size)
         #
         if mag_conf.q_lora_rank is None:
             set_hf_param(suffix + 'self_attn.q_proj', message["q_proj_weight"])
@@ -113,9 +115,9 @@ def save_checkpoint(queue: mp.Queue, args):
             set_hf_param(suffix + 'self_attn.q_a_proj', message["q_down_proj_weight"])
             set_hf_param(suffix + 'self_attn.q_b_proj', message["q_up_proj_weight"])
             set_hf_param(suffix + 'self_attn.q_a_layernorm', message["q_layernorm_weight"])
-        set_hf_param(suffix + 'self_attn.kv_a_proj', message["self_attn_linear_kv_down_proj_weight"])
-        set_hf_param(suffix + 'self_attn.kv_b_proj', message["self_attn_linear_kv_up_proj_weight"])
-        set_hf_param(suffix + 'self_attn.kv_a_layernorm', message["self_attn_kv_layernorm_weight"])
+        set_hf_param(suffix + 'self_attn.kv_a_proj', message["kv_down_proj_weight"])
+        set_hf_param(suffix + 'self_attn.kv_b_proj', message["kv_up_proj_weight"])
+        set_hf_param(suffix + 'self_attn.kv_a_layernorm', message["kv_layernorm_weight"])
         set_hf_param(suffix + 'self_attn.o_proj', message["dense weight"])
         #
         set_hf_param(suffix + 'mlp.down_proj', message["mlp l1 weight"])

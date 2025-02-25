@@ -241,7 +241,7 @@ def _load_checkpoint(queue, args):
     md.checkpoint_args = checkpoint_args
     md.use_legacy_models = margs.use_legacy_models
     #
-    md.multi_latent_attention = margs.use_legacy_models
+    md.multi_latent_attention = margs.multi_latent_attention
     md.kv_lora_rank = margs.kv_lora_rank
     md.q_lora_rank = margs.q_lora_rank
     md.qk_head_dim = margs.qk_head_dim
@@ -269,6 +269,7 @@ def _load_checkpoint(queue, args):
         margs.transformer_impl,
         margs.num_experts,
         margs.expert_model_parallel_size,
+        multi_latent_attention=md.multi_latent_attention,
     )
 
     # Send embeddings.
@@ -313,10 +314,10 @@ def _load_checkpoint(queue, args):
                     else:
                         message["q_down_proj_weight"] = layer["self_attn_linear_q_down_proj_weight"]
                         message["q_up_proj_weight"] = layer["self_attn_linear_q_up_proj_weight"]
-                        message["q_layernorm_weight"] = layer["self_attn_q_layernorm_weight"]
+                        message["q_layernorm_weight"] = layer["self_attn_linear_q_up_layernorm_weight"]
                     message["kv_down_proj_weight"] = layer["self_attn_linear_kv_down_proj_weight"]
                     message["kv_up_proj_weight"] = layer["self_attn_linear_kv_up_proj_weight"]
-                    message["kv_layernorm_weight"] = layer["self_attn_kv_layernorm_weight"]
+                    message["kv_layernorm_weight"] = layer["self_attn_linear_kv_up_layernorm_weight"]
                     #
                     if md.qkv_bias:
                         if md.q_lora_rank is None:
@@ -324,10 +325,10 @@ def _load_checkpoint(queue, args):
                         else:
                             message["q_down_proj_bias"] = layer["self_attn_linear_q_down_proj_bias"]
                             message["q_up_proj_bias"] = layer["self_attn_linear_q_up_proj_bias"]
-                            message["q_layernorm_bias"] = layer["self_attn_q_layernorm_bias"]
+                            message["q_layernorm_bias"] = layer["self_attn_linear_q_up_layernorm_bias"]
                         message["kv_down_proj_bias"] = layer["self_attn_linear_kv_down_proj_bias"]
                         message["kv_up_proj_bias"] = layer["self_attn_linear_kv_up_proj_bias"]
-                        message["kv_layernorm_bias"] = layer["self_attn_kv_layernorm_bias"]
+                        message["kv_layernorm_bias"] = layer["self_attn_linear_kv_up_layernorm_bias"]
                 #
 
                 # Grab all parallel tensors for this layer
@@ -339,7 +340,8 @@ def _load_checkpoint(queue, args):
                 mlp_l1_weight = []
                 for tp_rank, model in enumerate(models):
                     layer = schema.get_layer(model, layer_num)
-                    qkv_weight.append(layer["self_attn_qkv_weight"])
+                    if not md.multi_latent_attention:
+                        qkv_weight.append(layer["self_attn_qkv_weight"])
                     dense_weight.append(layer["self_attn_proj_weight"])
                     mlp_l0_weight.append(layer["mlp_fc1_weight"])
                     mlp_l1_weight.append(layer["mlp_fc2_weight"])
@@ -359,7 +361,8 @@ def _load_checkpoint(queue, args):
                     message["mlp l0 weight"] = torch.cat(mlp_l0_weight, dim=0)
 
                 # simple concat of the rest
-                message["qkv weight"] = torch.cat(qkv_weight, dim=0)
+                if not md.multi_latent_attention:
+                    message["qkv weight"] = torch.cat(qkv_weight, dim=0)
                 message["dense weight"] = torch.cat(dense_weight, dim=1)
                 message["mlp l1 weight"] = torch.cat(mlp_l1_weight, dim=1)
                 if md.qkv_bias:

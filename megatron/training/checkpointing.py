@@ -1025,6 +1025,21 @@ def load_args_from_checkpoint(
     _set_arg('attention_dropout', force=True)
     _set_arg('hidden_dropout', force=True)
 
+    _set_arg('multi_latent_attention', force=True)
+    _set_arg('qk_layernorm', force=True)
+    _set_arg('q_lora_rank', force=True)
+    _set_arg('kv_lora_rank', force=True)
+    _set_arg('qk_head_dim', force=True)
+    _set_arg('qk_pos_emb_head_dim', force=True)
+    _set_arg('v_head_dim', force=True)
+    _set_arg('rotary_scaling_factor', force=True)
+    _set_arg('mscale', force=True)
+    _set_arg('mscale_all_dim', force=True)
+
+    _set_arg('apply_rope_fusion', force=True)
+    if args.multi_latent_attention:
+        args.apply_rope_fusion = False
+
     _set_arg('hybrid_override_pattern', force=True)
     _set_arg('spec', force=True)
     _set_arg('hybrid_attention_ratio', force=True)
@@ -1044,6 +1059,7 @@ def load_args_from_checkpoint(
     # Using checkpoint version might not always be safe (e.g., if running on different cluster).
     if args.use_tokenizer_model_from_checkpoint_args:
         _set_arg('tokenizer_model', force=True)
+        _set_arg('vocab_file', force=True)
     _set_arg('tiktoken_pattern', force=True)
     _set_arg('padded_vocab_size')
 

@@ -133,6 +133,9 @@ class CoreTEMLASchema(CoreSchema):
         super().__init__(model_type, layer_schema={
 
             # Self attention.
+            "self_attn_norm_weight" : "input_layernorm.weight",
+            "self_attn_norm_bias" : "input_layernorm.bias",
+
             "self_attn_linear_q_proj_weight" : "self_attention.linear_q_proj.weight",
             "self_attn_linear_q_proj_bias" : "self_attention.linear_q_proj.bias",
             "self_attn_linear_q_down_proj_weight" : "self_attention.linear_q_down_proj.weight",
@@ -144,10 +147,15 @@ class CoreTEMLASchema(CoreSchema):
             "self_attn_linear_kv_up_proj_weight" : "self_attention.linear_kv_up_proj.weight",
             "self_attn_linear_kv_up_proj_bias" : "self_attention.linear_kv_up_proj.bias",
 
-            "self_attn_q_layernorm_weight" : "self_attention.q_layernorm.weight",
-            "self_attn_q_layernorm_bias" : "self_attention.q_layernorm.bias",
-            "self_attn_kv_layernorm_weight" : "self_attention.kv_layernorm.weight",
-            "self_attn_kv_layernorm_bias" : "self_attention.kv_layernorm.bias",
+            "self_attn_linear_q_up_layernorm_weight" : "self_attention.linear_q_up_proj.layer_norm_weight",
+            "self_attn_linear_q_up_layernorm_bias" : "self_attention.linear_q_up_proj.layer_norm_bias",
+            "self_attn_linear_kv_up_layernorm_weight" : "self_attention.linear_kv_up_proj.layer_norm_weight",
+            "self_attn_linear_kv_up_layernorm_bias" : "self_attention.linear_kv_up_proj.layer_norm_bias",
+
+            # "self_attn_q_layernorm_weight" : "self_attention.q_layernorm.weight",
+            # "self_attn_q_layernorm_bias" : "self_attention.q_layernorm.bias",
+            # "self_attn_kv_layernorm_weight" : "self_attention.kv_layernorm.weight",
+            # "self_attn_kv_layernorm_bias" : "self_attention.kv_layernorm.bias",
 
             "self_attn_proj_weight" : "self_attention.linear_proj.weight",
             "self_attn_proj_bias" : "self_attention.linear_proj.bias",
