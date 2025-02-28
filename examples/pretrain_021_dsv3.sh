@@ -1,3 +1,4 @@
+set -ex
 
 ENV=${ENV:-dsw}
 
@@ -390,7 +391,7 @@ megatron_options="  \
         --adam-beta1 0.9 \
         --adam-beta2 0.95 \
         --clip-grad 1.0 \
-        --init-method-std 0.008 \
+        --init-method-std 0.006 \
         --attention-dropout 0.0 \
         --hidden-dropout 0.0 \
         --lr-decay-iters ${LR_DECAY_ITERS} \
@@ -456,17 +457,25 @@ if [ $ENV = dsw ]; then
 fi
 
 # 开启pipeline_timer，将每个rank写到对应的文件中
-if [ $RUN_PROFILE = on ]; then
-    export PIPELINE_TIMER_LEVEL=2 
+if [[ ${PROFILE:-off} = on ]]; then
+    export PIPELINE_TIMER_LEVEL=3
     export PIPELINE_TIMER_LOG_DIR=$OUTPUT_DIR/logs/${current_time}_${NNODES}/
     mkdir -p $PIPELINE_TIMER_LOG_DIR
+fi
+
+if [[ ${SEQWARM:-off} = on ]]; then
+seqwarm_options=" --warmup-seq-length 0:2048,100:4096 "
+fi
+
+# new_options=" --checkpoint-kv-up-proj --recompute-inputlayer-rmsnorm --recompute-pre-mlp-rmsnorm "
+if [[ ${CUSTOM_PIPE:-on} = off ]]; then
+    new_options=" ${new_options} --no-custom-partition-with-smooth-weight "
 fi
 
 run_cmd="torchrun $DISTRIBUTED_ARGS ${MEGATRON_PATH}/pretrain_gpt.py
  ${megatron_options} ${dataset_option} ${pr_options} ${load_options} ${te_options} ${activation_checkpoint_options} \
  ${do_options} ${fl_options} ${sp_options} ${moe_options} ${offload_option} ${sft_option} ${vp_options} ${packing_options} \
- ${uneven_split_option} ${prof_options}"
+ ${uneven_split_option} ${prof_options} ${seqwarm_options} ${new_options}"
 
 echo ${run_cmd}
 eval ${run_cmd}
-set +x
