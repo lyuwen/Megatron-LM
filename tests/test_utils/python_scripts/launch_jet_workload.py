@@ -19,7 +19,6 @@ from jetclient.services.dtos.pipeline import PipelineStatus
 from tests.test_utils.python_scripts import common
 
 BASE_PATH = pathlib.Path(__file__).parent.resolve()
-GITLAB_PREFIX = "assets/basic/tests-unit-tests-data-{environment}-{tag}/"
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +102,7 @@ def launch_and_wait_for_completion(
         except jetclient.clients.gitlab.GitlabAPIError as e:
             logger.error(f"Faced {str(e)}. Waiting and retrying...")
             n_submission_attempts += 1
-            time.sleep(5)
+            time.sleep(2**n_submission_attempts * 5)
             continue
 
         if pipeline.get_status() == PipelineStatus.SUBMISSION_FAILED:
@@ -137,16 +136,10 @@ def download_job_assets(logs: List[jet_log.JETLog], iteration: int = 0) -> List[
         assets_path = assets_base_path / f"restart={restart_idx}"
         assets_path.mkdir(parents=True, exist_ok=True)
         for asset in assets:
-            (assets_path / asset.source_path.removeprefix(GITLAB_PREFIX)).parent.mkdir(
-                parents=True, exist_ok=True
-            )
-            with open(assets_path / asset.source_path.removeprefix(GITLAB_PREFIX), "w") as fh:
+            (assets_path / asset.source_path).parent.mkdir(parents=True, exist_ok=True)
+            with open(assets_path / asset.source_path, "w") as fh:
                 dest = pathlib.Path(fh.name)
-                logger.info(
-                    "Downloading log %s to %s",
-                    asset.source_path.removeprefix(GITLAB_PREFIX),
-                    str(dest),
-                )
+                logger.info("Downloading log %s to %s", asset.source_path, str(dest))
                 asset.download(dest)
     return assets
 
@@ -231,9 +224,6 @@ def main(
     logging.basicConfig(level=logging.INFO)
     logger.info('Started')
 
-    global GITLAB_PREFIX
-    GITLAB_PREFIX = GITLAB_PREFIX.format(environment=environment, tag=tag)
-
     model_config_path = pathlib.Path(
         BASE_PATH
         / ".."
@@ -299,10 +289,10 @@ def main(
                 UnicodeDecodeError,
             ) as e:
                 logger.error(e)
-                time.sleep((3**n_download_attempt) * 60)
+                time.sleep(2 * n_download_attempt * 15)
                 n_download_attempt += 1
                 no_log = True
-            except KeyError as e:
+            except (KeyError, IndexError) as e:
                 logger.error(e)
                 no_log = True
                 break
@@ -334,7 +324,8 @@ def main(
                 "Some NCCL operations have failed or timed out." in concat_logs
                 or "uncorrectable ECC error encountered" in concat_logs
                 or "illegal memory access" in concat_logs
-                or "illegal instruction" in concat_logs in concat_logs
+                or "illegal instruction" in concat_logs
+                or "torch.distributed.DistNetworkError" in concat_logs
             ):
                 logger.error("Detected NCCL failure, attempt restart.")
                 n_attempts += 1
