@@ -941,7 +941,7 @@ class DistributedOptimizer(MixedPrecisionOptimizer):
                 pg_buffer = model_chunk.param_and_grad_buffer
                 for group_id, group in enumerate(pg_buffer.parameter_groups):
                     this_group_state = {}
-                    mbuf = group.master_weight_buffer
+                    mbuf = group.main_weight_buffer
                     for item_id, _ in enumerate(group.params):
                         main_param = mbuf.get_item(item_id)
                         optim_state = self.optimizer.state[main_param]
