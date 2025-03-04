@@ -707,8 +707,6 @@ def track_moe_experts_tokens(tracker, writer, iteration):
         if layer_pattern[index] == 0:
           continue
         each_layer = all_layers_result[index]
-        print(each_layer)
-        print(each_layer.sum())
         ratio = each_layer / each_layer.sum()
         expert_ratio_info = {f"expert_{expert_index}": ratio[expert_index] for expert_index in range(each_layer.size()[0])}
         writer.add_scalars(f"moe_layer_{index}_tokens_experts_ratio", expert_ratio_info, iteration)
