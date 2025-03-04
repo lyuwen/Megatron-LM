@@ -12,6 +12,7 @@ from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.moe.moe_utils import (
     MoEAuxLossAutoScaler,
     save_to_aux_losses_tracker,
+    save_to_tokens_experts_info_tracker,
     sequence_load_balancing_loss_func,
     sinkhorn,
     switch_load_balancing_loss_func,
@@ -404,5 +405,10 @@ class TopKRouter(Router):
         logits = self.gating(input)
 
         scores, routing_map = self.routing(logits)
+        if self.training and self.config.show_moe_experts_tokens and not RecomputeContext.is_recompute:
+            tokens_per_expert = routing_map.sum(dim=0)
+            save_to_tokens_experts_info_tracker("tokens each experts", tokens_per_expert, self.layer_number,
+                                                self.config.num_layers, self.num_experts, self.config.moe_layer_pattern,
+                                               mpu.get_data_parallel_group())
 
         return scores, routing_map
