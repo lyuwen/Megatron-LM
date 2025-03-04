@@ -251,6 +251,7 @@ class TopKRouter(Router):
                 aux_loss / moe_aux_loss_coeff,
                 self.layer_number,
                 self.config.num_layers,
+                layer_pattern = self.config.moe_layer_pattern,
                 reduce_group=sequence_partition_group,
             )
 
@@ -271,13 +272,17 @@ class TopKRouter(Router):
                 "device_balancing_loss",
                 device_loss,
                 self.layer_number,
-                self.config.num_layers
+                self.config.num_layers,
+                layer_pattern = self.config.moe_layer_pattern,
+                reduce_group=sequence_partition_group,
             )
             save_to_aux_losses_tracker(
                 "communication_balancing_loss",
                 communication_loss,
                 self.layer_number,
-                self.config.num_layers
+                self.config.num_layers,
+                layer_pattern = self.config.moe_layer_pattern,
+                reduce_group=sequence_partition_group,
             )
             aux_loss += self.config.moe_device_balance_loss_coeff * device_loss
             aux_loss += self.config.moe_communication_balance_loss_coeff * communication_loss

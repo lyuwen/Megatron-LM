@@ -1,7 +1,7 @@
 # Copyright (c) 2024, NVIDIA CORPORATION. All rights reserved.
 
 import math
-from typing import Optional
+from typing import Optional, List
 
 import torch
 
@@ -610,6 +610,7 @@ def save_to_aux_losses_tracker(
     loss: torch.Tensor,
     layer_number: int,
     num_layers: int,
+    layer_pattern: List,
     reduce_group: torch.distributed.ProcessGroup = None,
     avg_group: torch.distributed.ProcessGroup = None,
 ):
@@ -631,6 +632,7 @@ def save_to_aux_losses_tracker(
         tracker[name] = {}
         tracker[name]["values"] = torch.zeros(num_layers, device=loss.device)
     tracker[name]["values"][layer_number - 1] += loss.detach()  # Aggregate the loss for the layer.
+    tracker[name]["layer_pattern"] = layer_pattern
     tracker[name]["reduce_group"] = reduce_group
     tracker[name]["avg_group"] = avg_group
 
@@ -640,6 +642,7 @@ def clear_aux_losses_tracker():
     tracker = parallel_state.get_moe_layer_wise_logging_tracker()
     for name in tracker:
         tracker[name]["values"].zero_()
+        tracker[name]["layer_pattern"]= None
         tracker[name]["reduce_group"] = None
         tracker[name]["avg_group"] = None
 
@@ -681,7 +684,7 @@ def track_moe_metrics(
             # currently when using add_scalars,
             # torch.utils.add_scalars makes each timer its own run, which
             # polutes the runs list, so we just add each as a scalar
-            writer.add_scalar(name, loss_list.mean(), iteration)
+            writer.add_scalar(name, loss_list[torch.tensor(tracker[name]["layer_pattern"])>0].mean(), iteration)
             if per_layer_logging:
                 for i, loss in enumerate(loss_list.tolist()):
                     writer.add_scalar(f"moe/{name}_layer_{i}", loss, iteration)
