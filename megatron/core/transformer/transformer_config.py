@@ -267,6 +267,10 @@ class TransformerConfig(ModelParallelConfig):
     ####################
     # MoE related
     ####################
+    show_moe_experts_tokens: bool = False
+    """
+    whether to show the tokens ratio route to each expert in tensorboard log"""
+
     moe_shared_expert_intermediate_size: Optional[int] = None
     """Shared expert total ffn hidden size.
     It should be equal to 'num_shared_experts * ffn_size_of_each_shared_expert' if

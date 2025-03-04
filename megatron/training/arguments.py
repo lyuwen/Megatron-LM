@@ -2300,6 +2300,8 @@ def _add_vision_args(parser):
 def _add_moe_args(parser):
     group = parser.add_argument_group(title="moe")
     # General arguments
+    group.add_argument('--show-moe-experts-tokens', action='store_true',
+                       help='whether to show the tokens ratio route to each expert in tensorboard log')
     group.add_argument('--expert-model-parallel-size', type=int, default=1,
                        help='Degree of expert model parallelism.')
     group.add_argument('--expert-tensor-parallel-size', type=int, default=None,
