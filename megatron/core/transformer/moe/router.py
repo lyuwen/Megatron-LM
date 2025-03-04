@@ -268,22 +268,23 @@ class TopKRouter(Router):
                 expert_model_parallel_size=self.config.expert_model_parallel_size,
                 moe_router_limited_devices=self.config.moe_router_topk_limited_devices
             )
-            save_to_aux_losses_tracker(
-                "device_balancing_loss",
-                device_loss,
-                self.layer_number,
-                self.config.num_layers,
-                layer_pattern = self.config.moe_layer_pattern,
-                reduce_group=sequence_partition_group,
-            )
-            save_to_aux_losses_tracker(
-                "communication_balancing_loss",
-                communication_loss,
-                self.layer_number,
-                self.config.num_layers,
-                layer_pattern = self.config.moe_layer_pattern,
-                reduce_group=sequence_partition_group,
-            )
+            if not RecomputeContext.is_recompute:
+                save_to_aux_losses_tracker(
+                    "device_balancing_loss",
+                    device_loss,
+                    self.layer_number,
+                    self.config.num_layers,
+                    layer_pattern = self.config.moe_layer_pattern,
+                    reduce_group=sequence_partition_group,
+                )
+                save_to_aux_losses_tracker(
+                    "communication_balancing_loss",
+                    communication_loss,
+                    self.layer_number,
+                    self.config.num_layers,
+                    layer_pattern = self.config.moe_layer_pattern,
+                    reduce_group=sequence_partition_group,
+                )
             aux_loss += self.config.moe_device_balance_loss_coeff * device_loss
             aux_loss += self.config.moe_communication_balance_loss_coeff * communication_loss
         #
