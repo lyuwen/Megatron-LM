@@ -21,6 +21,8 @@ from megatron.core.transformer.moe.moe_utils import (
 )
 from megatron.core.tensor_parallel.random import RecomputeContext
 from megatron.core.transformer.transformer_config import TransformerConfig
+from megatron.core.pipeline_timer import pipeline_timer_decorator
+from megatron.core import mpu
 
 
 class Router(ABC, MegatronModule):
@@ -253,6 +255,7 @@ class TopKRouter(Router):
                 self.config.num_layers,
                 layer_pattern = self.config.moe_layer_pattern,
                 reduce_group=sequence_partition_group,
+                avg_group=mpu.get_data_parallel_group()
             )
 
         # LFu: Add device balancing loss
@@ -276,6 +279,7 @@ class TopKRouter(Router):
                     self.config.num_layers,
                     layer_pattern = self.config.moe_layer_pattern,
                     reduce_group=sequence_partition_group,
+                    avg_group=mpu.get_data_parallel_group()
                 )
                 save_to_aux_losses_tracker(
                     "communication_balancing_loss",
@@ -284,6 +288,7 @@ class TopKRouter(Router):
                     self.config.num_layers,
                     layer_pattern = self.config.moe_layer_pattern,
                     reduce_group=sequence_partition_group,
+                    avg_group=mpu.get_data_parallel_group()
                 )
             aux_loss += self.config.moe_device_balance_loss_coeff * device_loss
             aux_loss += self.config.moe_communication_balance_loss_coeff * communication_loss
