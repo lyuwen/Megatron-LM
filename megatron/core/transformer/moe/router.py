@@ -22,7 +22,6 @@ from megatron.core.transformer.moe.moe_utils import (
 )
 from megatron.core.tensor_parallel.random import RecomputeContext
 from megatron.core.transformer.transformer_config import TransformerConfig
-from megatron.core.pipeline_timer import pipeline_timer_decorator
 from megatron.core import mpu
 
 
