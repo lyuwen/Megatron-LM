@@ -279,7 +279,7 @@ class OptimizerParamScheduler:
 
         if reset_iterations is not None:
             num_steps = reset_iterations
-        elif 'num_iters' in sd:
+        elif 'num_iters' in state_dict:
             num_steps = state_dict['num_iters']
         else:
             num_steps = state_dict['num_steps']
