@@ -231,11 +231,12 @@ class OptimizerParamScheduler:
         log_single_rank(logger, logging.INFO, f" > using checkpoint value {sd_value} for {name}")
         return sd_value
 
-    def load_state_dict(self, state_dict: dict) -> None:
+    def load_state_dict(self, state_dict: dict, reset_iterations: int=None) -> None:
         """Load the state dict.
 
         Args:
             state_dict (dict): state dict to be load
+            reset_iterations (int): reset iterations
         """
 
         if 'start_lr' in state_dict:
@@ -276,7 +277,9 @@ class OptimizerParamScheduler:
             self.lr_decay_style, lr_decay_style_, 'learning rate decay style'
         )
 
-        if 'num_iters' in state_dict:
+        if reset_iterations is not None:
+            num_steps = reset_iterations
+        elif 'num_iters' in sd:
             num_steps = state_dict['num_iters']
         else:
             num_steps = state_dict['num_steps']
