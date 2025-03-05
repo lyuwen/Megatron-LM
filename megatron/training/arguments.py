@@ -929,7 +929,18 @@ def core_transformer_config_from_args(args, config_class=None):
 
     if len(args.cp_comm_type) == 1:
         kw_args['cp_comm_type'] = args.cp_comm_type[0]
-
+    #add mzy, recored the moe layer pattern info if model is MOE architecture
+    if args.num_experts:
+        if isinstance(args.moe_layer_freq, int):
+            moe_layer_pattern = [
+                1 if (i % args.moe_layer_freq == 0) else 0 for i in range(args.num_layers)
+            ]
+        elif isinstance(args.moe_layer_freq, list):
+            moe_layer_pattern = args.moe_layer_freq
+        if args.moe_first_k_dense_replace is not None:
+            for i in range(args.moe_first_k_dense_replace):
+                moe_layer_pattern[i] = 0
+        kw_args['moe_layer_pattern'] = moe_layer_pattern
     # Return config.
     return config_class(**kw_args)
 
@@ -2289,6 +2300,8 @@ def _add_vision_args(parser):
 def _add_moe_args(parser):
     group = parser.add_argument_group(title="moe")
     # General arguments
+    group.add_argument('--show-moe-experts-tokens', action='store_true',
+                       help='whether to show the tokens ratio route to each expert in tensorboard log')
     group.add_argument('--expert-model-parallel-size', type=int, default=1,
                        help='Degree of expert model parallelism.')
     group.add_argument('--expert-tensor-parallel-size', type=int, default=None,

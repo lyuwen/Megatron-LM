@@ -1,8 +1,8 @@
 # Copyright (c) 2024, NVIDIA CORPORATION. All rights reserved.
 
 import math
-from typing import Optional
-
+from typing import Optional, List
+import threading
 import torch
 
 from megatron.core import parallel_state
@@ -610,6 +610,7 @@ def save_to_aux_losses_tracker(
     loss: torch.Tensor,
     layer_number: int,
     num_layers: int,
+    layer_pattern: List,
     reduce_group: torch.distributed.ProcessGroup = None,
     avg_group: torch.distributed.ProcessGroup = None,
 ):
@@ -631,6 +632,40 @@ def save_to_aux_losses_tracker(
         tracker[name] = {}
         tracker[name]["values"] = torch.zeros(num_layers, device=loss.device)
     tracker[name]["values"][layer_number - 1] += loss.detach()  # Aggregate the loss for the layer.
+    tracker[name]["layer_pattern"] = layer_pattern
+    tracker[name]["reduce_group"] = reduce_group
+    tracker[name]["avg_group"] = avg_group
+
+
+def save_to_tokens_experts_info_tracker(
+    name: str,
+    tokens_expert: torch.Tensor,
+    layer_number: int,
+    num_layers: int,
+    num_experts: int,
+    layer_pattern: List,
+    reduce_group: torch.distributed.ProcessGroup = None,
+    avg_group: torch.distributed.ProcessGroup = None,
+):
+    """Save the tokens experts info for logging.
+    Args:
+        name (str): name to store in tracker .
+        tokens_expert (torch.Tensor): The tokens experts tensor.
+        layer_number (int): Layer index.
+        num_layers (int): The number of total layers.
+        num_experts (int): The number of total experts in each layer
+        reduce_group (torch.distributed.ProcessGroup): The group for reducing the tokens experts.
+        avg_group (torch.distributed.ProcessGroup): The group for averaging the tokens experts.
+    """
+    # Skip logging if layer_number is None.
+    if layer_number is None:
+        return
+    tracker = parallel_state.get_moe_layer_wise_logging_tracker()
+    if name not in tracker:
+        tracker[name] = {}
+        tracker[name]["values"] = torch.zeros((num_layers,num_experts), device=tokens_expert.device, dtype=torch.int64)
+    tracker[name]["values"][layer_number - 1] += tokens_expert
+    tracker[name]["layer_pattern"] = layer_pattern
     tracker[name]["reduce_group"] = reduce_group
     tracker[name]["avg_group"] = avg_group
 
@@ -640,6 +675,7 @@ def clear_aux_losses_tracker():
     tracker = parallel_state.get_moe_layer_wise_logging_tracker()
     for name in tracker:
         tracker[name]["values"].zero_()
+        tracker[name]["layer_pattern"]= None
         tracker[name]["reduce_group"] = None
         tracker[name]["avg_group"] = None
 
@@ -662,6 +698,23 @@ def reduce_aux_losses_tracker_across_ranks():
             )
 
 
+def track_moe_experts_tokens(tracker, writer, iteration):
+    """Track the MoE experts tokens info for logging."""
+    imbalance_dict = {}
+    all_layers_result = tracker["values"]
+    layer_pattern = tracker["layer_pattern"]
+    for index in range(all_layers_result.size()[0]):
+        if layer_pattern[index] == 0:
+          continue
+        each_layer = all_layers_result[index]
+        ratio = each_layer / each_layer.sum()
+        expert_ratio_info = {f"expert_{expert_index}": ratio[expert_index] for expert_index in range(each_layer.size()[0])}
+        writer.add_scalars(f"moe_layer_{index}_tokens_experts_ratio", expert_ratio_info, iteration)
+        imbalance = each_layer.max() / each_layer.float().mean()
+        imbalance_dict[f"layer_{index}"] = imbalance
+    writer.add_scalars("moe_imbalance", imbalance_dict, iteration)
+
+
 def track_moe_metrics(
     loss_scale, iteration, writer, wandb_writer=None, total_loss_dict=None, per_layer_logging=False
 ):
@@ -670,8 +723,11 @@ def track_moe_metrics(
     reduce_aux_losses_tracker_across_ranks()
     tracker = parallel_state.get_moe_layer_wise_logging_tracker()
     if writer is not None:
-        aux_losses = {k: v['values'].float() * loss_scale for k, v in tracker.items()}
+        # only track aux loss here
+        aux_losses = {k: v['values'].float() * loss_scale for k, v in tracker.items() if k.endswith("loss")}
         for name, loss_list in aux_losses.items():
+            # fix the loss list here, only record the moe_layer, can fix aux loss in both tensorboard and print log
+            loss_list = loss_list[torch.tensor(tracker[name]["layer_pattern"])>0]
             if total_loss_dict is not None:
                 if name not in total_loss_dict:
                     total_loss_dict[name] = loss_list.mean()
@@ -699,6 +755,11 @@ def track_moe_metrics(
                         },
                         iteration,
                     )
+        # asynchronously logging the token experts info
+        if "tokens each experts" in tracker:
+            temp_tracker = {"values": tracker["tokens each experts"]["values"].cpu(),"layer_pattern":tracker["tokens each experts"]["layer_pattern"]}
+            thread = threading.Thread(target=track_moe_experts_tokens, args=(temp_tracker, writer, iteration))
+            thread.start()
 
     clear_aux_losses_tracker()
 
