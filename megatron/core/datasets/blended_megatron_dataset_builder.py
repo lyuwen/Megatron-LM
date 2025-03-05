@@ -268,10 +268,7 @@ class BlendedMegatronDatasetBuilder(object):
                             size_per_dataset = list(zip(*sizes_per_dataset_target))[i]
                             size_i = sum(size_per_dataset)
                         elif weights_i is None:
-                            if self.sizes[i] is not None:
-                                size_i = min(self.sizes[i], sum(weights_i))
-                            else:
-                                size_i = None  # => the size will be sum(weights_i)
+                            size_i = None
                         else:
                             raise RuntimeError
                         if size_i is not None:
