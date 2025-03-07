@@ -112,6 +112,11 @@ from megatron.core.sequence_length_scheduler import (
     )
 # LFu
 from megatron.core.transformer.moe.utils import get_moe_FLOPs
+from megatron.core.benchmark_utils import (
+    record_throughput,
+    reset_benchmark,
+    benchmark_should_exit,
+    )
 
 stimer = StragglerDetector()
 
@@ -1203,6 +1208,11 @@ def training_log(loss_dict, total_loss_dict, learning_rate, decoupled_learning_r
             # Log tokens trained per GPU-second
             tokens_per_gpu_second = args.seq_length * args.global_batch_size / args.world_size / elapsed_time_per_iteration
             log_string += f' token throughput per GPU (tokens/s/GPU): {tokens_per_gpu_second:.1f} |'
+            # average throughput
+            average_throughput = record_throughput(throughput, iteration)
+            if average_throughput is not None:
+                log_string += f' average throughput for {args.num_steps_average_throughput} steps' \
+                              f' per GPU (TFLOP/s/GPU): {average_throughput:.1f} |'
             if args.log_timers_to_tensorboard:
                 if writer:
                     writer.add_scalar('throughput', throughput, iteration)
@@ -1791,7 +1801,7 @@ def train(forward_step_func, model, optimizer, opt_param_scheduler,
         should_exit = checkpoint_and_decide_exit(model, optimizer, opt_param_scheduler, iteration,
                                                  num_floating_point_operations_so_far,
                                                  checkpointing_context, train_data_iterator)
-        if should_exit:
+        if should_exit or benchmark_should_exit():
             break
 
     one_logger_utils.track_e2e_metrics()

@@ -63,6 +63,7 @@ def parse_args(extra_args_provider=None, ignore_unknown_args=False):
     parser = _add_ft_package_args(parser)
     parser = _add_config_logger_args(parser)
     parser = _add_rerun_machine_args(parser)
+    parser = _add_benchmark_args(parser)
 
     # Custom arguments.
     if extra_args_provider is not None:
@@ -2460,4 +2461,20 @@ def _add_experimental_args(parser):
                        help='Dtype of exp_avg when enabling precision-aware-optimizer')
     group.add_argument('--exp-avg-sq-dtype', default='fp32', choices=['fp32', 'fp16', 'fp8'],
                        help='Dtype of exp_avg_sq when enabling precision-aware-optimizer')
+    return parser
+
+
+def _add_benchmark_args(parser):
+    """Add arguments for benchmark mode."""
+    group = parser.add_argument_group(title='benchmark')
+    group.add_argument('--num-steps-average-throughput', nargs="?", const=5, type=int,
+                       help='Calculate average throughput span a few steps.')
+    group.add_argument('--benchmark-target-tflops', type=float, default=None,
+                       help='Calculate average throughput span a few steps.')
+    group.add_argument('--benchmark-check-begins', type=int, default=30,
+                       help='Benchmark check begin step.')
+    group.add_argument('--benchmark-check-ends', type=int, default=50,
+                       help='Benchmark check end step.')
+    group.add_argument('--benchmark-pass-action', choices=["continue", "stop"], default="continue",
+                       help='Action if benchmark target is met, will do to other option if not met.')
     return parser
