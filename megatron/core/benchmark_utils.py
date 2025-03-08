@@ -36,11 +36,11 @@ def record_throughput(throughput, iteration):
     else:
         return None
 
-def benchmark_should_exit(raise=True):
+def benchmark_should_exit(doraise=True):
     global _benchmark_should_exit
     if _benchmark_should_exit:
         msg = "Benchmark exit condition has been met, will exit the training soon."
-        if raise:
+        if doraise:
             raise RuntimeError(msg)
         logger.info(msg)
     return _benchmark_should_exit
