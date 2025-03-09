@@ -24,7 +24,8 @@ def build_blending_indices(
     errors = fsamples - isamples
     error_ranks = numpy.argsort(errors)
     add = size - sum(isamples)
-    isamples[error_ranks[-add:]] += 1
+    if add != 0:
+        isamples[error_ranks[-add:]] += 1
     #
     dataset_index = numpy.repeat(numpy.arange(num_datasets, dtype=numpy.int16)[error_ranks], isamples[error_ranks])
     c = 0
