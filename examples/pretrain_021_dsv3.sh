@@ -3,35 +3,31 @@ set -ex
 ENV=${ENV:-dsw}
 
 ### BASE CONFIG ###
-DEFAULT_MODEL_SIZE=A23B
+DEFAULT_MODEL_SIZE=A21B
 MODEL_SIZE=${MODEL_SIZE:-${DEFAULT_MODEL_SIZE}}
-# NUM_LAYERS=${NUM_LAYERS:-2}
 BATCH_SIZE=${MICRO_BATCH_SIZE:-1}
-GLOBAL_BATCH_SIZE=${GLOBAL_BATCH_SIZE:-8}
+GLOBAL_BATCH_SIZE=${GLOBAL_BATCH_SIZE:-9600}
 LR=4E-5
 MIN_LR=4E-6
-SEQ_LEN=${SEQ_LEN:-2048}
+SEQ_LEN=${SEQ_LEN:-4096}
 PAD_LEN=${PAD_LEN:-${SEQ_LEN}}
 PR=bf16
-# PR=fp8
 ### BASE CONFIG ###
 
 ### PARALLEL / BOOL OPTION ###
-TP=1
 PP=${PP:-1}
-CP=1
 EP=${EP:-1}
+FL=${FLASH_ATTENTION:-true}
+MP_VP=${MP_VP:-1}
+TP=1
+CP=1
 SP=false
 DO=true
-# DO=false
-# FL=false
-FL=true
 SFT=false
 ### PARALLEL / BOOL OPTION ###
 
 ### OTHERS ###
 AC=${AC:-none}
-OPTIMIZER_OFFLOAD=false
 SAVE_INTERVAL=1000
 if [[ -z $DATASET_FILE ]] ; then
     echo "Missing environment variable DATASET_FILE."
@@ -44,36 +40,40 @@ if [[ -z $TOKENIZER_PATH ]] ; then
     echo "Missing environment variable TOKENIZER_PATH."
     exit 1
 fi
+if [[ ${ASYNC_SAVE:-false} = true ]] ; then
+    ckpt_options=" --ckpt-format torch_dist --async-save "
+else
+    ckpt_options=" --ckpt-format ${CKPT_FORMAT:-torch} "
+fi
+
 PRETRAIN_CHECKPOINT_PATH=${OUTPUT_DIR}/checkpoints
 
-# the following two values will not be used when SFT is true
+# training configuraitons
 TRAIN_TOKENS=${TRAIN_TOKENS:-200000000000}
 WARMUP_TOKENS=${WARMUP_TOKENS:-4194304000}
-###############################
+TOTAL_TRAIN_ITERS=$(( ${TRAIN_TOKENS} / ${GLOBAL_BATCH_SIZE} / ${SEQ_LEN} ))
+TRAIN_ITERS=${TRAIN_ITERS:-${TOTAL_TRAIN_ITERS}}
+
+MOE_ROUTER_GROUPS=${MOE_ROUTER_GROUPS:-8}
+MOE_ROUTER_GROUPS_TOPK=${MOE_ROUTER_GROUPS_TOPK:-4}
 
 OUTPUT_BASEPATH=${OUTPUT_DIR}
 ### OTHERS ###
-
-# export NVTE_DEBUG=1
-# export NVTE_DEBUG_LEVEL=2
-# export CUDNN_LOGERR_DBG=1
-# export CUDNN_LOGDEST_DBG=stderr
+if [[ ${DEBUG} = on ]] ; then
+    export NVTE_DEBUG=1
+    export NVTE_DEBUG_LEVEL=2
+    export CUDNN_LOGERR_DBG=1
+    export CUDNN_LOGDEST_DBG=stderr
+fi
 
 
 ### Begin of Script ###
-
-set -e
 CURRENT_DIR="$( cd "$( dirname "$0" )" && pwd )"
 if [ -z $MEGATRON_PATH ]; then
-    MEGATRON_PATH=$( dirname $( dirname ${CURRENT_DIR}))
+    MEGATRON_PATH=$( dirname ${CURRENT_DIR})
 fi
 export PYTHONPATH=${MEGATRON_PATH}:$PYTHONPATH
 export CUDA_DEVICE_MAX_CONNECTIONS=1
-
-# Here are some configs controled by env
-if [ -z ${MP_DATASET_TYPE} ];then
-    MP_DATASET_TYPE="idxmap"
-fi
 
 if [ -z ${MP_AC_LAYERS} ];then
     MP_AC_LAYERS=1
@@ -99,10 +99,6 @@ else
         --num-layers-per-virtual-pipeline-stage ${MP_VP}"
 fi
 
-if [ -z ${MP_SFT_PACKING} ]; then
-    MP_SFT_PACKING=false
-fi
-
 
 TIMESTAMP=$(date "+%Y%m%d-%H%M")
 DISTRIBUTED_ARGS="--nproc_per_node $GPUS_PER_NODE --nnodes $NNODES \
@@ -117,15 +113,106 @@ elif [ $FL = false ]; then
     fl_options=" --attention-backend unfused "
 fi
 
-if [ $MODEL_SIZE = A23B ]; then
+if [ $MODEL_SIZE = A2B ]; then
+
+HIDDEN_SIZE=1280
+NUM_ATTN_HEADS=10
+NUM_LAYERS=${NUM_LAYERS:-9}
+INTERMEDIATE_SIZE=8192
+MOE_INTERMEDIATE_SIZE=1024
+MAX_POSITION_EMBEDDINGS=${SEQ_LEN}
+EXTRA_VOCAB_SIZE=256
+# Q_LORA_RANK=1536 # 后训练组删除
+KV_LORA_RANK=512
+QK_NOPE_HEAD_DIM=128
+QK_ROPE_HEAD_DIM=64
+V_HEAD_DIM=128
+ROPE_THETA=10000
+SCALE_FACTOR=40
+NUM_EXPERTS=64
+ROUTER_TOPK=7
+NUM_SHARED_EXPERTS=1
+MOE_LAYER_FREQ=1
+MOE_FIRST_K_DENSE_REPLACE=2
+RMS_NORM_EPS=1e-6
+
+moe_options=" \
+    --moe-ffn-hidden-size ${MOE_INTERMEDIATE_SIZE} \
+    --moe-router-topk ${ROUTER_TOPK} \
+    --num-experts ${NUM_EXPERTS} \
+    --moe-layer-freq ${MOE_LAYER_FREQ} \
+    --moe-first-k-dense-replace ${MOE_FIRST_K_DENSE_REPLACE} \
+    --moe-aux-loss-coeff 0.001 \
+    --moe-shared-expert-intermediate-size $((${MOE_INTERMEDIATE_SIZE} * ${NUM_SHARED_EXPERTS} )) \
+    --expert-model-parallel-size ${EP} \
+    --kv-lora-rank ${KV_LORA_RANK} \
+    --qk-head-dim ${QK_NOPE_HEAD_DIM} \
+    --qk-pos-emb-head-dim ${QK_ROPE_HEAD_DIM} \
+    --v-head-dim ${V_HEAD_DIM} \
+    --moe-token-dispatcher-type alltoall_seq \
+    --moe-grouped-gemm \
+    --moe-router-num-groups ${MOE_ROUTER_GROUPS} \
+    --moe-router-group-topk ${MOE_ROUTER_GROUPS_TOPK} \
+    --moe-router-score-function sigmoid \
+    --moe-router-enable-expert-bias \
+    --moe-router-load-balancing-type seq_aux_loss \
+    --moe-router-bias-update-rate 1e-3"
+    # --q-lora-rank ${Q_LORA_RANK} \ # 后训练组删除
+
+
+elif [ $MODEL_SIZE = A16B ]; then
+
+HIDDEN_SIZE=2048
+NUM_ATTN_HEADS=16
+NUM_LAYERS=${NUM_LAYERS:-28}
+INTERMEDIATE_SIZE=10944
+MOE_INTERMEDIATE_SIZE=1408
+MAX_POSITION_EMBEDDINGS=${SEQ_LEN}
+EXTRA_VOCAB_SIZE=256
+# Q_LORA_RANK=1536 # 后训练组删除
+KV_LORA_RANK=512
+QK_NOPE_HEAD_DIM=128
+QK_ROPE_HEAD_DIM=64
+V_HEAD_DIM=128
+ROPE_THETA=10000
+SCALE_FACTOR=40
+NUM_EXPERTS=64
+ROUTER_TOPK=6
+NUM_SHARED_EXPERTS=2
+MOE_LAYER_FREQ=1
+RMS_NORM_EPS=1e-6
+MOE_FIRST_K_DENSE_REPLACE=1
+
+moe_options=" \
+    --moe-ffn-hidden-size ${MOE_INTERMEDIATE_SIZE} \
+    --moe-router-topk ${ROUTER_TOPK} \
+    --num-experts ${NUM_EXPERTS} \
+    --moe-layer-freq ${MOE_LAYER_FREQ} \
+    --moe-first-k-dense-replace ${MOE_FIRST_K_DENSE_REPLACE} \
+    --moe-aux-loss-coeff 0.001 \
+    --moe-shared-expert-intermediate-size $((${MOE_INTERMEDIATE_SIZE} * ${NUM_SHARED_EXPERTS} )) \
+    --expert-model-parallel-size ${EP} \
+    --kv-lora-rank ${KV_LORA_RANK} \
+    --qk-head-dim ${QK_NOPE_HEAD_DIM} \
+    --qk-pos-emb-head-dim ${QK_ROPE_HEAD_DIM} \
+    --v-head-dim ${V_HEAD_DIM} \
+    --moe-token-dispatcher-type alltoall_seq \
+    --moe-grouped-gemm \
+    --moe-router-num-groups ${MOE_ROUTER_GROUPS} \
+    --moe-router-group-topk ${MOE_ROUTER_GROUPS_TOPK} \
+    --moe-router-score-function sigmoid \
+    --moe-router-enable-expert-bias \
+    --moe-router-load-balancing-type seq_aux_loss \
+    --moe-router-bias-update-rate 1e-3"
+    # --q-lora-rank ${Q_LORA_RANK} \
+
+elif [ $MODEL_SIZE = A21B ]; then
 
 HIDDEN_SIZE=5120
 NUM_ATTN_HEADS=128
-NUM_LAYERS=${NUM_LAYERS:-64}
-# NUM_LAYERS=60
-# NUM_LAYERS=64
+NUM_LAYERS=${NUM_LAYERS:-60} 
 INTERMEDIATE_SIZE=12288
-MOE_INTERMEDIATE_SIZE=2048
+MOE_INTERMEDIATE_SIZE=1536
 MAX_POSITION_EMBEDDINGS=${SEQ_LEN}
 EXTRA_VOCAB_SIZE=2400
 Q_LORA_RANK=1536
@@ -135,7 +222,7 @@ QK_ROPE_HEAD_DIM=64
 V_HEAD_DIM=128
 ROPE_THETA=10000
 SCALE_FACTOR=40
-NUM_EXPERTS=128
+NUM_EXPERTS=160
 ROUTER_TOPK=6
 NUM_SHARED_EXPERTS=2
 MOE_LAYER_FREQ=1
@@ -156,14 +243,15 @@ moe_options=" \
     --qk-head-dim ${QK_NOPE_HEAD_DIM} \
     --qk-pos-emb-head-dim ${QK_ROPE_HEAD_DIM} \
     --v-head-dim ${V_HEAD_DIM} \
-    --moe-token-dispatcher-type alltoall \
-    --moe-shared-expert-overlap \
+    --moe-token-dispatcher-type alltoall_seq \
     --moe-grouped-gemm \
-    --moe-router-num-groups 8 \
-    --moe-router-group-topk 4 \
+    --moe-router-num-groups ${MOE_ROUTER_GROUPS} \
+    --moe-router-group-topk ${MOE_ROUTER_GROUPS_TOPK} \
     --moe-router-score-function sigmoid \
     --moe-router-enable-expert-bias \
-    --moe-router-load-balancing-type aux_loss"
+    --moe-router-load-balancing-type seq_aux_loss \
+    --moe-router-bias-update-rate 1e-3"
+# --moe-token-drop-policy probs 
 # --moe-grouped-gemm \
 # --moe-router-topk-limited-devices 4 \
 
@@ -204,16 +292,14 @@ moe_options=" \
     --qk-head-dim ${QK_NOPE_HEAD_DIM} \
     --qk-pos-emb-head-dim ${QK_ROPE_HEAD_DIM} \
     --v-head-dim ${V_HEAD_DIM} \
-    --moe-token-dispatcher-type alltoall \
-    --moe-shared-expert-overlap \
+    --moe-token-dispatcher-type alltoall_seq \
     --moe-grouped-gemm \
-    --moe-router-num-groups 8 \
-    --moe-router-group-topk 4 \
+    --moe-router-num-groups ${MOE_ROUTER_GROUPS} \
+    --moe-router-group-topk ${MOE_ROUTER_GROUPS_TOPK} \
     --moe-router-score-function sigmoid \
     --moe-router-enable-expert-bias \
-    --moe-router-load-balancing-type aux_loss"
-# --moe-grouped-gemm \
-# --moe-router-topk-limited-devices 4 \
+    --moe-router-load-balancing-type seq_aux_loss \
+    --moe-router-bias-update-rate 1e-3"
 
 else
 
@@ -267,6 +353,11 @@ elif [ $AC = offload ]; then
         echo "Disable --overlap-grad-reduce and --overlap-param-gather when cpu offloading is on..."
         comm_overlap_option=""
     fi
+# for custom AC
+elif [ $AC = custom ]; then
+    #TODO: fill in custom AC options
+    activation_checkpoint_options=" \
+    "
 fi
 
 if [ $PR = fp16 ]; then
@@ -283,11 +374,6 @@ elif [ $PR = fp8 ]; then
         --fp8-format hybrid \
         --fp8-amax-compute-algo max \
         --fp8-amax-history-len 1024"
-fi
-
-if [ $OPTIMIZER_OFFLOAD != false ] && [ $DO = false ]; then
-    echo "Offload optimizer is valid only if \$DO=true"
-    DO=true
 fi
 
 if [ $DO = true ]; then
@@ -333,20 +419,7 @@ if [ $PRETRAIN_CHECKPOINT_PATH != none ]; then
             --load $PRETRAIN_CHECKPOINT_PATH"
 fi
 
-if [ $OPTIMIZER_OFFLOAD = 'static' ]; then
-    offload_option=" \
-        --optimizer hybridadam \
-        --optimizer-offload-policy static \
-        --optimizer-offload-fraction 1.0"
-elif [ $OPTIMIZER_OFFLOAD = 'auto' ]; then
-    offload_option=" \
-        --optimizer hybridadam \
-        --optimizer-offload-policy auto"
-else
-    offload_option=""
-fi
-
-TRAIN_ITERS=$(( ${TRAIN_TOKENS} / ${GLOBAL_BATCH_SIZE} / ${SEQ_LEN} ))
+# TRAIN_ITERS=$(( ${TRAIN_TOKENS} / ${GLOBAL_BATCH_SIZE} / ${SEQ_LEN} ))
 LR_WARMUP_ITERS=2000
 # LR_WARMUP_ITERS=$(( ${WARMUP_TOKENS}  / ${GLOBAL_BATCH_SIZE} / ${SEQ_LEN} ))
 LR_DECAY_ITERS=$(( ${TRAIN_TOKENS} /  ${GLOBAL_BATCH_SIZE} / ${SEQ_LEN} ))
@@ -357,14 +430,6 @@ dataset_option=" \
     --data-cache-path ${OUTPUT_DIR}/data_cache \
     --split 989,10,1"
 
-if [ ${MP_SFT_PACKING} = true ]; then
-    packing_options=" \
-        --reset-position-ids \
-        --no-create-attention-mask-in-dataloader
-    "
-else
-    packing_options=""
-fi
 
 ##### Prepare logdirs #######
 NAME="${PREFIX}-pr-${PR}-pp-${PP}-ac-${AC}"
@@ -433,22 +498,20 @@ megatron_options="  \
         --rotary-scaling-factor ${SCALE_FACTOR} \
         --kv-channels ${V_HEAD_DIM} \
         --qk-layernorm \
-        --multi-latent-attention \
-        --ckpt-format torch \
-        "
+        --multi-latent-attention"
         # --num-workers 2 \
         # --patch-tokenizer-type DeepSeekV2Tokenizer \
 
-tokenizer_options=" \
-        --max-padding-length ${PAD_LEN} \
-        --extra-vocab-size ${EXTRA_VOCAB_SIZE} \
-	"
+# tokenizer_options=" \
+#         --max-padding-length ${PAD_LEN} \
+#         --extra-vocab-size ${EXTRA_VOCAB_SIZE} \
+#         "
 
-ckpt_options=" \
-        --no-load-optim \
-        --no-load-rng \
-        --no-save-optim \
-        "
+# ckpt_options=" \
+#         --no-load-optim \
+#         --no-load-rng \
+#         --no-save-optim \
+#         "
 
 # Turn on PyTorchProfiler in DSW
 if [ $ENV = dsw ]; then
@@ -472,10 +535,35 @@ if [[ ${CUSTOM_PIPE:-on} = off ]]; then
     new_options=" ${new_options} --no-custom-partition-with-smooth-weight "
 fi
 
+# Use TP-PP-DP mapping
+if [[ ${TP_PP_DP_MAP:-off} = on ]] ; then
+    new_options=" ${new_options} --use-tp-pp-dp-mapping "
+fi
+
+# User custom FSDP from Megatron Core
+if [[ ${USE_FSDP:-false} = true ]] ; then
+    fsdp_options="\
+        --use-custom-fsdp \
+        --data-parallel-sharding-strategy optim_grads_params \
+        --no-gradient-accumulation-fusion \
+        --calculate-per-token-loss \
+        "
+    unset CUDA_MAX_CONNECTIONS
+    unset CUDA_DEVICE_MAX_CONNECTIONS
+fi
+
+# User Optimizer CPU Offloading
+if [[ ${OFFLOAD_OPTIMIZER:-false} = true ]] ; then
+    new_options=" ${new_options} --optimizer-cpu-offload --use-precision-aware-optimizer \
+        --main-grads-dtype bf16 "
+fi
+
 run_cmd="torchrun $DISTRIBUTED_ARGS ${MEGATRON_PATH}/pretrain_gpt.py
  ${megatron_options} ${dataset_option} ${pr_options} ${load_options} ${te_options} ${activation_checkpoint_options} \
- ${do_options} ${fl_options} ${sp_options} ${moe_options} ${offload_option} ${sft_option} ${vp_options} ${packing_options} \
- ${uneven_split_option} ${prof_options} ${seqwarm_options} ${new_options}"
+ ${do_options} ${fl_options} ${sp_options} ${moe_options} ${offload_option} ${sft_option} ${vp_options} \
+ ${uneven_split_option} ${prof_options} ${seqwarm_options} ${new_options} ${fsdp_options} ${ckpt_options}"
 
 echo ${run_cmd}
+[[ $RANK = 0 ]] && echo echo ${run_cmd} > ${OUTPUT_DIR}/cmd.sh
 eval ${run_cmd}
+
