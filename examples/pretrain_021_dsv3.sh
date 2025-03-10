@@ -3,22 +3,25 @@ set -ex
 ENV=${ENV:-dsw}
 
 ### BASE CONFIG ###
-DEFAULT_MODEL_SIZE=A21B
+DEFAULT_MODEL_SIZE=200B
 MODEL_SIZE=${MODEL_SIZE:-${DEFAULT_MODEL_SIZE}}
 BATCH_SIZE=${MICRO_BATCH_SIZE:-1}
 GLOBAL_BATCH_SIZE=${GLOBAL_BATCH_SIZE:-9600}
-LR=4E-5
-MIN_LR=4E-6
+DEFAULT_LR=4E-5
+LR=${LR:-${DEFAULT_LR}}
+DEFAULT_MIN_LR=4E-6
+MIN_LR=${MIN_LR:-${DEFAULT_MIN_LR}}
+INIT_METHOD_STD=${INIT_METHOD_STD:-0.006} # 0.006 
+
 SEQ_LEN=${SEQ_LEN:-4096}
 PAD_LEN=${PAD_LEN:-${SEQ_LEN}}
 PR=bf16
 ### BASE CONFIG ###
 
 ### PARALLEL / BOOL OPTION ###
-PP=${PP:-1}
-EP=${EP:-1}
-FL=${FLASH_ATTENTION:-true}
-MP_VP=${MP_VP:-1}
+PP=${PP:-1} # 6
+EP=${EP:-1} # 8
+FL=${FLASH_ATTENTION:-true} # true
 TP=1
 CP=1
 SP=false
@@ -27,7 +30,7 @@ SFT=false
 ### PARALLEL / BOOL OPTION ###
 
 ### OTHERS ###
-AC=${AC:-none}
+AC=${AC:-none} # full
 SAVE_INTERVAL=1000
 if [[ -z $DATASET_FILE ]] ; then
     echo "Missing environment variable DATASET_FILE."
@@ -54,8 +57,8 @@ WARMUP_TOKENS=${WARMUP_TOKENS:-4194304000}
 TOTAL_TRAIN_ITERS=$(( ${TRAIN_TOKENS} / ${GLOBAL_BATCH_SIZE} / ${SEQ_LEN} ))
 TRAIN_ITERS=${TRAIN_ITERS:-${TOTAL_TRAIN_ITERS}}
 
-MOE_ROUTER_GROUPS=${MOE_ROUTER_GROUPS:-8}
-MOE_ROUTER_GROUPS_TOPK=${MOE_ROUTER_GROUPS_TOPK:-4}
+MOE_ROUTER_GROUPS=${MOE_ROUTER_GROUPS:-8} # 8
+MOE_ROUTER_GROUPS_TOPK=${MOE_ROUTER_GROUPS_TOPK:-4} # 4
 
 OUTPUT_BASEPATH=${OUTPUT_DIR}
 ### OTHERS ###
@@ -113,7 +116,7 @@ elif [ $FL = false ]; then
     fl_options=" --attention-backend unfused "
 fi
 
-if [ $MODEL_SIZE = A2B ]; then
+if [ $MODEL_SIZE = 2B ]; then
 
 HIDDEN_SIZE=1280
 NUM_ATTN_HEADS=10
@@ -157,10 +160,12 @@ moe_options=" \
     --moe-router-enable-expert-bias \
     --moe-router-load-balancing-type seq_aux_loss \
     --moe-router-bias-update-rate 1e-3"
-    # --q-lora-rank ${Q_LORA_RANK} \ # 后训练组删除
+    # --q-lora-rank ${Q_LORA_RANK} \ 
+    if [[ ${ROUTER_TOPK_SCALING_FACTOR:-none} != none ]]; then
+    moe_options=" ${moe_options}  --moe-router-topk-scaling-factor ${ROUTER_TOPK_SCALING_FACTOR} "
+    fi
 
-
-elif [ $MODEL_SIZE = A16B ]; then
+elif [ $MODEL_SIZE = 16B ]; then
 
 HIDDEN_SIZE=2048
 NUM_ATTN_HEADS=16
@@ -205,8 +210,11 @@ moe_options=" \
     --moe-router-load-balancing-type seq_aux_loss \
     --moe-router-bias-update-rate 1e-3"
     # --q-lora-rank ${Q_LORA_RANK} \
+    if [[ ${ROUTER_TOPK_SCALING_FACTOR:-none} != none ]]; then
+    moe_options=" ${moe_options} --moe-router-topk-scaling-factor ${ROUTER_TOPK_SCALING_FACTOR} "
+    fi
 
-elif [ $MODEL_SIZE = A21B ]; then
+elif [ $MODEL_SIZE = 200B ]; then
 
 HIDDEN_SIZE=5120
 NUM_ATTN_HEADS=128
@@ -254,8 +262,11 @@ moe_options=" \
 # --moe-token-drop-policy probs 
 # --moe-grouped-gemm \
 # --moe-router-topk-limited-devices 4 \
+    if [[ ${ROUTER_TOPK_SCALING_FACTOR:-none} != none ]]; then
+    moe_options=" ${moe_options} --moe-router-topk-scaling-factor ${ROUTER_TOPK_SCALING_FACTOR} "
+    fi
 
-elif [ $MODEL_SIZE = A37B ]; then
+elif [ $MODEL_SIZE = 600B ]; then
 
 HIDDEN_SIZE=7168
 NUM_ATTENTION_HEADS=128
@@ -300,6 +311,9 @@ moe_options=" \
     --moe-router-enable-expert-bias \
     --moe-router-load-balancing-type seq_aux_loss \
     --moe-router-bias-update-rate 1e-3"
+    if [[ ${ROUTER_TOPK_SCALING_FACTOR:-none} != none ]]; then
+    moe_options=" ${moe_options} --moe-router-topk-scaling-factor ${ROUTER_TOPK_SCALING_FACTOR} "
+    fi
 
 else
 
@@ -423,7 +437,7 @@ fi
 LR_WARMUP_ITERS=2000
 # LR_WARMUP_ITERS=$(( ${WARMUP_TOKENS}  / ${GLOBAL_BATCH_SIZE} / ${SEQ_LEN} ))
 LR_DECAY_ITERS=$(( ${TRAIN_TOKENS} /  ${GLOBAL_BATCH_SIZE} / ${SEQ_LEN} ))
-PREFIX="pretrain-mcore-deepseek-v2-${MODEL_SIZE}-lr-${LR}-minlr-${MIN_LR}-bs-${BATCH_SIZE}-gbs-${GLOBAL_BATCH_SIZE}-seqlen-${SEQ_LEN}"
+PREFIX="pretrain-zjmcore-dsv3-${MODEL_SIZE}-lr-${LR}-minlr-${MIN_LR}-bs-${BATCH_SIZE}-gbs-${GLOBAL_BATCH_SIZE}-seqlen-${SEQ_LEN}"
 
 dataset_option=" \
     --data-path ${DATASET_PATH} \
@@ -456,7 +470,7 @@ megatron_options="  \
         --adam-beta1 0.9 \
         --adam-beta2 0.95 \
         --clip-grad 1.0 \
-        --init-method-std 0.006 \
+        --init-method-std ${INIT_METHOD_STD} \
         --attention-dropout 0.0 \
         --hidden-dropout 0.0 \
         --lr-decay-iters ${LR_DECAY_ITERS} \
