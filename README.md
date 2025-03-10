@@ -10,6 +10,9 @@ Megatron-LM & Megatron-Core
 
 <div align="left">
 
+# ZJ-Megatron-LM文档
+[**ZJ-Megatron-LM 使用文档**](https://www.yuque.com/cheng-ha1gd/chq7l3/nis1ix80sm8twn1f)
+
 # Latest News
 
 - **[2024/7]** Megatron-Core v0.7 improves scalability and training resiliency and adds support for multimodal training ([blog](https://developer.nvidia.com/blog/train-generative-ai-models-more-efficiently-with-new-nvidia-megatron-core-functionalities/)). 
