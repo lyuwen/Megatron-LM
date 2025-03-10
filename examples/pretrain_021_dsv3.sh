@@ -138,6 +138,7 @@ NUM_SHARED_EXPERTS=1
 MOE_LAYER_FREQ=1
 MOE_FIRST_K_DENSE_REPLACE=2
 RMS_NORM_EPS=1e-6
+
 moe_options=" \
     --moe-ffn-hidden-size ${MOE_INTERMEDIATE_SIZE} \
     --moe-router-topk ${ROUTER_TOPK} \
