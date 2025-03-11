@@ -1352,6 +1352,8 @@ def _add_training_args(parser):
                        ' (1024 - 16) / 8 = 126 intervals will increase'
                        'the batch size linearly to 1024. In each interval'
                        'we will use approximately 300000 / 126 = 2380 samples.')
+    group.add_argument('--skip-rbs-save', action="store_true", default=False,
+                       help='Skip saving checkpoints during batch size rampup stage.')
     group.add_argument('--warmup-seq-length', type=str, default=None,
                        help='Warmup up sequence length to improve stability.'
                        'Usage: --warmup-seq-length step0:seq_len0,step1:seq_len1... '

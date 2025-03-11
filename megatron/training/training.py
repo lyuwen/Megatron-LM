@@ -1634,7 +1634,7 @@ def train(forward_step_func, model, optimizer, opt_param_scheduler,
             assert get_num_microbatches() > num_microbatches, \
                 (f"Number of microbatches should be increasing due to batch size rampup; "
                  f"instead going from {num_microbatches} to {get_num_microbatches()}")
-            if args.save is not None:
+            if args.save is not None and not args.skip_rbs_save:
                 save_checkpoint_and_time(iteration, model, optimizer,
                                          opt_param_scheduler,
                                          num_floating_point_operations_so_far,

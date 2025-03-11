@@ -578,6 +578,6 @@ run_cmd="torchrun $DISTRIBUTED_ARGS ${MEGATRON_PATH}/pretrain_gpt.py
  ${uneven_split_option} ${prof_options} ${seqwarm_options} ${new_options} ${fsdp_options} ${ckpt_options}"
 
 echo ${run_cmd}
-[[ $RANK = 0 ]] && echo echo ${run_cmd} > ${OUTPUT_DIR}/cmd.sh
+[[ $RANK = 0 ]] && echo echo ${run_cmd} > ${OUTPUT_DIR}/logs/${TIMESTAMP}/cmd.sh
 eval ${run_cmd}
 
