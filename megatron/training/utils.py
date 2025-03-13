@@ -558,3 +558,25 @@ def get_batch_on_this_tp_rank(data_iterator):
 
 def update_use_dist_ckpt(args):
     args.use_dist_ckpt = args.ckpt_format != "torch"
+
+
+# LFu: signal end of train with a file
+def check_for_exit_signal(args) -> bool:
+    """
+    To exit a train in case of some random reason.
+    Put a file with name EXIT_TRAIN.txt and with text true inside.
+    The train will exit and a checkpoint will be saved.
+
+    The logic is to check the file on 0-th rank, broadcast the signal to the rest.
+    """
+    signal_file = os.path.join(args.save, "EXIT_TRAIN.txt")
+    rank = torch.distributed.get_rank()
+    signal = False
+    if rank == 0:
+        if os.path.exists(signal_file):
+            with open(signal_file, "r") as f:
+                text = f.read().strip()
+                signal = text.lower() == "true"
+    signal_cuda = torch.tensor([int(signal)], dtype=torch.int, device="cuda")
+    torch.distributed.broadcast(signal_cuda, src=0)
+    return bool(signal_cuda[0].item())

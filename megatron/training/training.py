@@ -117,6 +117,7 @@ from megatron.core.benchmark_utils import (
     reset_benchmark,
     benchmark_should_exit,
     )
+from megatron.training.utils import check_for_exit_signal
 
 stimer = StragglerDetector()
 
@@ -1801,7 +1802,7 @@ def train(forward_step_func, model, optimizer, opt_param_scheduler,
         should_exit = checkpoint_and_decide_exit(model, optimizer, opt_param_scheduler, iteration,
                                                  num_floating_point_operations_so_far,
                                                  checkpointing_context, train_data_iterator)
-        if should_exit or benchmark_should_exit():
+        if should_exit or benchmark_should_exit() or check_for_exit_signal(args):
             break
 
     one_logger_utils.track_e2e_metrics()
