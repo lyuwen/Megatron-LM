@@ -2363,6 +2363,11 @@ def _add_moe_args(parser):
                        'The expert bias is updated based on the number of assigned tokens to each expert in a global batch, '
                        'where the bias is increased for the experts with less assigned tokens and decreased for the experts with more assigned tokens. '
                        'The default value 1e-3 is same as that used in DeepSeekV3.')
+    group.add_argument('--moe-router-bias-mean-update-rate', type=float, default=0.0,
+                       help='The extra balancing term Moonshot introduced to the aux-loss-free load balancing bias update term '
+                       'in moonshotai/Moonlight-16B-A3B (https://arxiv.org/abs/2502.16982). '
+                       'It adds an extra correction based on the average load offset, '
+                       'in the Moonlight-16B-A3B model the value is equal to the bias update rate.')
     group.add_argument('--moe-use-legacy-grouped-gemm', action='store_true',
                        help='Use legacy GroupedMLP rather than TEGroupedMLP. Note: The legacy one will be deprecated soon.')
     group.add_argument('--moe-aux-loss-coeff', type=float, default=0.0,

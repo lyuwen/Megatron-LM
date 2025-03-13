@@ -348,6 +348,12 @@ class TransformerConfig(ModelParallelConfig):
     and decreased for the experts with more assigned tokens. 
     The default value 1e-3 is same as that used in DeepSeekV3."""
 
+    moe_router_bias_mean_update_rate: float = 0.0
+    """The extra balancing term Moonshot introduced to the aux-loss-free load balancing bias update term '
+    in moonshotai/Moonlight-16B-A3B (https://arxiv.org/abs/2502.16982).
+    It adds an extra correction based on the average load offset,
+    in the Moonlight-16B-A3B model the value is equal to the bias update rate (1e-3)."""
+
     moe_grouped_gemm: bool = False
     """When there are multiple experts per rank, compress multiple local (potentially small) gemms
     in a single kernel launch to improve the utilization and performance by leveraging the Grouped

@@ -764,7 +764,7 @@ def track_moe_metrics(
     clear_aux_losses_tracker()
 
 
-def get_updated_expert_bias(tokens_per_expert, expert_bias, expert_bias_update_rate):
+def get_updated_expert_bias(tokens_per_expert, expert_bias, expert_bias_update_rate, export_bias_mean_update_rate):
     """Update expert bias for biased expert routing. See https://arxiv.org/abs/2408.15664v1#
 
     Args:
@@ -780,5 +780,5 @@ def get_updated_expert_bias(tokens_per_expert, expert_bias, expert_bias_update_r
         )
         average_tokens = tokens_per_expert.sum(dim=-1, keepdim=True) / tokens_per_expert.shape[-1]
         offset = average_tokens - tokens_per_expert
-        updated_expert_bias = expert_bias + torch.sign(offset) * expert_bias_update_rate
+        updated_expert_bias = expert_bias + torch.sign(offset) * expert_bias_update_rate - torch.sign(offset).mean() * export_bias_mean_update_rate
         return updated_expert_bias
