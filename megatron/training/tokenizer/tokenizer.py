@@ -140,6 +140,17 @@ class _HuggingFaceTokenizer(MegatronTokenizer):
         self._vocab = self._tokenizer.get_vocab()
         self._inv_vocab = {token_id: token for token, token_id in self._vocab.items()}
 
+        if self._tokenizer.chat_template is None:
+            self._tokenizer.chat_template = "{% for message in messages %}{% if loop.first and messages[0]['role'] != 'system' %}{{ '<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n' }}{% endif %}{{'<|im_start|>' + message['role'] + '\n' + message['content'] + '<|im_end|>' + '\n'}}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant\n' }}{% endif %}"
+            try:
+                test_conversation = [
+                    {'role': 'user', 'content': 'hello world'}
+                ]
+                self.apply_chat_template(test_conversation)
+            except Exception:
+                # the default chat_template is invalid, assume user will not do SFT
+                self._tokenizer.chat_template = None 
+
     @property
     def vocab_size(self):
         return len(self._tokenizer)
@@ -179,6 +190,17 @@ class _HuggingFaceTokenizer(MegatronTokenizer):
     @property
     def eod(self):
         return self._tokenizer.eos_token_id
+
+    def apply_chat_template(self, conversations):
+        return self._tokenizer.apply_chat_template(conversations)
+
+    @property
+    def pad(self):
+        return self._tokenizer.pad_token_id
+
+    @property
+    def bos(self):
+        return self._tokenizer.bos_token_id
 
 
 class _BertWordPieceTokenizer(MegatronTokenizer):
