@@ -18,6 +18,7 @@ PAD_LEN=${PAD_LEN:-${SEQ_LEN}}
 PR=bf16
 ### BASE CONFIG ###
 
+
 ### PARALLEL / BOOL OPTION ###
 PP=${PP:-1} # 6
 EP=${EP:-1} # 8
@@ -152,7 +153,6 @@ moe_options=" \
     --qk-head-dim ${QK_NOPE_HEAD_DIM} \
     --qk-pos-emb-head-dim ${QK_ROPE_HEAD_DIM} \
     --v-head-dim ${V_HEAD_DIM} \
-    --moe-token-dispatcher-type alltoall_seq \
     --moe-grouped-gemm \
     --moe-router-num-groups ${MOE_ROUTER_GROUPS} \
     --moe-router-group-topk ${MOE_ROUTER_GROUPS_TOPK} \
@@ -164,6 +164,19 @@ moe_options=" \
     if [[ ${ROUTER_TOPK_SCALING_FACTOR:-none} != none ]]; then
     moe_options=" ${moe_options}  --moe-router-topk-scaling-factor ${ROUTER_TOPK_SCALING_FACTOR} "
     fi
+
+    if [[ ${BIAS_MEAN:-False} = true ]]; then
+    moe_options=" ${moe_options} --moe-router-bias-mean-update-rate 1e-3 "
+    fi
+
+    DISPATCHER_TYPE=${DISPATCHER_TYPE:-alltoall_seq}
+    if [ $DISPATCHER_TYPE = alltoall_seq ]; then
+        moe_options=" ${moe_options}  --moe-token-dispatcher-type alltoall_seq  "
+    elif [ $DISPATCHER_TYPE = alltoall ]; then
+        moe_options=" ${moe_options}  --moe-token-dispatcher-type alltoall --moe-shared-expert-overlap "
+    fi
+
+
 
 elif [ $MODEL_SIZE = 16B ]; then
 
@@ -201,7 +214,6 @@ moe_options=" \
     --qk-head-dim ${QK_NOPE_HEAD_DIM} \
     --qk-pos-emb-head-dim ${QK_ROPE_HEAD_DIM} \
     --v-head-dim ${V_HEAD_DIM} \
-    --moe-token-dispatcher-type alltoall_seq \
     --moe-grouped-gemm \
     --moe-router-num-groups ${MOE_ROUTER_GROUPS} \
     --moe-router-group-topk ${MOE_ROUTER_GROUPS_TOPK} \
@@ -212,6 +224,17 @@ moe_options=" \
     # --q-lora-rank ${Q_LORA_RANK} \
     if [[ ${ROUTER_TOPK_SCALING_FACTOR:-none} != none ]]; then
     moe_options=" ${moe_options} --moe-router-topk-scaling-factor ${ROUTER_TOPK_SCALING_FACTOR} "
+    fi
+
+    if [[ ${BIAS_MEAN:-False} = true ]]; then
+    moe_options=" ${moe_options} --moe-router-bias-mean-update-rate 1e-3 "
+    fi
+
+    DISPATCHER_TYPE=${DISPATCHER_TYPE:-alltoall_seq}
+    if [ $DISPATCHER_TYPE = alltoall_seq ]; then
+        moe_options=" ${moe_options}  --moe-token-dispatcher-type alltoall_seq  "
+    elif [ $DISPATCHER_TYPE = alltoall ]; then
+        moe_options=" ${moe_options}  --moe-token-dispatcher-type alltoall --moe-shared-expert-overlap "
     fi
 
 elif [ $MODEL_SIZE = 200B ]; then
@@ -230,7 +253,8 @@ QK_ROPE_HEAD_DIM=64
 V_HEAD_DIM=128
 ROPE_THETA=10000
 SCALE_FACTOR=40
-NUM_EXPERTS=160
+# NUM_EXPERTS=160
+NUM_EXPERTS=120
 ROUTER_TOPK=6
 NUM_SHARED_EXPERTS=2
 MOE_LAYER_FREQ=1
@@ -251,7 +275,6 @@ moe_options=" \
     --qk-head-dim ${QK_NOPE_HEAD_DIM} \
     --qk-pos-emb-head-dim ${QK_ROPE_HEAD_DIM} \
     --v-head-dim ${V_HEAD_DIM} \
-    --moe-token-dispatcher-type alltoall_seq \
     --moe-grouped-gemm \
     --moe-router-num-groups ${MOE_ROUTER_GROUPS} \
     --moe-router-group-topk ${MOE_ROUTER_GROUPS_TOPK} \
@@ -264,6 +287,17 @@ moe_options=" \
 # --moe-router-topk-limited-devices 4 \
     if [[ ${ROUTER_TOPK_SCALING_FACTOR:-none} != none ]]; then
     moe_options=" ${moe_options} --moe-router-topk-scaling-factor ${ROUTER_TOPK_SCALING_FACTOR} "
+    fi
+
+    if [[ ${BIAS_MEAN:-False} = true ]]; then
+    moe_options=" ${moe_options} --moe-router-bias-mean-update-rate 1e-3 "
+    fi
+
+    DISPATCHER_TYPE=${DISPATCHER_TYPE:-alltoall_seq}
+    if [ $DISPATCHER_TYPE = alltoall_seq ]; then
+        moe_options=" ${moe_options}  --moe-token-dispatcher-type alltoall_seq  "
+    elif [ $DISPATCHER_TYPE = alltoall ]; then
+        moe_options=" ${moe_options}  --moe-token-dispatcher-type alltoall --moe-shared-expert-overlap "
     fi
 
 elif [ $MODEL_SIZE = 600B ]; then
@@ -303,7 +337,6 @@ moe_options=" \
     --qk-head-dim ${QK_NOPE_HEAD_DIM} \
     --qk-pos-emb-head-dim ${QK_ROPE_HEAD_DIM} \
     --v-head-dim ${V_HEAD_DIM} \
-    --moe-token-dispatcher-type alltoall_seq \
     --moe-grouped-gemm \
     --moe-router-num-groups ${MOE_ROUTER_GROUPS} \
     --moe-router-group-topk ${MOE_ROUTER_GROUPS_TOPK} \
@@ -311,8 +344,20 @@ moe_options=" \
     --moe-router-enable-expert-bias \
     --moe-router-load-balancing-type seq_aux_loss \
     --moe-router-bias-update-rate 1e-3"
+        # --moe-token-dispatcher-type alltoall_seq \
     if [[ ${ROUTER_TOPK_SCALING_FACTOR:-none} != none ]]; then
     moe_options=" ${moe_options} --moe-router-topk-scaling-factor ${ROUTER_TOPK_SCALING_FACTOR} "
+    fi
+
+    if [[ ${BIAS_MEAN:-False} = true ]]; then
+    moe_options=" ${moe_options} --moe-router-bias-mean-update-rate 1e-3 "
+    fi
+
+    DISPATCHER_TYPE=${DISPATCHER_TYPE:-alltoall_seq}
+    if [ $DISPATCHER_TYPE = alltoall_seq ]; then
+        moe_options=" ${moe_options}  --moe-token-dispatcher-type alltoall_seq  "
+    elif [ $DISPATCHER_TYPE = alltoall ]; then
+        moe_options=" ${moe_options}  --moe-token-dispatcher-type alltoall --moe-shared-expert-overlap "
     fi
 
 else
@@ -326,7 +371,7 @@ TP_COMM_OVERLAP=$(( ($TP > 1) ? 1 : 0 ))
 comm_overlap_option="\
     --overlap-grad-reduce \
     --overlap-param-gather"
- 
+
 
 if [ $TP_COMM_OVERLAP -eq 1 ]; then
     comm_overlap_option="\
@@ -578,6 +623,6 @@ run_cmd="torchrun $DISTRIBUTED_ARGS ${MEGATRON_PATH}/pretrain_gpt.py
  ${uneven_split_option} ${prof_options} ${seqwarm_options} ${new_options} ${fsdp_options} ${ckpt_options}"
 
 echo ${run_cmd}
-[[ $RANK = 0 ]] && echo echo ${run_cmd} > ${OUTPUT_DIR}/logs/${TIMESTAMP}/cmd.sh
+[[ $RANK = 0 ]] && mkdir -p ${OUTPUT_DIR}/logs/${TIMESTAMP} && echo ${run_cmd} > ${OUTPUT_DIR}/logs/${TIMESTAMP}/${MODEL_SIZE}-pp-${PP}-ep-${EP}-AC-${AC}-gbs-${GLOBAL_BATCH_SIZE}-cmd.sh
 eval ${run_cmd}
 

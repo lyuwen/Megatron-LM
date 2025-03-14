@@ -150,7 +150,6 @@ moe_options=" \
     --qk-head-dim ${QK_NOPE_HEAD_DIM} \
     --qk-pos-emb-head-dim ${QK_ROPE_HEAD_DIM} \
     --v-head-dim ${V_HEAD_DIM} \
-    --moe-token-dispatcher-type alltoall_seq \
     --moe-grouped-gemm \
     --moe-router-num-groups ${MOE_ROUTER_GROUPS} \
     --moe-router-group-topk ${MOE_ROUTER_GROUPS_TOPK} \
@@ -199,7 +198,6 @@ moe_options=" \
     --qk-head-dim ${QK_NOPE_HEAD_DIM} \
     --qk-pos-emb-head-dim ${QK_ROPE_HEAD_DIM} \
     --v-head-dim ${V_HEAD_DIM} \
-    --moe-token-dispatcher-type alltoall_seq \
     --moe-grouped-gemm \
     --moe-router-num-groups ${MOE_ROUTER_GROUPS} \
     --moe-router-group-topk ${MOE_ROUTER_GROUPS_TOPK} \
@@ -249,7 +247,6 @@ moe_options=" \
     --qk-head-dim ${QK_NOPE_HEAD_DIM} \
     --qk-pos-emb-head-dim ${QK_ROPE_HEAD_DIM} \
     --v-head-dim ${V_HEAD_DIM} \
-    --moe-token-dispatcher-type alltoall_seq \
     --moe-grouped-gemm \
     --moe-router-num-groups ${MOE_ROUTER_GROUPS} \
     --moe-router-group-topk ${MOE_ROUTER_GROUPS_TOPK} \
@@ -301,7 +298,6 @@ moe_options=" \
     --qk-head-dim ${QK_NOPE_HEAD_DIM} \
     --qk-pos-emb-head-dim ${QK_ROPE_HEAD_DIM} \
     --v-head-dim ${V_HEAD_DIM} \
-    --moe-token-dispatcher-type alltoall_seq \
     --moe-grouped-gemm \
     --moe-router-num-groups ${MOE_ROUTER_GROUPS} \
     --moe-router-group-topk ${MOE_ROUTER_GROUPS_TOPK} \
@@ -318,6 +314,17 @@ else
 echo "Unsupported model size: ${MODEL_SIZE}"
 exit 1
 
+fi
+
+if [[ ${BIAS_MEAN:-False} = true ]]; then
+moe_options=" ${moe_options} --moe-router-bias-mean-update-rate 1e-3 "
+fi
+
+DISPATCHER_TYPE=${DISPATCHER_TYPE:-alltoall_seq}
+if [ $DISPATCHER_TYPE = alltoall_seq ]; then
+    moe_options=" ${moe_options}  --moe-token-dispatcher-type alltoall_seq  "
+elif [ $DISPATCHER_TYPE = alltoall ]; then
+    moe_options=" ${moe_options}  --moe-token-dispatcher-type alltoall --moe-shared-expert-overlap "
 fi
 
 TP_COMM_OVERLAP=$(( ($TP > 1) ? 1 : 0 ))
@@ -573,12 +580,12 @@ if [[ ${OFFLOAD_OPTIMIZER:-false} = true ]] ; then
         --main-grads-dtype bf16 "
 fi
 
-run_cmd="torchrun $DISTRIBUTED_ARGS ${MEGATRON_PATH}/pretrain_gpt.py
+run_cmd="torchrun $DISTRIBUTED_ARGS ${MEGATRON_PATH}/finetune_gpt.py
  ${megatron_options} ${dataset_option} ${pr_options} ${load_options} ${te_options} ${activation_checkpoint_options} \
  ${do_options} ${fl_options} ${sp_options} ${moe_options} ${offload_option} ${sft_option} ${vp_options} \
  ${uneven_split_option} ${prof_options} ${seqwarm_options} ${new_options} ${fsdp_options} ${ckpt_options}"
 
 echo ${run_cmd}
-[[ $RANK = 0 ]] && echo echo ${run_cmd} > ${OUTPUT_DIR}/logs/${TIMESTAMP}/cmd.sh
+[[ $RANK = 0 ]] && mkdir -p ${OUTPUT_DIR}/logs/${TIMESTAMP} && echo ${run_cmd} > ${OUTPUT_DIR}/logs/${TIMESTAMP}/${MODEL_SIZE}-pp-${PP}-ep-${EP}-AC-${AC}-gbs-${GLOBAL_BATCH_SIZE}-cmd.sh
 eval ${run_cmd}
 
