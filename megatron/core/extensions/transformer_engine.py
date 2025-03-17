@@ -1199,12 +1199,13 @@ class TECudaRNGStatesTracker(te.pytorch.distributed.CudaRNGStatesTracker):
     """Wraps TransformerEngine's CudaRNGStatesTracker so that it is
     interchangeable with Megatron's RNG tracker"""
 
-    def __init__(self):
+    def __init__(self, is_inference_rng_tracker=False):
         super().__init__()
         self.reset()
+        self.is_inference_rng_tracker = is_inference_rng_tracker
 
     def is_initialized(self):
-        """Checks if the internal RNG state has been set wirth set_states()."""
+        """Checks if the internal RNG state has been set with set_states()."""
         return self._is_initialized
 
     def reset(self):
@@ -1322,7 +1323,7 @@ try:
         """
         Apply rotary positional embedding to input tensor T in `thd` format with CP support.
         """
-        if is_te_min_version("1.11.0", check_equality=False):
+        if is_te_min_version("1.12.0", check_equality=True):
             return FusedRoPEFunc.apply(t, freqs, "thd", cu_seqlens, cp_size, cp_rank)
         else:
             return FusedRoPEFunc.apply(t, freqs, "thd", cu_seqlens)
@@ -1357,3 +1358,17 @@ except ImportError:
     fused_permute = None
     fused_unpermute = None
     fused_sort_chunks_by_index = None
+
+try:
+
+    from transformer_engine.pytorch.cross_entropy import parallel_cross_entropy
+
+    def te_parallel_cross_entropy(logits: torch.Tensor, labels: torch.Tensor):
+        """Wrapper function for TE's Cross Entropy Loss kernel"""
+        return parallel_cross_entropy(
+            logits, labels, 0.0, False, get_tensor_model_parallel_group(check_initialized=False)
+        )
+
+except ImportError:
+
+    te_parallel_cross_entropy = None
