@@ -46,6 +46,7 @@ from megatron.core.transformer.moe.utils import (
     get_embedding_size,
     get_moe_FLOPs,
 )
+from megatron.training import num_floating_point_operations
 
 
 stimer = StragglerDetector()
@@ -412,6 +413,9 @@ def add_extra_args(parser):
     group.add_argument('--use-gpt-dataset-mm', default=None, action="store_true",
                        help='Use the efficiently memory mapped GPTDatasetMM implmentation. '
                        )
+    group.add_argument('--use-legacy-throughput', default=None, action="store_true",
+                       help='Use the legacy method for calculating throughput.'
+                       )
 
     return parser
 
@@ -482,6 +486,13 @@ def build_extra_valid_data_iterators(extra_valid_datasets_provider):
     return valid_data_iterators, extra_valid_data_samples, extra_valid_data_names
 
 
+def wrap_get_moe_FLOPs(config, batch_size) -> int:
+    if config.multi_latent_attention:
+        return get_moe_FLOPs(config, batch_size, legacy=config.use_legacy_throughput)
+    else:
+        return num_floating_point_operations(config, batch_size)
+
+
 if __name__ == "__main__":
 
     # Temporary for transition to core datasets
@@ -496,4 +507,5 @@ if __name__ == "__main__":
         args_defaults={'tokenizer_type': 'GPT2BPETokenizer'},
         extra_args_provider=add_extra_args,
         extra_valid_data_iterators_builder=partial(build_extra_valid_data_iterators, extra_valid_datasets_provider=extra_valid_datasets_provider),
+        num_floating_point_operations=wrap_get_moe_FLOPs,
         )

@@ -3,15 +3,18 @@
 def get_mla_nparams(config) -> int:
     """ Calculate the number of parmeters for MLA layer
     """
-    size_linear_proj = config.v_head_dim * config.num_attention_heads * config.hidden_size
+    # q
     q_head_dim = config.qk_head_dim + config.qk_pos_emb_head_dim
     if config.q_lora_rank is not None:
         size_linear_q_proj = config.hidden_size * config.q_lora_rank + config.q_lora_rank * config.num_attention_heads * q_head_dim
     else:
         size_linear_q_proj = config.hidden_size * config.num_attention_heads * q_head_dim
+    # kv
     size_linear_kv_down_proj = config.hidden_size * (config.kv_lora_rank + config.qk_pos_emb_head_dim)
     size_linear_kv_up_proj = config.kv_lora_rank * config.num_attention_heads * (config.qk_head_dim + config.v_head_dim)
-    return size_linear_proj + size_linear_q_proj + size_linear_kv_down_proj + size_linear_kv_up_proj
+    # o
+    size_linear_proj = config.v_head_dim * config.num_attention_heads * config.hidden_size
+    return size_linear_q_proj + size_linear_kv_down_proj + size_linear_kv_up_proj + size_linear_proj
 
 
 def get_dense_mlp_nparams(config) -> int:
@@ -90,8 +93,34 @@ def get_embedding_size(config) -> int:
     return config.padded_vocab_size * config.hidden_size * 2
 
 
-def get_moe_FLOPs(config, batch_size: int) -> int:
+def get_router_size(config) -> int:
+    return config.num_experts * config.hidden_size
+
+
+def get_attn_FLOPs(config, batch_size: int) -> int:
+    # score = Q x K^T /2 double to causal
+    # scores = torch.einsum("bshd,bthd->bsht", q, self.k_cache[:bsz, :end_pos]) * self.softmax_scale -> [bs, seq_len, seq_len]
+    q_head_dim = config.qk_head_dim + config.qk_pos_emb_head_dim
+    flops = 2 * batch_size * config.seq_length * config.seq_length * config.num_attention_heads * q_head_dim
+
+    # score x V
+    # x = torch.einsum("bsht,bthd->bshd", scores, self.v_cache[:bsz, :end_pos]) -> [bs, seq_len, args.n_heads, args.v_head_dim]
+    flops += 2 * batch_size * config.seq_length * config.seq_length * config.num_attention_heads * config.v_head_dim
+
+    return flops / 2 * 3 # 1 FWD + 2 BWD
+
+
+def get_moe_FLOPs(config, batch_size: int, include_attn: bool=True, is_causal: bool=True, legacy: bool=False) -> int:
     """ Calculate the number of floating point operators for the whole MoE transformer decoder block per batch
     """
-    return 6 * batch_size * config.seq_length * (get_moe_activated_size(config) + get_embedding_size(config))
+    #  return get_attn_FLOPs(config, batch_size) * config.num_layers
+    flops = 6 * batch_size * config.seq_length * (get_moe_activated_size(config) + get_embedding_size(config) / 2 + get_router_size(config) * config.num_layers)
+    if legacy:
+        flops += 12 * config.num_layers * config.hidden_size * config.seq_length * config.seq_length * batch_size
+    elif include_attn:
+        if is_causal:
+            flops += get_attn_FLOPs(config, batch_size) * config.num_layers
+        else:
+            flops += get_attn_FLOPs(config, batch_size) * config.num_layers * 2
+    return flops
 

@@ -1209,6 +1209,9 @@ def training_log(loss_dict, total_loss_dict, learning_rate, decoupled_learning_r
             # Log tokens trained per GPU-second
             tokens_per_gpu_second = args.seq_length * args.global_batch_size / args.world_size / elapsed_time_per_iteration
             log_string += f' token throughput per GPU (tokens/s/GPU): {tokens_per_gpu_second:.1f} |'
+            # Log MFU
+            mfu = throughput / args.log_mfu_base * 100
+            log_string += f' MFU: {mfu:3.1f}% |'
             # average throughput
             average_throughput = record_throughput(throughput, iteration)
             if average_throughput is not None:

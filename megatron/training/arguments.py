@@ -1228,6 +1228,8 @@ def _add_logging_args(parser):
                        help='If set, calculate and log the number of zeros in gradient.')
     group.add_argument('--log-throughput', action='store_true',
                        help='If set, calculate and log throughput per GPU.')
+    group.add_argument('--log-mfu-base', default=989.0, type=float,
+                       help='The theoretical performance of the GPU, default to 989.0 for H100.')
     group.add_argument('--log-progress', action='store_true',
                        help='If set, log progress (in terms of number of processed tokens and '
                        'number of floating-point operations) to progress.txt file in checkpoint '
