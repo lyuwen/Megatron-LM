@@ -2398,6 +2398,8 @@ def _add_moe_args(parser):
                             'Fp32/fp64 enhances numerical stability, especially with numerous experts. '
                             'The perf impact should be negligible when used with permute fusion. '
                             'None means no changes for dtype.')
+    group.add_argument('--moe-promote-router-dtype', action='store_true',
+                       help='Promote dtype of bias to fp32 to improve training stability.')
     group.add_argument('--moe-router-score-function', type=str,
                        choices=['softmax', 'sigmoid'],
                        default='softmax',

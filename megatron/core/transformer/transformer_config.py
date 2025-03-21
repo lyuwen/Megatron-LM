@@ -418,6 +418,9 @@ class TransformerConfig(ModelParallelConfig):
     moe_permute_fusion: bool = False
     """Fuse token rearrangement ops during token dispatching."""
 
+    moe_promote_router_dtype: bool = False
+    """Promote dtype of bias to improve training stability."""
+
     ##################
     # Context Parallel
     ##################

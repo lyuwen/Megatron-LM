@@ -129,6 +129,16 @@ class TopKRouter(Router):
             self.local_tokens_per_expert = None
             self.expert_bias = None
 
+    def recover_fp32(self):
+        self.expert_bias = self.expert_bias.to(torch.float32)
+        self.local_tokens_per_expert = self.local_tokens_per_expert.to(torch.float32)
+
+    def _apply(self, fn, recurse=True):
+        super()._apply(fn, recurse)
+        if self.config.moe_promote_router_dtype:
+            self.recover_fp32()
+        return self
+
     def sinkhorn_load_balancing(self, logits: torch.Tensor):
         """Apply sinkhorn routing to the logits tensor.
 
