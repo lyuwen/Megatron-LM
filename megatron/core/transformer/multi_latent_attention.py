@@ -22,6 +22,7 @@ from megatron.core.transformer.attention import Attention
 from megatron.core.transformer.enums import AttnMaskType, AttnBackend
 from megatron.core.transformer.spec_utils import ModuleSpec, build_module
 from megatron.core.transformer.transformer_config import MLATransformerConfig
+from megatron.core.utils import deprecate_inference_params
 
 
 @dataclass
@@ -82,6 +83,7 @@ class MultiLatentAttention(Attention):
                 rotary_base=self.config.rotary_base,
             )
         elif self.config.rope_type == "yarn":
+            assert not self.config.apply_rope_fusion, "MLA Yarn RoPE does not support RoPE fusion"
             self.rotary_pos_emb = YarnRotaryEmbedding(
                 self.config.qk_pos_emb_head_dim,
                 rotary_base=self.config.rotary_base,
@@ -130,7 +132,7 @@ class MultiLatentAttention(Attention):
         hidden_states,
         attention_mask,
         key_value_states=None,
-        inference_params=None,
+        inference_context=None,
         rotary_pos_emb=None,
         rotary_pos_cos=None,
         rotary_pos_sin=None,
@@ -138,6 +140,8 @@ class MultiLatentAttention(Attention):
         packed_seq_params=None,
         position_ids=None,
         sequence_len_offset=None,
+        *,
+        inference_params=None,
     ):
         """Forward pass for multi-latent attention"""
         assert rotary_pos_emb is None, "Rotary position embeddings should not be passed into MLA."
@@ -147,6 +151,8 @@ class MultiLatentAttention(Attention):
         ), "MLA does not support Flash Decoding"
 
         # hidden_states: [sq, b, h]
+
+        inference_context = deprecate_inference_params(inference_context, inference_params)
 
         # =====================
         # Query, Key, and Value
@@ -159,7 +165,7 @@ class MultiLatentAttention(Attention):
             key_value_states,
             position_ids,
             packed_seq_params,
-            inference_params=inference_params,
+            inference_context=inference_context,
         )
 
         # ===================================================
@@ -167,8 +173,13 @@ class MultiLatentAttention(Attention):
         # ===================================================
         # rotary_pos_emb = None
         query, key, value, _, attn_mask_type = self._adjust_key_value_for_inference(
-            inference_params, query, key, value, rotary_pos_emb=None
+            inference_context, query, key, value, rotary_pos_emb=None
         )
+
+        # TODO: Currently, TE can only accept contiguous tensors for MLA
+        query = query.contiguous()
+        key = key.contiguous()
+        value = value.contiguous()
 
         # ==================================
         # core attention computation
@@ -322,6 +333,8 @@ class MLASelfAttention(MultiLatentAttention):
         key_value_states=None,
         position_ids=None,
         packed_seq_params=None,
+        inference_context=None,
+        *,
         inference_params=None,
     ):
         """
@@ -332,6 +345,8 @@ class MLASelfAttention(MultiLatentAttention):
         assert (
             hidden_states.ndim == 3
         ), f"hidden_states should be 3D, [s, b, n*h], got {hidden_states.ndim}D"
+
+        inference_context = deprecate_inference_params(inference_context, inference_params)
 
         if self.config.q_lora_rank is not None:
             q_compressed, _ = self.linear_q_down_proj(hidden_states)
@@ -379,7 +394,7 @@ class MLASelfAttention(MultiLatentAttention):
         k_no_pe, value = torch.split(kv, [self.config.qk_head_dim, self.config.v_head_dim], dim=-1)
 
         rotary_seq_len = self.rotary_pos_emb.get_rotary_seq_len(
-            inference_params, None, hidden_states, self.config, packed_seq_params
+            inference_context, None, hidden_states, self.config, packed_seq_params
         )
 
         # rotary_pos_emb:[s, b, 1, 64]
@@ -390,9 +405,9 @@ class MLASelfAttention(MultiLatentAttention):
         else:
             rotary_pos_emb, mscale = self.rotary_pos_emb(rotary_seq_len)
 
-        if inference_params is not None:
+        if inference_context is not None:
             # add offset to the sequence start for inference
-            sequence_start = inference_params.sequence_len_offset
+            sequence_start = inference_context.sequence_len_offset
             sequence_end = sequence_start + q_len
             rotary_pos_emb = rotary_pos_emb[sequence_start:sequence_end]
         else:
@@ -425,9 +440,5 @@ class MLASelfAttention(MultiLatentAttention):
         # key: [s, b, n, 192]
         k_pos_emb = k_pos_emb.expand(-1, -1, self.num_attention_heads_per_partition, -1)
         key = torch.cat([k_no_pe, k_pos_emb], dim=-1)
-
-        query = query.contiguous()
-        key = key.contiguous()
-        value = value.contiguous()
 
         return query, key, value

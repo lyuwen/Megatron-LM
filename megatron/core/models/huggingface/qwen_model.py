@@ -1,33 +1,39 @@
 # Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
 
+import torch
 from transformers.models.qwen2 import Qwen2ForCausalLM
+from transformers.models.qwen2.modeling_qwen2 import Qwen2DecoderLayer
 
 from megatron.core.models.huggingface import HuggingFaceModule
 
 
 class QwenHuggingFaceModel(HuggingFaceModule):
     """
-    Wrapper for Qwen LM HuggingFace models
+    Wrapper for Qwen LM HuggingFace models.
     """
+
+    # Currently applies to FSDP2 only, not the custom FSDP implementation.
+    _fsdp_modules = [Qwen2DecoderLayer]
 
     def __init__(self, config):
         super().__init__(config)
-        self.model = Qwen2ForCausalLM.from_pretrained(config.huggingface_model_name_or_path)
+        self.model = Qwen2ForCausalLM.from_pretrained(config.language_model_type.split("hf://")[1])
 
     def forward(self, *args, **kwargs):
-        """Forward function"""
-        combined_embeddings = kwargs['decoder_input'].permute(1, 0, 2)
-        x = self.model(
-            position_ids=None,  # TODO: I guess we're just assuming no custom pos ids
-            attention_mask=kwargs['attention_mask'],
-            inputs_embeds=combined_embeddings,
-            labels=kwargs['labels'],
-        )
+        """Qwen forward."""
+        labels = kwargs["labels"]
+        combined_embeddings = kwargs["decoder_input"].permute(1, 0, 2)
 
-        if kwargs['labels'] is not None:
-            x = x["loss"]
-        else:
-            x = x["logits"]
+        x = self.model(
+            position_ids=None,  # uses arange
+            attention_mask=kwargs['attention_mask'],  # Typically None -> causal.
+            inputs_embeds=combined_embeddings,
+        )
+        logits = x["logits"]
+
+        if labels is not None:
+            loss_fn = torch.nn.CrossEntropyLoss(reduction="none")
+            x = loss_fn(logits.permute(0, 2, 1), labels)
 
         return x
 

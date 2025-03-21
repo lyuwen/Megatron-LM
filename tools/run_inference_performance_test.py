@@ -2,13 +2,15 @@ import os
 from megatron.core.inference.model_inference_wrappers.inference_wrapper_config import (
     InferenceWrapperConfig,
 )
-from pretrain_gpt import model_provider
+import argparse
+from pretrain_gpt import model_provider as gpt_model_provider
+from pretrain_mamba import model_provider as mamba_model_provider
+import random
 import torch
 import sys
 import time
 import tqdm
 import warnings
-from argparse import Namespace
 from megatron.core.inference.engines.abstract_engine import AbstractEngine
 from megatron.core.inference.engines.mcore_engine import MCoreEngine
 from megatron.core.inference.sampling_params import SamplingParams
@@ -30,10 +32,9 @@ from megatron.training import get_tokenizer
 from megatron.training.checkpointing import load_checkpoint
 from megatron.core import mpu
 from megatron.training.initialize import initialize_megatron
-from megatron.training import get_model
+from megatron.training import get_model, get_tokenizer
 import asyncio
 from typing import AsyncIterator, List
-
 
 
 def add_text_generate_args(parser):
@@ -59,18 +60,28 @@ def add_text_generate_args(parser):
         "--prompts",
         metavar='N',
         type=str,
+        default=None,
         nargs='+',
         help='Input prompts with each prompt within quotes and seperated by space',
     )
     group.add_argument(
-        "--max-batch-size", type=int, default=8, dest="inference_max_requests",
-        help='Max number of prompts to process at once'
+        "--num-input-tokens", type=int, default=None, help='Number of input tokens per prompt'
+    )
+    group.add_argument(
+        "--max-batch-size",
+        type=int,
+        default=8,
+        dest="inference_max_requests",
+        help='Max number of prompts to process at once',
     )
     group.add_argument("--stream", action="store_true", default=False, help="Stream output tokens")
+    group.add_argument(
+        "--model-provider", choices=["mamba", "gpt"], default="gpt", help="Model provider"
+    )
     return parser
 
 
-def get_inference_engine(args: Namespace, model: MegatronModule) -> AbstractEngine:
+def get_inference_engine(args: argparse.Namespace, model: MegatronModule) -> AbstractEngine:
     """Utility to get the relevant backend for running inference
 
     This function will automatically chose the TRTLLMBackend when possible, and if not revert to Mcore backend if the user does not specify any backends. TRT LLM Backend is not implmented yet.
@@ -95,14 +106,14 @@ def get_inference_engine(args: Namespace, model: MegatronModule) -> AbstractEngi
     )
 
     inference_wrapped_model = GPTInferenceWrapper(model, inference_wrapper_config)
-    text_generation_controller = TextGenerationController(inference_wrapped_model=inference_wrapped_model, tokenizer=tokenizer)
+    text_generation_controller = TextGenerationController(
+        inference_wrapped_model=inference_wrapped_model, tokenizer=tokenizer
+    )
     return MCoreEngine(text_generation_controller=text_generation_controller)
 
 
 async def generate(
-    inference_engine: MCoreEngine,
-    sampling_params: SamplingParams,
-    prompts: List[str],
+    inference_engine: MCoreEngine, sampling_params: SamplingParams, prompts: List[str]
 ) -> List[InferenceRequest]:
     async def collect_stream(prompt, request_id, stream_generator):
         print(f"Request {request_id}: {prompt}", end="", flush=True)
@@ -118,7 +129,9 @@ async def generate(
         )
         for prompt in prompts
     ]
-    stream_generators = [inference_engine.get_stream_generator(request_id) for request_id in request_ids]
+    stream_generators = [
+        inference_engine.get_stream_generator(request_id) for request_id in request_ids
+    ]
 
     tasks = [
         asyncio.create_task(collect_stream(prompt, request_id, stream_generator))
@@ -133,6 +146,35 @@ async def generate(
     ]
 
     return results
+
+
+def get_random_prompt_tokens(tokenizer, num_input_tokens) -> List[int]:
+    # Get the set of special token IDs to exclude
+    special_token_ids = set()
+    try:
+        if hasattr(tokenizer, 'bos') and tokenizer.bos is not None:
+            special_token_ids.add(tokenizer.bos)
+        if hasattr(tokenizer, 'eos') and tokenizer.eos is not None:
+            special_token_ids.add(tokenizer.eos)
+        if hasattr(tokenizer, 'eod') and tokenizer.eod is not None:
+            special_token_ids.add(tokenizer.eos)
+        if (
+            hasattr(tokenizer, 'additional_special_tokens_ids')
+            and tokenizer.additional_special_tokens_ids
+        ):
+            special_token_ids.update(tokenizer.additional_special_tokens_ids)
+    except NotImplementedError as e:
+        pass
+
+    # Create a list of valid token IDs
+    valid_token_ids = [i for i in range(tokenizer.vocab_size) if i not in special_token_ids]
+
+    # Randomly sample tokens from the valid tokens
+    prompt_tokens = random.choices(valid_token_ids, k=num_input_tokens)
+    assert len(prompt_tokens) == num_input_tokens
+
+    return prompt_tokens
+
 
 def main():
     """Main program."""
@@ -149,12 +191,22 @@ def main():
         },
     )
 
+    args = get_args()
+
     # Set up model and load checkpoint
+    if args.model_provider == "gpt":
+        model_provider = gpt_model_provider
+    elif args.model_provider == "mamba":
+        model_provider = mamba_model_provider
+
     model = get_model(model_provider, wrap_with_ddp=False)
+    tokenizer = get_tokenizer()
     load_checkpoint(model, None, None)
     model = model[0]
 
-    args = get_args()
+    assert (args.prompts is None) ^ (
+        args.num_input_tokens is None
+    ), "Exactly one of `--prompts` and `--num-prompt-tokens` must be specified"
 
     inference_engine = get_inference_engine(args, model)
 
@@ -166,35 +218,62 @@ def main():
         num_tokens_to_generate=args.num_tokens_to_generate,
     )
 
+    requests = None
+    if args.num_input_tokens is not None:
+        requests = []
+        batch_size = args.inference_max_requests
+        for i in range(batch_size):
+            prompt_tokens = get_random_prompt_tokens(tokenizer, args.num_input_tokens)
+            requests.append(
+                InferenceRequest(
+                    request_id=inference_engine.get_new_request_id(),
+                    prompt=tokenizer.detokenize(prompt_tokens),
+                    prompt_tokens=prompt_tokens,
+                    inference_parameters=sampling_params,
+                )
+            )
+    assert (args.prompts is None) ^ (requests is None)
+
     if args.enable_cuda_graph:
         print(f"Running warmup for CUDA graphs...")
         inference_engine.generate(
-                prompts=args.prompts, sampling_params=sampling_params
-            )
+            prompts=args.prompts, inference_requests=requests, sampling_params=sampling_params
+        )
 
     start_time = time.perf_counter()
     if args.stream:
-        results: List[InferenceRequest] = asyncio.run(generate(inference_engine, sampling_params, args.prompts))
+        results: List[InferenceRequest] = asyncio.run(
+            generate(
+                inference_engine, sampling_params, prompts=args.prompts, inference_requests=requests
+            )
+        )
     else:
         results: List[InferenceRequest] = inference_engine.generate(
-            prompts=args.prompts, sampling_params=sampling_params,
+            prompts=args.prompts, inference_requests=requests, sampling_params=sampling_params
         )
     end_time = time.perf_counter()
     latency = end_time - start_time
 
+    memory_allocated = torch.cuda.max_memory_allocated()
+
     if torch.distributed.get_rank() == 0:
         for idx, result in enumerate(results):
             print(f' \n------------- RESULT FOR PROMPT {idx} --------------- ')
+            generated_log_probs = result.generated_log_probs
             result = {
                 'id': result.request_id,
                 'input_prompt': result.prompt,
                 'generated_text': result.generated_text,
                 'generated_tokens': result.generated_tokens,
                 'latency': latency,
+                'memory_usage_GB': memory_allocated / (1024**3),
             }
+            if args.return_log_probs:
+                result['generated_log_probs'] = generated_log_probs
             print(result)
 
     torch.distributed.destroy_process_group()
+
 
 if __name__ == "__main__":
     main()

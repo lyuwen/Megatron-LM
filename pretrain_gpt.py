@@ -105,7 +105,7 @@ def model_provider(pre_process=True, post_process=True) -> Union[GPTModel, megat
         else:
             if args.num_experts:
                 # Define the decoder block spec
-                transformer_layer_spec = get_gpt_decoder_block_spec(config, use_transformer_engine=use_te)
+                transformer_layer_spec = get_gpt_decoder_block_spec(config, use_transformer_engine=use_te, normalization=args.normalization)
             else:
                 # Define the decoder layer spec
                 if use_te:
@@ -115,7 +115,8 @@ def model_provider(pre_process=True, post_process=True) -> Union[GPTModel, megat
                 else:
                     transformer_layer_spec = get_gpt_layer_local_spec(
                         args.num_experts, args.moe_grouped_gemm,
-                        args.qk_layernorm, args.multi_latent_attention, args.moe_use_legacy_grouped_gemm)
+                        args.qk_layernorm, args.multi_latent_attention, args.moe_use_legacy_grouped_gemm,
+                        normalization=args.normalization)
 
         build_model_context = nullcontext
         build_model_context_args = {}
@@ -236,9 +237,12 @@ def loss_func(loss_mask: torch.Tensor, output_tensor: torch.Tensor):
     reporting_loss = loss.clone().detach()
     torch.distributed.all_reduce(reporting_loss, group=mpu.get_data_parallel_group())
 
+    # loss[0] is a view of loss, so it has ._base not None, which triggers assert error
+    # in core/pipeline_parallel/schedule.py::deallocate_output_tensor, calling .clone()
+    # on loss[0] fixes this
     local_num_tokens = loss[1].clone().detach().to(torch.int)
     return (
-        loss[0] * args.context_parallel_size,
+        loss[0].clone(),
         local_num_tokens,
         {'lm loss': (reporting_loss[0], reporting_loss[1])},
     )
