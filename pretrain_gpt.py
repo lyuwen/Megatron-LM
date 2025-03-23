@@ -46,7 +46,7 @@ from megatron.core.transformer.moe.utils import (
     get_embedding_size,
     get_moe_FLOPs,
 )
-from megatron.training import num_floating_point_operations
+from megatron.training.training import num_floating_point_operations
 
 
 stimer = StragglerDetector()
