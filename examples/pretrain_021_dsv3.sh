@@ -1,5 +1,5 @@
 set -ex
-
+# export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 ENV=${ENV:-dsw}
 
 ### BASE CONFIG ###
@@ -32,7 +32,7 @@ SFT=false
 
 ### OTHERS ###
 AC=${AC:-none} # full
-SAVE_INTERVAL=1000
+SAVE_INTERVAL=${SAVE_INTERVAL:-1000}
 if [[ -z $DATASET_FILE ]] ; then
     echo "Missing environment variable DATASET_FILE."
     exit 1
@@ -44,13 +44,31 @@ if [[ -z $TOKENIZER_PATH ]] ; then
     echo "Missing environment variable TOKENIZER_PATH."
     exit 1
 fi
-if [[ ${ASYNC_SAVE:-false} = true ]] ; then
+CKPT_FORMAT=${CKPT_FORMAT:-torch}
+if [ ${CKPT_FORMAT} = torch_dist_async ] ; then
     ckpt_options=" --ckpt-format torch_dist --async-save "
-else
-    ckpt_options=" --ckpt-format ${CKPT_FORMAT:-torch} "
+elif [ ${CKPT_FORMAT} = torch_dist_no_optim ] ; then
+    ckpt_options=" --ckpt-format torch_dist --no-save-optim "
+elif [ ${CKPT_FORMAT} = torch_dist ] ; then
+    ckpt_options=" --ckpt-format torch_dist "
+elif [ ${CKPT_FORMAT} = torch ] ; then
+    ckpt_options=" --ckpt-format torch "
 fi
 
-PRETRAIN_CHECKPOINT_PATH=${OUTPUT_DIR}/checkpoints
+PRETRAIN_CHECKPOINT_PATH_DEFAULT=${OUTPUT_DIR}/checkpoints
+PRETRAIN_CHECKPOINT_PATH=${PRETRAIN_CHECKPOINT_PATH:-PRETRAIN_CHECKPOINT_PATH_DEFAULT}
+
+# DEBUG model without saving optim
+if [ -z ${DEBUG_PRETRAIN_CHECKPOINT_PATH} ];then
+    PRETRAIN_CHECKPOINT_PATH=$DEBUG_PRETRAIN_CHECKPOINT_PATH
+    ckpt_options=" ${ckpt_options} \
+        --auto-detect-ckpt-format \
+        --no-load-optim \
+        --no-load-rng \
+        --no-save-optim \
+        --no-save-rng \
+        "
+fi
 
 # training configuraitons
 TRAIN_TOKENS=${TRAIN_TOKENS:-200000000000}
@@ -103,12 +121,6 @@ else
         --num-layers-per-virtual-pipeline-stage ${MP_VP}"
 fi
 
-
-TIMESTAMP=$(date "+%Y%m%d-%H%M")
-DISTRIBUTED_ARGS="--nproc_per_node $GPUS_PER_NODE --nnodes $NNODES \
-    --node_rank $NODE_RANK --master_addr $MASTER_ADDR --master_port $MASTER_PORT \
-    --tee 3 --log_dir ${OUTPUT_DIR}/logs/${TIMESTAMP}"
-
 if [ $FL = true ]; then
     export NVTE_FLASH_ATTN=1 NVTE_FUSED_ATTN=0
     fl_options=" --attention-backend flash "
@@ -160,22 +172,6 @@ moe_options=" \
     --moe-router-enable-expert-bias \
     --moe-router-load-balancing-type seq_aux_loss \
     --moe-router-bias-update-rate 1e-3"
-    # --q-lora-rank ${Q_LORA_RANK} \ 
-    if [[ ${ROUTER_TOPK_SCALING_FACTOR:-none} != none ]]; then
-    moe_options=" ${moe_options}  --moe-router-topk-scaling-factor ${ROUTER_TOPK_SCALING_FACTOR} "
-    fi
-
-    if [[ ${BIAS_MEAN:-False} = true ]]; then
-    moe_options=" ${moe_options} --moe-router-bias-mean-update-rate 1e-3 "
-    fi
-
-    DISPATCHER_TYPE=${DISPATCHER_TYPE:-alltoall_seq}
-    if [ $DISPATCHER_TYPE = alltoall_seq ]; then
-        moe_options=" ${moe_options}  --moe-token-dispatcher-type alltoall_seq  "
-    elif [ $DISPATCHER_TYPE = alltoall ]; then
-        moe_options=" ${moe_options}  --moe-token-dispatcher-type alltoall --moe-shared-expert-overlap "
-    fi
-
 
 
 elif [ $MODEL_SIZE = 16B ]; then
@@ -221,21 +217,6 @@ moe_options=" \
     --moe-router-enable-expert-bias \
     --moe-router-load-balancing-type seq_aux_loss \
     --moe-router-bias-update-rate 1e-3"
-    # --q-lora-rank ${Q_LORA_RANK} \
-    if [[ ${ROUTER_TOPK_SCALING_FACTOR:-none} != none ]]; then
-    moe_options=" ${moe_options} --moe-router-topk-scaling-factor ${ROUTER_TOPK_SCALING_FACTOR} "
-    fi
-
-    if [[ ${BIAS_MEAN:-False} = true ]]; then
-    moe_options=" ${moe_options} --moe-router-bias-mean-update-rate 1e-3 "
-    fi
-
-    DISPATCHER_TYPE=${DISPATCHER_TYPE:-alltoall_seq}
-    if [ $DISPATCHER_TYPE = alltoall_seq ]; then
-        moe_options=" ${moe_options}  --moe-token-dispatcher-type alltoall_seq  "
-    elif [ $DISPATCHER_TYPE = alltoall ]; then
-        moe_options=" ${moe_options}  --moe-token-dispatcher-type alltoall --moe-shared-expert-overlap "
-    fi
 
 elif [ $MODEL_SIZE = 200B ]; then
 
@@ -248,12 +229,13 @@ MAX_POSITION_EMBEDDINGS=${SEQ_LEN}
 EXTRA_VOCAB_SIZE=2400
 Q_LORA_RANK=1536
 KV_LORA_RANK=512
-QK_NOPE_HEAD_DIM=128
+QK_NOPE_HEAD_DIM=${QK_NOPE_HEAD_DIM:-128} 
 QK_ROPE_HEAD_DIM=64
 V_HEAD_DIM=128
 ROPE_THETA=10000
 SCALE_FACTOR=40
 NUM_EXPERTS=160
+# NUM_EXPERTS=120
 ROUTER_TOPK=6
 NUM_SHARED_EXPERTS=2
 MOE_LAYER_FREQ=1
@@ -281,23 +263,6 @@ moe_options=" \
     --moe-router-enable-expert-bias \
     --moe-router-load-balancing-type seq_aux_loss \
     --moe-router-bias-update-rate 1e-3"
-# --moe-token-drop-policy probs 
-# --moe-grouped-gemm \
-# --moe-router-topk-limited-devices 4 \
-    if [[ ${ROUTER_TOPK_SCALING_FACTOR:-none} != none ]]; then
-    moe_options=" ${moe_options} --moe-router-topk-scaling-factor ${ROUTER_TOPK_SCALING_FACTOR} "
-    fi
-
-    if [[ ${BIAS_MEAN:-False} = true ]]; then
-    moe_options=" ${moe_options} --moe-router-bias-mean-update-rate 1e-3 "
-    fi
-
-    DISPATCHER_TYPE=${DISPATCHER_TYPE:-alltoall_seq}
-    if [ $DISPATCHER_TYPE = alltoall_seq ]; then
-        moe_options=" ${moe_options}  --moe-token-dispatcher-type alltoall_seq  "
-    elif [ $DISPATCHER_TYPE = alltoall ]; then
-        moe_options=" ${moe_options}  --moe-token-dispatcher-type alltoall --moe-shared-expert-overlap "
-    fi
 
 elif [ $MODEL_SIZE = 600B ]; then
 
@@ -343,22 +308,6 @@ moe_options=" \
     --moe-router-enable-expert-bias \
     --moe-router-load-balancing-type seq_aux_loss \
     --moe-router-bias-update-rate 1e-3"
-        # --moe-token-dispatcher-type alltoall_seq \
-    if [[ ${ROUTER_TOPK_SCALING_FACTOR:-none} != none ]]; then
-    moe_options=" ${moe_options} --moe-router-topk-scaling-factor ${ROUTER_TOPK_SCALING_FACTOR} "
-    fi
-
-    if [[ ${BIAS_MEAN:-False} = true ]]; then
-    moe_options=" ${moe_options} --moe-router-bias-mean-update-rate 1e-3 "
-    fi
-
-    DISPATCHER_TYPE=${DISPATCHER_TYPE:-alltoall_seq}
-    if [ $DISPATCHER_TYPE = alltoall_seq ]; then
-        moe_options=" ${moe_options}  --moe-token-dispatcher-type alltoall_seq  "
-    elif [ $DISPATCHER_TYPE = alltoall ]; then
-        moe_options=" ${moe_options}  --moe-token-dispatcher-type alltoall --moe-shared-expert-overlap "
-    fi
-
 else
 
 echo "Unsupported model size: ${MODEL_SIZE}"
@@ -366,11 +315,28 @@ exit 1
 
 fi
 
+if [[ ${ROUTER_TOPK_SCALING_FACTOR:-none} != none ]]; then
+moe_options=" ${moe_options} --moe-router-topk-scaling-factor ${ROUTER_TOPK_SCALING_FACTOR} "
+fi
+
+if [[ ${BIAS_MEAN:-False} = true ]]; then
+moe_options=" ${moe_options} --moe-router-bias-mean-update-rate 1e-3 "
+fi
+
+DISPATCHER_TYPE=${DISPATCHER_TYPE:-alltoall_seq}
+if [ $DISPATCHER_TYPE = alltoall_seq ]; then
+    moe_options=" ${moe_options}  --moe-token-dispatcher-type alltoall_seq  "
+elif [ $DISPATCHER_TYPE = alltoall ]; then
+    moe_options=" ${moe_options}  --moe-token-dispatcher-type alltoall --moe-shared-expert-overlap "
+elif [ $DISPATCHER_TYPE = flex_deepep ]; then
+    moe_options=" ${moe_options} --moe-token-dispatcher-type flex --moe-enable-deepep "
+fi
+
 TP_COMM_OVERLAP=$(( ($TP > 1) ? 1 : 0 ))
 comm_overlap_option="\
     --overlap-grad-reduce \
     --overlap-param-gather"
-
+ 
 
 if [ $TP_COMM_OVERLAP -eq 1 ]; then
     comm_overlap_option="\
@@ -411,7 +377,6 @@ elif [ $AC = offload ]; then
         echo "Disable --overlap-grad-reduce and --overlap-param-gather when cpu offloading is on..."
         comm_overlap_option=""
     fi
-# for custom AC
 elif [ $AC = custom ]; then
     #TODO: fill in custom AC options
     activation_checkpoint_options=" \
@@ -474,7 +439,7 @@ fi
 
 if [ $PRETRAIN_CHECKPOINT_PATH != none ]; then
     load_options=" \
-            --load $PRETRAIN_CHECKPOINT_PATH"
+            --load $PRETRAIN_CHECKPOINT_PATH "
 fi
 
 # TRAIN_ITERS=$(( ${TRAIN_TOKENS} / ${GLOBAL_BATCH_SIZE} / ${SEQ_LEN} ))
@@ -486,18 +451,24 @@ PREFIX="pretrain-zjmcore-dsv3-${MODEL_SIZE}-lr-${LR}-minlr-${MIN_LR}-bs-${BATCH_
 dataset_option=" \
     --data-path ${DATASET_PATH} \
     --data-cache-path ${OUTPUT_DIR}/data_cache \
+    --num-workers 4 \
     --split 989,10,1"
 
+TIMESTAMP=$(date "+%Y%m%d-%H")
+NAME="${PREFIX}-pr-${PR}-pp-${PP}-ep-${EP}-ac-${AC}_${TIMESTAMP}"
+
+DISTRIBUTED_ARGS="--nproc_per_node $GPUS_PER_NODE --nnodes $NNODES \
+    --node_rank $NODE_RANK --master_addr $MASTER_ADDR --master_port $MASTER_PORT \
+    --tee 3 --log_dir ${OUTPUT_DIR}/logs/${NAME}"
 
 ##### Prepare logdirs #######
-NAME="${PREFIX}-pr-${PR}-pp-${PP}-ac-${AC}"
+
 # NAME="${PREFIX}-pr-${PR}-tp-${TP}-pp-${PP}-cp-${CP}-ac-${AC}-do-${DO}-sp-${SP}-ti-${TRAIN_ITERS}-wi-${LR_WARMUP_ITERS}"
 mkdir -p "${OUTPUT_BASEPATH}/data_cache/"
 mkdir -p "${OUTPUT_BASEPATH}/tensorboard/"
 mkdir -p "${OUTPUT_BASEPATH}/checkpoints/"
 mkdir -p "${OUTPUT_BASEPATH}/logs/"
-current_time=$(date "+%Y.%m.%d-%H.%M")
-TENSORBOARD_DIR="${OUTPUT_BASEPATH}/tensorboard/${NAME}_${current_time}"
+TENSORBOARD_DIR="${OUTPUT_BASEPATH}/tensorboard/${NAME}"
 mkdir -p ${TENSORBOARD_DIR}
 SAVED_PRETRAIN_CHECKPOINT_PATH="${OUTPUT_BASEPATH}/checkpoints/${NAME}"
 
@@ -557,18 +528,11 @@ megatron_options="  \
         --kv-channels ${V_HEAD_DIM} \
         --qk-layernorm \
         --multi-latent-attention"
-        # --num-workers 2 \
         # --patch-tokenizer-type DeepSeekV2Tokenizer \
 
 # tokenizer_options=" \
 #         --max-padding-length ${PAD_LEN} \
 #         --extra-vocab-size ${EXTRA_VOCAB_SIZE} \
-#         "
-
-# ckpt_options=" \
-#         --no-load-optim \
-#         --no-load-rng \
-#         --no-save-optim \
 #         "
 
 # Turn on PyTorchProfiler in DSW
@@ -580,7 +544,7 @@ fi
 # 开启pipeline_timer，将每个rank写到对应的文件中
 if [[ ${PROFILE:-off} = on ]]; then
     export PIPELINE_TIMER_LEVEL=3
-    export PIPELINE_TIMER_LOG_DIR=$OUTPUT_DIR/logs/${current_time}_${NNODES}/
+    export PIPELINE_TIMER_LOG_DIR=$OUTPUT_DIR/logs/${TIMESTAMP}_${NNODES}/
     mkdir -p $PIPELINE_TIMER_LOG_DIR
 fi
 
@@ -610,6 +574,15 @@ if [[ ${USE_FSDP:-false} = true ]] ; then
     unset CUDA_DEVICE_MAX_CONNECTIONS
 fi
 
+# Precision Aware Optimizer
+if [[ ${PAO:-false} = true ]]; then
+    new_options=" ${new_options} \
+        --use-precision-aware-optimizer \
+        --main-grads-dtype bf16 \
+        --main-params-dtype fp16 \
+    "
+fi
+
 # User Optimizer CPU Offloading
 if [[ ${OFFLOAD_OPTIMIZER:-false} = true ]] ; then
     new_options=" ${new_options} --optimizer-cpu-offload --use-precision-aware-optimizer \
@@ -622,6 +595,7 @@ run_cmd="torchrun $DISTRIBUTED_ARGS ${MEGATRON_PATH}/pretrain_gpt.py
  ${uneven_split_option} ${prof_options} ${seqwarm_options} ${new_options} ${fsdp_options} ${ckpt_options}"
 
 echo ${run_cmd}
-[[ $RANK = 0 ]] && mkdir -p ${OUTPUT_DIR}/logs/${TIMESTAMP} && echo ${run_cmd} > ${OUTPUT_DIR}/logs/${TIMESTAMP}/${MODEL_SIZE}-pp-${PP}-ep-${EP}-AC-${AC}-gbs-${GLOBAL_BATCH_SIZE}-cmd.sh
+[[ $RANK = 0 ]] && mkdir -p ${OUTPUT_DIR}/logs/${NAME} && echo ${run_cmd} > ${OUTPUT_DIR}/logs/${NAME}/${MODEL_SIZE}-pp-${PP}-ep-${EP}-AC-${AC}-gbs-${GLOBAL_BATCH_SIZE}-cmd.sh
 eval ${run_cmd}
+
 
