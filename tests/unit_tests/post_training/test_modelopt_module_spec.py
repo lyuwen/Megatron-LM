@@ -21,7 +21,8 @@ from megatron.core.post_training.modelopt.gpt.state_dict_hooks import (
 )
 from megatron.core.post_training.modelopt.mamba.model_specs import get_mamba_stack_modelopt_spec
 from megatron.core.tensor_parallel.random import model_parallel_cuda_manual_seed
-from megatron.core.transformer.transformer_config import MLATransformerConfig, TransformerConfig
+from megatron.core.transformer import TransformerConfig
+from megatron.core.transformer.transformer_config import MLATransformerConfig
 from megatron.core.utils import get_te_version
 from tests.unit_tests.dist_checkpointing import TempNamedDir
 from tests.unit_tests.test_utilities import Utils
@@ -78,7 +79,6 @@ class TestModelOptGPTModel:
             vocab_size=100,
             max_sequence_length=4,
         )
-
         # Ensure that a GPTModel can be built with the modelopt spec.
         self.modelopt_model = GPTModel(
             config=transformer_config,
@@ -103,8 +103,9 @@ class TestModelOptGPTModel:
     def test_inference(self):
         if not self._test_inference:
             return
-        model_forward(self.modelopt_model.cuda(), self.modelopt_model.config)
-        model_forward(self.default_model.cuda(), self.default_model.config)
+        config: TransformerConfig = self.modelopt_model.config
+        model = self.modelopt_model.cuda()
+        model_forward(model, config)
 
     def teardown_method(self, method):
         Utils.destroy_model_parallel()

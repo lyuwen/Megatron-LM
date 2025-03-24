@@ -900,6 +900,11 @@ def _load_base_checkpoint(
         tracker_filename = get_checkpoint_tracker_filename(load_dir)
         if os.path.isfile(tracker_filename):
             iteration, release = read_metadata(tracker_filename)
+
+    # Allow user to specify the loaded iteration.
+    if getattr(args, "ckpt_step", None):
+        iteration = args.ckpt_step
+
     if non_persistent_iteration != -1:  # there is a non-persistent checkpoint
         if non_persistent_iteration >= iteration:
             return _load_non_persistent_base_checkpoint(
@@ -956,7 +961,7 @@ def _load_base_checkpoint(
         else:
             checkpoint_name = get_checkpoint_name(load_dir, iteration, release, return_base_dir=False)
         try:
-            state_dict = torch.load(checkpoint_name, map_location='cpu')
+            state_dict = torch.load(checkpoint_name, map_location='cpu', weights_only=False)
         except ModuleNotFoundError:
             from megatron.legacy.fp16_deprecated import loss_scaler
 
@@ -968,7 +973,7 @@ def _load_base_checkpoint(
                 'megatron.legacy.fp16_deprecated.loss_scaler'
             ]
             sys.modules['megatron.model'] = sys.modules['megatron.legacy.model']
-            state_dict = torch.load(checkpoint_name, map_location='cpu')
+            state_dict = torch.load(checkpoint_name, map_location='cpu', weights_only=False)
             sys.modules.pop('fp16.loss_scaler', None)
             sys.modules.pop('megatron.fp16.loss_scaler', None)
             sys.modules.pop('megatron.model', None)
@@ -1105,6 +1110,12 @@ def load_args_from_checkpoint(
     _set_arg('moe_router_pre_softmax', force=True)
     _set_arg('moe_grouped_gemm', force=True)
     _set_arg('moe_shared_expert_intermediate_size', force=True)
+
+    # Mamba args.
+    _set_arg('mamba_state_dim', force=True)
+    _set_arg('mamba_head_dim', force=True)
+    _set_arg('mamba_num_groups', force=True)
+    _set_arg('is_hybrid_model', force=True)
 
     # Tokenizer args.
     _set_arg('tokenizer_type', force=True)
