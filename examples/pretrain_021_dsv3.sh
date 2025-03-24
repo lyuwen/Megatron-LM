@@ -454,8 +454,8 @@ dataset_option=" \
     --num-workers 4 \
     --split 989,10,1"
 
-TIMESTAMP=$(date "+%Y%m%d-%H")
-NAME="${PREFIX}-pr-${PR}-pp-${PP}-ep-${EP}-ac-${AC}_${TIMESTAMP}"
+TIMESTAMP=$(date "+%Y%m%d-%H%M")
+NAME="${PREFIX}-pr-${PR}-pp-${PP}-ep-${EP}-ac-${AC}_${DLC_JOB_ID:-${TIMESTAMP}}"
 
 DISTRIBUTED_ARGS="--nproc_per_node $GPUS_PER_NODE --nnodes $NNODES \
     --node_rank $NODE_RANK --master_addr $MASTER_ADDR --master_port $MASTER_PORT \
