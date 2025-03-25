@@ -558,7 +558,7 @@ class TransformerBlock(MegatronModule):
         elif isinstance(self.config.moe_layer_freq, list):
             non_homogeneous_layers = True
         # LFu: directly use layer pattern to determine non_homogeneous_layers flag
-        if len(set(self.config.moe_layer_pattern)) != 1:
+        if self.config.moe_layer_pattern is not None and len(set(self.config.moe_layer_pattern)) != 1:
             non_homogeneous_layers = True
 
         sharded_state_dict = {}
