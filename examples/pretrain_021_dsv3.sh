@@ -589,6 +589,12 @@ if [[ ${OFFLOAD_OPTIMIZER:-false} = true ]] ; then
         --main-grads-dtype bf16 "
 fi
 
+# 开启12LHSD的atten计算方法,打印MFU
+if [[ ${PRINT_MFU:-true} = true ]] ; then
+    new_options=" ${new_options} --use-legacy-throughput "
+fi
+
+
 run_cmd="torchrun $DISTRIBUTED_ARGS ${MEGATRON_PATH}/pretrain_gpt.py
  ${megatron_options} ${dataset_option} ${pr_options} ${load_options} ${te_options} ${activation_checkpoint_options} \
  ${do_options} ${fl_options} ${sp_options} ${moe_options} ${offload_option} ${sft_option} ${vp_options} \
