@@ -106,9 +106,9 @@ def save_checkpoint(queue: mp.Queue, args):
         kp = qkv_weight[qdim:qdim + dim, :].reshape(ng * dim, qwen_conf.hidden_size)
         vp = qkv_weight[qdim + dim:, :].reshape(ng * dim, qwen_conf.hidden_size)
         qkv_bias = message["qkv bias"]
-        qb = qkv_bias[:qdim]
-        kb = qkv_bias[qdim:qdim + dim]
-        vb = qkv_bias[qdim + dim:]
+        qb = qkv_bias[:qdim * ng]
+        kb = qkv_bias[qdim * ng:(qdim + dim) * ng]
+        vb = qkv_bias[(qdim + dim) * ng:]
         set_hf_param(suffix + 'self_attn.q_proj', qp, qb)
         set_hf_param(suffix + 'self_attn.k_proj', kp, kb)
         set_hf_param(suffix + 'self_attn.v_proj', vp, vb)
