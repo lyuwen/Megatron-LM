@@ -62,7 +62,7 @@ def main(args=None):
     with open(get_checkpoint_tracker_filename(ckpt_dir), 'rt') as f:
         iteration = int(f.read())
     ckpt_base = get_checkpoint_name(ckpt_dir, iteration, False, 1, 0, 0, 1, 0, return_base_dir=True)
-    data = torch.load(f"{ckpt_base}/common.pt")
+    data = torch.load(f"{ckpt_base}/common.pt", weights_only=False)
     ckpt_args = data['args']
     margs = [
         f"--nproc_per_node={args.nproc_per_node}",
@@ -79,15 +79,19 @@ def main(args=None):
         f"--lr=0.1",
         f"--mock-data",
         f"--train-iters=1",
-        f"--tokenizer-type=NullTokenizer",
-        f"--vocab-size=1",
+        f"--tokenizer-type={ckpt_args.tokenizer_type}",
         f"--no-load-optim",
         f"--no-load-rng",
         f"--use-checkpoint-args",
         f"--ckpt-convert-format={args.ckpt_format}",
         f"--ckpt-convert-save={args.save}",
+        f"--tensor-model-parallel-size=8",
         f"--rotary-base={ckpt_args.rotary_base}",
         ]
+    if ckpt_args.tokenizer_model:
+        margs.append(f"--tokenizer-model={ckpt_args.tokenizer_model}")
+    if ckpt_args.vocab_file:
+        margs.append(f"--vocab-file={ckpt_args.vocab_file}")
     logger.info(f"Running command: torchrun %s" % (" ".join(margs)))
 
     os.environ["CUDA_DEVICE_MAX_CONNECTIONS"] = "1"

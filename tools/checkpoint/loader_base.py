@@ -432,6 +432,8 @@ class MegatronCheckpointLoaderBase:
         md.hidden_size = self.margs.hidden_size
         md.seq_length = self.margs.seq_length
         md.num_attention_heads = self.margs.num_attention_heads
+        md.num_query_groups = self.margs.num_query_groups
+        md.kv_channels = self.margs.kv_channels
         md.max_position_embeddings = self.margs.max_position_embeddings
         md.tokenizer_type = self.margs.tokenizer_type
         md.iteration = self.margs.iteration
