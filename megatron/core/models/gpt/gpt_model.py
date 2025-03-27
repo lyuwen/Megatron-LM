@@ -24,6 +24,26 @@ from megatron.core.transformer.spec_utils import ModuleSpec
 from megatron.core.transformer.transformer_block import TransformerBlock
 from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core.utils import deprecate_inference_params
+# l2 norm
+try:
+    from transformer_engine.pytorch.optimizers import multi_tensor_applier, multi_tensor_l2norm
+except ImportError:
+    try:
+        from amp_C import multi_tensor_l2norm
+        from apex.multi_tensor_apply import multi_tensor_applier
+    except ImportError:
+
+        import warnings
+        warnings.warn(
+            f'Transformer Engine and Apex are not installed. '
+            'Falling back to local implementations of '
+            'multi_tensor_applier and multi_tensor_l2norm'
+        )
+
+        from megatron.core.utils import (
+            local_multi_tensor_l2_norm as multi_tensor_l2norm,
+            local_multi_tensor_applier as multi_tensor_applier,
+        )
 
 
 class GPTModel(LanguageModule):
@@ -343,6 +363,15 @@ class GPTModel(LanguageModule):
         logits, _ = self.output_layer(
             hidden_states, weight=output_weight, runtime_gather_output=runtime_gather_output
         )
+        if self.config.moe_apply_norm_head:
+            dummy_overflow_buf = torch.tensor([0], dtype=torch.int, device='cuda')
+            lm_head_norm, _ = multi_tensor_applier(
+                multi_tensor_l2norm,
+                dummy_overflow_buf,
+                [self.output_layer.weight.data],
+                False # no per-parameter norm.
+            )
+            logits /= lm_head_norm
 
         if has_config_logger_enabled(self.config):
             payload = OrderedDict(

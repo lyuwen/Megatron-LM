@@ -444,6 +444,12 @@ class TransformerConfig(ModelParallelConfig):
     moe_promote_router_dtype: bool = False
     """Promote dtype of bias to improve training stability."""
 
+    moe_warmup_router: int = -1
+    """Number of steps to apply router warmup randomness."""
+
+    moe_apply_norm_head: bool = False
+    """Apply lm_head L2 normalization to improve Moe stability."""
+
     ##################
     # Context Parallel
     ##################

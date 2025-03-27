@@ -23,6 +23,7 @@ from megatron.core.transformer.moe.moe_utils import (
 from megatron.core.tensor_parallel.random import RecomputeContext
 from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core import mpu
+from megatron.core.sequence_length_scheduler import get_iteration
 
 
 class Router(ABC, MegatronModule):
@@ -451,6 +452,17 @@ class TopKRouter(Router):
         # Apply input jitter
         input = self.apply_input_jitter(input)
         logits = self.gating(input)
+
+        # Random Stochastic Routing Warmup
+        curr_iteration = get_iteration()
+        if 0 <= curr_iteration < self.config.moe_warmup_router:
+            # pass
+            u = torch.mean(logits)
+            s = torch.std(logits)
+            e = torch.rand_like(logits)
+            a = curr_iteration / self.config.moe_warmup_router
+            logits = logits * a + e * (1 - a)
+        #
 
         scores, routing_map = self.routing(logits)
         if self.training and self.config.show_moe_experts_tokens and not RecomputeContext.is_recompute:

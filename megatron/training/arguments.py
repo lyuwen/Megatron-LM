@@ -2506,6 +2506,11 @@ def _add_moe_args(parser):
                        'Upcycling is implemented on the top of distributed checkpointing, so it supports parallel modes different from the dense model.')
     group.add_argument('--moe-permute-fusion', action='store_true',
                        help='Fuse token rearrangement ops during token dispatching.')
+    #
+    group.add_argument('--moe-warmup-router', type=int, default=-1,
+                       help='Number of steps to apply router warmup randomness.')
+    group.add_argument('--moe-apply-norm-head', action="store_true",
+                       help='Apply lm_head L2 normalization to improve Moe stability.')
 
     return parser
 

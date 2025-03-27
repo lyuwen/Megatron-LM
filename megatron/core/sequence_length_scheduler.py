@@ -33,6 +33,10 @@ def set_iteration(iteration: int):
     _ITERATION = iteration
 
 
+def get_iteration():
+    return _ITERATION
+
+
 def get_sequence_length_scheduler() -> None:
     return _GLOBAL_SEQUENCE_LENGTH_SCHEDULER
 
