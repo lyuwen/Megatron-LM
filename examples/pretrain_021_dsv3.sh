@@ -168,7 +168,6 @@ moe_options=" \
     --moe-grouped-gemm \
     --moe-router-num-groups ${MOE_ROUTER_GROUPS} \
     --moe-router-group-topk ${MOE_ROUTER_GROUPS_TOPK} \
-    --moe-router-score-function sigmoid \
     --moe-router-enable-expert-bias \
     --moe-router-load-balancing-type seq_aux_loss \
     --moe-router-bias-update-rate 1e-3"
@@ -213,7 +212,6 @@ moe_options=" \
     --moe-grouped-gemm \
     --moe-router-num-groups ${MOE_ROUTER_GROUPS} \
     --moe-router-group-topk ${MOE_ROUTER_GROUPS_TOPK} \
-    --moe-router-score-function sigmoid \
     --moe-router-enable-expert-bias \
     --moe-router-load-balancing-type seq_aux_loss \
     --moe-router-bias-update-rate 1e-3"
@@ -259,7 +257,6 @@ moe_options=" \
     --moe-grouped-gemm \
     --moe-router-num-groups ${MOE_ROUTER_GROUPS} \
     --moe-router-group-topk ${MOE_ROUTER_GROUPS_TOPK} \
-    --moe-router-score-function sigmoid \
     --moe-router-enable-expert-bias \
     --moe-router-load-balancing-type seq_aux_loss \
     --moe-router-bias-update-rate 1e-3"
@@ -304,7 +301,6 @@ moe_options=" \
     --moe-grouped-gemm \
     --moe-router-num-groups ${MOE_ROUTER_GROUPS} \
     --moe-router-group-topk ${MOE_ROUTER_GROUPS_TOPK} \
-    --moe-router-score-function sigmoid \
     --moe-router-enable-expert-bias \
     --moe-router-load-balancing-type seq_aux_loss \
     --moe-router-bias-update-rate 1e-3"
@@ -330,7 +326,34 @@ elif [ $DISPATCHER_TYPE = alltoall ]; then
     moe_options=" ${moe_options}  --moe-token-dispatcher-type alltoall --moe-shared-expert-overlap "
 elif [ $DISPATCHER_TYPE = flex_deepep ]; then
     moe_options=" ${moe_options} --moe-token-dispatcher-type flex --moe-enable-deepep "
+else
+echo "Unsupported dispatcher type: ${DISPATCHER_TYPE}"
+exit 1
 fi
+
+ROUTER_SCORE_FUNC=${ROUTER_SCORE_FUNC:-sigmod}
+if [ $ROUTER_SCORE_FUNC = sigmod ]; then
+    moe_options=" ${moe_options}  --moe-router-score-function sigmoid  "
+elif [ $ROUTER_SCORE_FUNC = softmax ]; then
+    moe_options=" ${moe_options}  --moe-router-score-function softmax "
+elif [ $ROUTER_SCORE_FUNC = pre_softmax ]; then
+    moe_options=" ${moe_options} --moe-router-score-function softmax --moe-router-pre-softmax "
+else
+echo "Unsupported router score function: ${ROUTER_SCORE_FUNC}"
+exit 1
+fi
+
+# For MoE Stability
+if [[ ${WARMUP_ROUTER:-0} -gt 0 ]]; then
+    moe_options=" ${moe_options}  --moe-warmup-router  ${WARMUP_ROUTER}  "
+fi
+
+if [ -z ${APPLY_NORM_HEAD} ];then
+    moe_options=" ${moe_options}  --moe-apply-norm-head "
+fi
+
+
+
 
 TP_COMM_OVERLAP=$(( ($TP > 1) ? 1 : 0 ))
 comm_overlap_option="\
@@ -536,10 +559,10 @@ megatron_options="  \
 #         "
 
 # Turn on PyTorchProfiler in DSW
-if [ $ENV = dsw ]; then
-    export CUDA_LAUNCH_BLOCKING=1
-    prof_options=" --profile --use-pytorch-profiler --profile-step-end 11 --profile-ranks 0 1 2 3 4 5 6 7 "
-fi
+# if [ $ENV = dsw ]; then
+#     export CUDA_LAUNCH_BLOCKING=1
+#     prof_options=" --profile --use-pytorch-profiler --profile-step-end 11 --profile-ranks 0 1 2 3 4 5 6 7 "
+# fi
 
 # 开启pipeline_timer，将每个rank写到对应的文件中
 if [[ ${PROFILE:-off} = on ]]; then
@@ -590,10 +613,10 @@ if [[ ${OFFLOAD_OPTIMIZER:-false} = true ]] ; then
 fi
 
 # 开启12LHSD的atten计算方法,打印MFU
+
 if [[ ${PRINT_MFU:-true} = true ]] ; then
     new_options=" ${new_options} --use-legacy-throughput "
 fi
-
 
 run_cmd="torchrun $DISTRIBUTED_ARGS ${MEGATRON_PATH}/pretrain_gpt.py
  ${megatron_options} ${dataset_option} ${pr_options} ${load_options} ${te_options} ${activation_checkpoint_options} \
@@ -603,5 +626,6 @@ run_cmd="torchrun $DISTRIBUTED_ARGS ${MEGATRON_PATH}/pretrain_gpt.py
 echo ${run_cmd}
 [[ $RANK = 0 ]] && mkdir -p ${OUTPUT_DIR}/logs/${NAME} && echo ${run_cmd} > ${OUTPUT_DIR}/logs/${NAME}/${MODEL_SIZE}-pp-${PP}-ep-${EP}-AC-${AC}-gbs-${GLOBAL_BATCH_SIZE}-cmd.sh
 eval ${run_cmd}
+
 
 
