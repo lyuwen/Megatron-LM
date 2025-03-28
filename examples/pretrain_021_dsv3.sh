@@ -559,10 +559,10 @@ megatron_options="  \
 #         "
 
 # Turn on PyTorchProfiler in DSW
-# if [ $ENV = dsw ]; then
-#     export CUDA_LAUNCH_BLOCKING=1
-#     prof_options=" --profile --use-pytorch-profiler --profile-step-end 11 --profile-ranks 0 1 2 3 4 5 6 7 "
-# fi
+if [ $ENV = dsw ]; then
+    export CUDA_LAUNCH_BLOCKING=1
+    prof_options=" --profile --use-pytorch-profiler --profile-step-end 11 --profile-ranks 0 1 2 3 4 5 6 7 "
+fi
 
 # 开启pipeline_timer，将每个rank写到对应的文件中
 if [[ ${PROFILE:-off} = on ]]; then
@@ -597,23 +597,24 @@ if [[ ${USE_FSDP:-false} = true ]] ; then
     unset CUDA_DEVICE_MAX_CONNECTIONS
 fi
 
-# Precision Aware Optimizer
-if [[ ${PAO:-false} = true ]]; then
-    new_options=" ${new_options} \
-        --use-precision-aware-optimizer \
-        --main-grads-dtype bf16 \
-        --main-params-dtype fp16 \
-    "
-fi
-
 # User Optimizer CPU Offloading
 if [[ ${OFFLOAD_OPTIMIZER:-false} = true ]] ; then
     new_options=" ${new_options} --optimizer-cpu-offload --use-precision-aware-optimizer \
         --main-grads-dtype bf16 "
+        # --main-params-dtype fp16 \
 fi
 
 # 开启12LHSD的atten计算方法,打印MFU
+if [[ ${BENCHMARK_MFU:-true} = true ]] ; then
+    new_options=" ${new_options} \
+    --num-steps-average-throughput 5 \
+    --benchmark-target-tflops 1200.00 \
+    --benchmark-check-begins 30 \
+    --benchmark-check-ends 50 \
+    --benchmark-pass-action continue"
+fi                    
 
+# 开启12LHSD的atten计算方法,打印MFU
 if [[ ${PRINT_MFU:-true} = true ]] ; then
     new_options=" ${new_options} --use-legacy-throughput "
 fi
