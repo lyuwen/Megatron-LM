@@ -69,7 +69,7 @@ def save_checkpoint(queue: mp.Queue, args):
         pad_token_id            = pad_token_id,
         tie_word_embeddings     = not mag_conf.untie_embeddings_and_output_weights,
         rope_theta              = mag_conf.rotary_base,
-        attention_bias          = mag_conf.add_bias_linear,
+        attention_bias          = mag_conf.add_qkv_bias,
         torch_dtype             = torch_dtype,
         model_type              = "qwen2",
         architectures           = ['Qwen2ForCausalLM'],
@@ -101,14 +101,14 @@ def save_checkpoint(queue: mp.Queue, args):
         ng = md.num_query_groups # 8
         dim = md.kv_channels # 128
         qdim = dim * nh // ng # 640
-        qkv_weight = qkv_weight.view(qdim + dim * 2, ng, qwen_conf.hidden_size)
-        qp = qkv_weight[:qdim, :].reshape(nh * dim, qwen_conf.hidden_size)
-        kp = qkv_weight[qdim:qdim + dim, :].reshape(ng * dim, qwen_conf.hidden_size)
-        vp = qkv_weight[qdim + dim:, :].reshape(ng * dim, qwen_conf.hidden_size)
-        qkv_bias = message["qkv bias"]
-        qb = qkv_bias[:qdim * ng]
-        kb = qkv_bias[qdim * ng:(qdim + dim) * ng]
-        vb = qkv_bias[(qdim + dim) * ng:]
+        qkv_weight = qkv_weight.view(-1, (qdim + dim * 2), qwen_conf.hidden_size)
+        qp = qkv_weight[:, :qdim, :].reshape(nh * dim, qwen_conf.hidden_size)
+        kp = qkv_weight[:, qdim:qdim + dim, :].reshape(ng * dim, qwen_conf.hidden_size)
+        vp = qkv_weight[:, qdim + dim:, :].reshape(ng * dim, qwen_conf.hidden_size)
+        qkv_bias = message["qkv bias"].view(-1, (qdim + dim * 2))
+        qb = qkv_bias[:, :qdim].reshape((-1))
+        kb = qkv_bias[:, qdim:(qdim + dim)].reshape((-1))
+        vb = qkv_bias[:, (qdim + dim):].reshape((-1))
         set_hf_param(suffix + 'self_attn.q_proj', qp, qb)
         set_hf_param(suffix + 'self_attn.k_proj', kp, kb)
         set_hf_param(suffix + 'self_attn.v_proj', vp, vb)
