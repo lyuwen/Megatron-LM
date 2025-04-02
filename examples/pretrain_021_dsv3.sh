@@ -348,7 +348,7 @@ if [[ ${WARMUP_ROUTER:-0} -gt 0 ]]; then
     moe_options=" ${moe_options}  --moe-warmup-router  ${WARMUP_ROUTER}  "
 fi
 
-if [ -z ${APPLY_NORM_HEAD} ];then
+if [ ! -z ${APPLY_NORM_HEAD} ];then
     moe_options=" ${moe_options}  --moe-apply-norm-head "
 fi
 
