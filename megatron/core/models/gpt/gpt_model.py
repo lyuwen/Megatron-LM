@@ -341,7 +341,10 @@ class GPTModel(LanguageModule):
         ):
             hidden_states = hidden_states[-1:, :, :]
         if self.config.moe_apply_norm_head:
-            output_weight = torch.nn.functional.normalize(output_weight, p=2, dim=(0, 1))
+            # follow NormHead implementation in Baichuan model https://huggingface.co/baichuan-inc/Baichuan2-7B-Base/blob/main/modeling_baichuan.py
+            if output_weight is None:
+                output_weight = self.output_layer.weight
+            output_weight = torch.nn.functional.normalize(output_weight)
         logits, _ = self.output_layer(
             hidden_states, weight=output_weight, runtime_gather_output=runtime_gather_output
         )
