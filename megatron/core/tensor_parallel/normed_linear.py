@@ -295,16 +295,15 @@ class NormedLinearWithGradAccumulationAndAsyncCommunication(torch.autograd.Funct
             grad_weight = grad_output.t().matmul(total_input)
         grad_bias = grad_output.sum(dim=0) if use_bias else None
         #
-        rs = torch.sum(weight, axis=1).reshape(weight.size(0), 1).expand(-1, weight.size(1))
-        scale = (-weight * rs + norm.pow(2)) / norm.pow(3)
+        grad_weight = grad_weight / norm - (grad_weight * weight).sum(dim=-1,keepdim=True) * weight / norm.pow(3)
 
         if ctx.sequence_parallel:
             handle.wait()
             # Need to return None's as gradient has to flow for all the input arguments
             # provided during forward
-            return sub_grad_input, grad_weight * scale, grad_bias, None, None, None, None, None
+            return sub_grad_input, grad_weight, grad_bias, None, None, None, None, None
 
         if ctx.allreduce_dgrad:
             handle.wait()
 
-        return grad_input, grad_weight * scale, grad_bias, None, None, None, None, None
+        return grad_input, grad_weight, grad_bias, None, None, None, None, None
