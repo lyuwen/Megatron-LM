@@ -180,6 +180,7 @@ class GPTModel(LanguageModule):
                 and self.share_embeddings_and_output_weights,
                 embedding_activation_buffer=self.embedding_activation_buffer,
                 grad_output_buffer=self.grad_output_buffer,
+                normalize=self.config.moe_apply_norm_head,
             )
 
         if self.pre_process or self.post_process:
@@ -340,11 +341,6 @@ class GPTModel(LanguageModule):
             and inference_context.materialize_only_last_token_logits
         ):
             hidden_states = hidden_states[-1:, :, :]
-        if self.config.moe_apply_norm_head:
-            # follow NormHead implementation in Baichuan model https://huggingface.co/baichuan-inc/Baichuan2-7B-Base/blob/main/modeling_baichuan.py
-            if output_weight is None:
-                output_weight = self.output_layer.weight
-            output_weight = torch.nn.functional.normalize(output_weight)
         logits, _ = self.output_layer(
             hidden_states, weight=output_weight, runtime_gather_output=runtime_gather_output
         )
