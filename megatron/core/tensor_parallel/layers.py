@@ -36,6 +36,7 @@ from .mappings import (
 )
 from .random import get_cuda_rng_tracker, get_expert_parallel_rng_tracker_name
 from .utils import VocabUtility, divide
+from .normed_linear import normed_linear_with_grad_accumulation_and_async_allreduce
 
 _grad_accum_fusion_available = True
 try:
@@ -718,6 +719,8 @@ class ColumnParallelLinear(torch.nn.Module):
             If True, reduction of output gradients across tensor-parallel ranks
             will be disabled. Defaults to False. This feature is used by Lora Adapter in Nemo to
             delay and fuse reduction along with other gradients for performance optimization.
+        normalize:
+            If True, apply normalization on the weight by column.
     """
 
     def __init__(
@@ -738,6 +741,7 @@ class ColumnParallelLinear(torch.nn.Module):
         is_expert: bool = False,
         tp_comm_buffer_name: str = None,  # Not used
         disable_grad_reduce: bool = False,
+        normalize: bool = False,
     ):
         super(ColumnParallelLinear, self).__init__()
 
@@ -753,6 +757,7 @@ class ColumnParallelLinear(torch.nn.Module):
         self.grad_output_buffer = grad_output_buffer
         self.config = config
         self.disable_grad_reduce = disable_grad_reduce
+        self.normalize = normalize
 
         if is_expert:
             world_size = get_expert_tensor_parallel_world_size()
@@ -935,6 +940,8 @@ class ColumnParallelLinear(torch.nn.Module):
         # Matrix multiply.
         if not weight.requires_grad:
             self._forward_impl = linear_with_frozen_weight
+        elif self.normalize:
+            self._forward_impl = normed_linear_with_grad_accumulation_and_async_allreduce
         else:
             self._forward_impl = linear_with_grad_accumulation_and_async_allreduce
 
