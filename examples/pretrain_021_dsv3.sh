@@ -15,7 +15,7 @@ INIT_METHOD_STD=${INIT_METHOD_STD:-0.006} # 0.006
 
 SEQ_LEN=${SEQ_LEN:-4096}
 PAD_LEN=${PAD_LEN:-${SEQ_LEN}}
-PR=bf16
+PR=${PR:-bf16}
 ### BASE CONFIG ###
 
 
@@ -38,7 +38,8 @@ if [[ -z $DATASET_FILE ]] ; then
     exit 1
 fi
 DATASET_PATH="$(cat ${DATASET_FILE})"
-VALID_DATASET_PATH="$(cat ${VALID_DATASET_FILE})"
+#VALID_DATASET_PATH="$(cat ${VALID_DATASET_FILE})"
+VALID_DATASET_PATH=${DATASET_PATH}
 OUTPUT_DIR=${OUTPUT_DIR:-$PWD}
 if [[ -z $TOKENIZER_PATH ]] ; then
     echo "Missing environment variable TOKENIZER_PATH."
@@ -59,7 +60,7 @@ PRETRAIN_CHECKPOINT_PATH_DEFAULT=${OUTPUT_DIR}/checkpoints
 PRETRAIN_CHECKPOINT_PATH=${PRETRAIN_CHECKPOINT_PATH:-PRETRAIN_CHECKPOINT_PATH_DEFAULT}
 
 # DEBUG model without saving optim
-if [ -z ${DEBUG_PRETRAIN_CHECKPOINT_PATH} ];then
+if [[ ${DEBUG_PRETRAIN_CHECKPOINT_PATH:-none} != none ]]; then
     PRETRAIN_CHECKPOINT_PATH=$DEBUG_PRETRAIN_CHECKPOINT_PATH
     ckpt_options=" ${ckpt_options} \
         --auto-detect-ckpt-format \
@@ -96,6 +97,7 @@ if [ -z $MEGATRON_PATH ]; then
 fi
 export PYTHONPATH=${MEGATRON_PATH}:$PYTHONPATH
 export CUDA_DEVICE_MAX_CONNECTIONS=1
+export NVTE_BIAS_GELU_NVFUSION=0
 
 if [ -z ${MP_AC_LAYERS} ];then
     MP_AC_LAYERS=1
@@ -352,9 +354,6 @@ if [ ! -z ${APPLY_NORM_HEAD} ];then
     moe_options=" ${moe_options}  --moe-apply-norm-head "
 fi
 
-
-
-
 TP_COMM_OVERLAP=$(( ($TP > 1) ? 1 : 0 ))
 comm_overlap_option="\
     --overlap-grad-reduce \
@@ -403,6 +402,9 @@ elif [ $AC = offload ]; then
 elif [ $AC = custom ]; then
     #TODO: fill in custom AC options
     activation_checkpoint_options=" \
+        --recompute-beside-moe \
+        --moe-layer-recompute \
+        --moe-perm-checkpoint ${MOE_PERMUTE_CHECKPOINT:-half} \
     "
 fi
 
@@ -443,21 +445,16 @@ elif [ $SP = false ]; then
                     "
 fi
 
-if [ -z ${MP_PP0_LAYERS} ];then
-    uneven_split_option=""
-elif [ ${PP} -gt 1 ]; then
-    _check=$(( ( $NUM_LAYERS - ${MP_PP0_LAYERS} ) % ( ${PP} - 1 ) ))
-    if [ $_check != 0 ]; then
-        echo "With uneven pipelineing the left over layers must be divisible by left over stages."
-        exit -1
-    fi
-
-    uneven_split_option=" \
+uneven_split_option=""
+if [[ ${MP_PP0_LAYERS:-0} -gt 0 ]]; then
+    uneven_split_option="${uneven_split_option} \
         --decoder-first-pipeline-num-layers ${MP_PP0_LAYERS}
     "
-else
-    echo "uneven pipeline split must be used when PP > 1"
-    exit -1
+fi
+if [[ ${MP_PPN_LAYERS:-0} -gt 0 ]]; then
+    uneven_split_option="${uneven_split_option} \
+        --decoder-last-pipeline-num-layers ${MP_PPN_LAYERS}
+    "
 fi
 
 if [ $PRETRAIN_CHECKPOINT_PATH != none ]; then
@@ -550,6 +547,8 @@ megatron_options="  \
         --rotary-scaling-factor ${SCALE_FACTOR} \
         --kv-channels ${V_HEAD_DIM} \
         --qk-layernorm \
+        --moe-router-dtype fp32 \
+        --moe-permute-fusion \
         --multi-latent-attention"
         # --patch-tokenizer-type DeepSeekV2Tokenizer \
 
@@ -602,6 +601,15 @@ if [[ ${OFFLOAD_OPTIMIZER:-false} = true ]] ; then
     new_options=" ${new_options} --optimizer-cpu-offload --use-precision-aware-optimizer \
         --main-grads-dtype bf16 "
         # --main-params-dtype fp16 \
+fi
+
+# Precision Aware Optimizer
+if [[ ${PAO:-false} = true ]]; then
+    new_options=" ${new_options} \
+        --use-precision-aware-optimizer \
+        --main-grads-dtype bf16 \
+    "
+    #    --main-params-dtype fp16 \
 fi
 
 # 开启12LHSD的atten计算方法,打印MFU
