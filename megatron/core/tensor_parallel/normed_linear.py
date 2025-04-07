@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import warnings
-from typing import Optional
+from typing import Optional, List
 
 import torch
 import os
