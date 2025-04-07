@@ -947,7 +947,7 @@ def core_transformer_config_from_args(args, config_class=None):
     else:
         kw_args['num_query_groups'] = None
     kw_args['config_logger_dir'] = args.config_logger_dir
-
+    
     if len(args.cp_comm_type) == 1:
         kw_args['cp_comm_type'] = args.cp_comm_type[0]
     if args.is_hybrid_model:
@@ -2499,6 +2499,10 @@ def _add_moe_args(parser):
                        help='The policy to drop tokens. Can be either "probs" or "position". If "probs", the tokens with the lowest probabilities will be dropped. If "position", tokens at the end of each batch will be dropped.')
     group.add_argument('--moe-layer-recompute', action='store_true',
                        help='Enable checkpointing for moe_layer, should be used when memory is not sufficient.')
+    group.add_argument('--moe-perm-checkpoint', type=str, default='none', choices=['full', 'half', 'none'],
+                       help='Use checkpointing for permutation of MoE layer. Options are "full", "half", "none".')
+    group.add_argument('--recompute-beside-moe', action='store_true',
+                       help='Recompute the operations beside the MoE layer.')
     group.add_argument('--moe-extended-tp', action='store_true',
                        help='Deprecated. Use --expert-tensor-parallel-size instead.')
     group.add_argument('--moe-use-upcycling', action='store_true',
