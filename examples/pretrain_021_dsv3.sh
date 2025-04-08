@@ -604,7 +604,7 @@ if [[ ${OFFLOAD_OPTIMIZER:-false} = true ]] ; then
 fi
 
 # Precision Aware Optimizer
-PAO_LEVEL=${PAO:-moments}
+PAO_LEVEL=${PAO:-none}
 if [[ $PAO_LEVEL = none ]]; then
     new_options=" ${new_options} \
     "
