@@ -604,12 +604,34 @@ if [[ ${OFFLOAD_OPTIMIZER:-false} = true ]] ; then
 fi
 
 # Precision Aware Optimizer
-if [[ ${PAO:-false} = true ]]; then
+PAO_LEVEL=${PAO:-moments}
+if [[ $PAO_LEVEL = none ]]; then
+    new_options=" ${new_options} \
+    "
+elif [[ $PAO_LEVEL = moments ]]; then
     new_options=" ${new_options} \
         --use-precision-aware-optimizer \
+        --exp-avg-dtype fp16 \
+        --exp-avg-sq-dtype fp16 \
+    "
+elif [[ $PAO_LEVEL = grads ]]; then
+    new_options=" ${new_options} \
+        --use-precision-aware-optimizer \
+        --exp-avg-dtype fp16 \
+        --exp-avg-sq-dtype fp16 \
         --main-grads-dtype bf16 \
     "
-    #    --main-params-dtype fp16 \
+elif [[ $PAO_LEVEL = weights ]]; then
+    new_options=" ${new_options} \
+        --use-precision-aware-optimizer \
+        --exp-avg-dtype fp16 \
+        --exp-avg-sq-dtype fp16 \
+        --main-grads-dtype bf16 \
+        --main-params-dtype fp16 \
+    "
+else
+    echo "PAO_LEVEL=${PAO_LEVEL} is not a valid option. Valid options include: none, moments, grads, weights"
+    exit 1
 fi
 
 # 开启12LHSD的atten计算方法,打印MFU
