@@ -77,9 +77,6 @@ WARMUP_TOKENS=${WARMUP_TOKENS:-4194304000}
 TOTAL_TRAIN_ITERS=$(( ${TRAIN_TOKENS} / ${GLOBAL_BATCH_SIZE} / ${SEQ_LEN} ))
 TRAIN_ITERS=${TRAIN_ITERS:-${TOTAL_TRAIN_ITERS}}
 
-MOE_ROUTER_GROUPS=${MOE_ROUTER_GROUPS:-8} # 8
-MOE_ROUTER_GROUPS_TOPK=${MOE_ROUTER_GROUPS_TOPK:-4} # 4
-
 OUTPUT_BASEPATH=${OUTPUT_DIR}
 ### OTHERS ###
 if [[ ${DEBUG} = on ]] ; then
@@ -167,12 +164,7 @@ moe_options=" \
     --qk-head-dim ${QK_NOPE_HEAD_DIM} \
     --qk-pos-emb-head-dim ${QK_ROPE_HEAD_DIM} \
     --v-head-dim ${V_HEAD_DIM} \
-    --moe-grouped-gemm \
-    --moe-router-num-groups ${MOE_ROUTER_GROUPS} \
-    --moe-router-group-topk ${MOE_ROUTER_GROUPS_TOPK} \
-    --moe-router-enable-expert-bias \
-    --moe-router-load-balancing-type seq_aux_loss \
-    --moe-router-bias-update-rate 1e-3"
+    --moe-grouped-gemm"
 
 
 elif [ $MODEL_SIZE = 16B ]; then
@@ -211,12 +203,7 @@ moe_options=" \
     --qk-head-dim ${QK_NOPE_HEAD_DIM} \
     --qk-pos-emb-head-dim ${QK_ROPE_HEAD_DIM} \
     --v-head-dim ${V_HEAD_DIM} \
-    --moe-grouped-gemm \
-    --moe-router-num-groups ${MOE_ROUTER_GROUPS} \
-    --moe-router-group-topk ${MOE_ROUTER_GROUPS_TOPK} \
-    --moe-router-enable-expert-bias \
-    --moe-router-load-balancing-type seq_aux_loss \
-    --moe-router-bias-update-rate 1e-3"
+    --moe-grouped-gemm"
 
 elif [ $MODEL_SIZE = 200B ]; then
 
@@ -225,7 +212,8 @@ NUM_ATTN_HEADS=128
 NUM_LAYERS=${NUM_LAYERS:-60} 
 INTERMEDIATE_SIZE=12288
 MOE_INTERMEDIATE_SIZE=1536
-MAX_POSITION_EMBEDDINGS=${SEQ_LEN}
+# MAX_POSITION_EMBEDDINGS=${SEQ_LEN} 
+MAX_POSITION_EMBEDDINGS=163840
 EXTRA_VOCAB_SIZE=2400
 Q_LORA_RANK=1536
 KV_LORA_RANK=512
@@ -256,12 +244,10 @@ moe_options=" \
     --qk-head-dim ${QK_NOPE_HEAD_DIM} \
     --qk-pos-emb-head-dim ${QK_ROPE_HEAD_DIM} \
     --v-head-dim ${V_HEAD_DIM} \
-    --moe-grouped-gemm \
-    --moe-router-num-groups ${MOE_ROUTER_GROUPS} \
-    --moe-router-group-topk ${MOE_ROUTER_GROUPS_TOPK} \
-    --moe-router-enable-expert-bias \
-    --moe-router-load-balancing-type seq_aux_loss \
-    --moe-router-bias-update-rate 1e-3"
+    --moe-grouped-gemm"
+    # --moe-router-enable-expert-bias \ 需要关闭
+    # --moe-router-bias-update-rate 1e-3" 关闭
+    # --moe-router-load-balancing-type seq_aux_loss \ aux_loss
 
 elif [ $MODEL_SIZE = 600B ]; then
 
@@ -300,12 +286,7 @@ moe_options=" \
     --qk-head-dim ${QK_NOPE_HEAD_DIM} \
     --qk-pos-emb-head-dim ${QK_ROPE_HEAD_DIM} \
     --v-head-dim ${V_HEAD_DIM} \
-    --moe-grouped-gemm \
-    --moe-router-num-groups ${MOE_ROUTER_GROUPS} \
-    --moe-router-group-topk ${MOE_ROUTER_GROUPS_TOPK} \
-    --moe-router-enable-expert-bias \
-    --moe-router-load-balancing-type seq_aux_loss \
-    --moe-router-bias-update-rate 1e-3"
+    --moe-grouped-gemm"
 else
 
 echo "Unsupported model size: ${MODEL_SIZE}"
@@ -313,11 +294,34 @@ exit 1
 
 fi
 
+LOAD_BALANCE_TYPE=${LOAD_BALANCE_TYPE:-seq_aux_loss}
+if [ ${LOAD_BALANCE_TYPE} = seq_aux_loss ] ; then
+    moe_options=" ${moe_options} --moe-router-load-balancing-type ${LOAD_BALANCE_TYPE} "
+elif [ ${LOAD_BALANCE_TYPE} = aux_loss ] ; then
+    moe_options=" ${moe_options}  --moe-router-load-balancing-type ${LOAD_BALANCE_TYPE} "
+else
+echo "Unsupported moe-router-load-balancing-type: ${LOAD_BALANCE_TYPE}"
+exit 1
+fi
+
+MOE_ROUTER_GROUPS=${MOE_ROUTER_GROUPS:-0} # 8
+MOE_ROUTER_GROUPS_TOPK=${MOE_ROUTER_GROUPS_TOPK:-0} # 4
+
+if [ $MOE_ROUTER_GROUPS -gt 0 ] && [ $MOE_ROUTER_GROUPS_TOPK -gt 0 ]; then
+    moe_options=" ${moe_options}  --moe-router-num-groups ${MOE_ROUTER_GROUPS} \
+    --moe-router-group-topk ${MOE_ROUTER_GROUPS_TOPK} "
+fi
+
 if [[ ${ROUTER_TOPK_SCALING_FACTOR:-none} != none ]]; then
 moe_options=" ${moe_options} --moe-router-topk-scaling-factor ${ROUTER_TOPK_SCALING_FACTOR} "
 fi
 
-if [[ ${BIAS_MEAN:-False} = true ]]; then
+if [[ ${ROUTER_BIAS:-false} = true ]]; then
+moe_options=" ${moe_options} --moe-router-enable-expert-bias \
+            --moe-router-bias-update-rate 1e-3"
+fi
+
+if [[ ${BIAS_MEAN:-false} = true ]]; then
 moe_options=" ${moe_options} --moe-router-bias-mean-update-rate 1e-3 "
 fi
 
@@ -545,12 +549,14 @@ megatron_options="  \
         --disable-bias-linear \
         --rotary-base ${ROPE_THETA} \
         --rotary-scaling-factor ${SCALE_FACTOR} \
+        --rotary-seq-len-interpolation-factor 1 \
         --kv-channels ${V_HEAD_DIM} \
         --qk-layernorm \
         --moe-router-dtype fp32 \
         --moe-permute-fusion \
         --multi-latent-attention"
         # --patch-tokenizer-type DeepSeekV2Tokenizer \
+        # --rotary-seq-len-interpolation-factor 1 增加
 
 # tokenizer_options=" \
 #         --max-padding-length ${PAD_LEN} \
@@ -657,6 +663,3 @@ run_cmd="torchrun $DISTRIBUTED_ARGS ${MEGATRON_PATH}/pretrain_gpt.py
 echo ${run_cmd}
 [[ $RANK = 0 ]] && mkdir -p ${OUTPUT_DIR}/logs/${NAME} && echo ${run_cmd} > ${OUTPUT_DIR}/logs/${NAME}/${MODEL_SIZE}-pp-${PP}-ep-${EP}-AC-${AC}-gbs-${GLOBAL_BATCH_SIZE}-cmd.sh
 eval ${run_cmd}
-
-
-

@@ -5,7 +5,7 @@ export ENV=dlc
 
 ################# 模型配置 ###############
 # MODEL_SIZE默认值：200B,可选 [2B,16B,200B,600B]
-export MODEL_SIZE=2B
+export MODEL_SIZE=16B
 # NUM_LAYERS默认值：9,28,60,61
 export NUM_LAYERS=28
 # AC默认值：none 可选 [full,sel,moe,offload,none] 推荐full
@@ -27,41 +27,44 @@ export AC=full
 # MP_AC_LAYERS 默认值：1
 export MP_AC_LAYERS=1
 # GLOBAL_BATCH_SIZE默认值：9600
-export GLOBAL_BATCH_SIZE=400
+export GLOBAL_BATCH_SIZE=9600
 # MICRO_BATCH_SIZE默认值：1
 export MICRO_BATCH_SIZE=1
 # DISPATCHER_TYPE默认值：alltoall_seq, 可选[alltoall_seq,alltoall,flex_deepep]
-export DISPATCHER_TYPE=alltoall_seq
+export DISPATCHER_TYPE=flex_deepep
 # FLASH_ATTENTION默认值：true 可选[true,false]
 export FLASH_ATTENTION=true
 # CKPT_FORMAT默认值：torch 可选[torch,torch_dist,torch_dist_async,torch_dist_no_optim] 推荐 torch_dist_async
 export CKPT_FORMAT=torch_dist_async
+# export CKPT_FORMAT=torch
 # LR默认值：4E-5
-export LR=4E-5
+export LR=2.4E-4
 # MIN_LR默认值：4E-6
-export MIN_LR=4E-6
+export MIN_LR=2.4E-5
 # INIT_METHOD_STD默认值：0.006
 export INIT_METHOD_STD=0.006
 
-# MOE_ROUTER_GROUPS默认值：8
+# MOE_ROUTER_GROUPS默认值：不开启  200B推荐8
 export MOE_ROUTER_GROUPS=8
-# MOE_ROUTER_GROUPS_TOPK默认值：4
-export MOE_ROUTER_GROUPS_TOPK=4
+# MOE_ROUTER_GROUPS_TOPK默认值：不开启 200B推荐3 or 4
+export MOE_ROUTER_GROUPS_TOPK=3
 
 # ROUTER_SCORE_FUNC默认值：sigmod 可选[sigmod,softmax,pre_softmax]
-export ROUTER_SCORE_FUNC=sigmod
+export ROUTER_SCORE_FUNC=pre_softmax
 # ROUTER_TOPK_SCALING_FACTOR默认值：none
-export ROUTER_TOPK_SCALING_FACTOR=
+# export ROUTER_TOPK_SCALING_FACTOR=
 # SAVE_INTERVAL默认值：1000
-export SAVE_INTERVAL=1000
+export SAVE_INTERVAL=100
 # SEQWARM默认值：off 配置--warmup-seq-length 0:2048,100:4096
 # export SEQWARM=
 
 # TP_PP_DP_MAP默认值：off  --use-tp-pp-dp-mapping
 export TP_PP_DP_MAP=off
+export LOAD_BALANCE_TYPE=aux_loss
+export ROUTER_BIAS=false
 
 # TRAIN_ITERS默认值：TRAIN_TOKENS/GLOBAL_BATCH_SIZE/SEQ_LEN
-# export TRAIN_ITERS=
+# export TRAIN_ITERS=300
 # BIAS_MEAN默认值：FALSE , 是否 --moe-router-bias-mean-update-rate 1e-3 
 # export BIAS_MEAN=
 # CUSTOM_PIPE默认值：on 配置-no-custom-partition-with-smooth-weight
@@ -73,9 +76,10 @@ export TP_PP_DP_MAP=off
 # WARMUP_TOKENS默认值：4194304000
 # export WARMUP_TOKENS=
 # OFFLOAD_OPTIMIZER默认值：FALSE  Optimizer精度优化和CPU Offloading 降低内存
-# export OFFLOAD_OPTIMIZER=true
+export OFFLOAD_OPTIMIZER=false
+export PAO=none
 # PYTORCH_CUDA_ALLOC_CONF 是否使用内存碎片，降低内存
-# export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 
 ################## 相关路径和数据 #############
@@ -95,6 +99,8 @@ export VALID_DATASET_FILE=
 ################# benchmark or profiling ##################
 # PRINT_MFU默认值：true 打印MFU计算
 export PRINT_MFU=true
+# 开启MFU benchmark mode 指定iteration区间计算平均MFU
+export BENCHMARK_MFU=false
 # PROFILE默认值：off
 export PROFILE=off
 # 开启MFU benchmark mode 计算
@@ -103,11 +109,9 @@ export BENCHMARK_MFU=false
 
 #################### 20250328新增  For MoE Stability############
 # APPLY_NORM_HEAD默认不开启
-export APPLY_NORM_HEAD=1
+# export APPLY_NORM_HEAD=1
 # WARMUP_ROUTER默认不开启
-export WARMUP_ROUTER=5
-# 开启MFU benchmark mode 指定iteration区间计算平均MFU
-export BENCHMARK_MFU=false
+# export WARMUP_ROUTER=5
+
 
 bash examples/pretrain_021_dsv3.sh
-
