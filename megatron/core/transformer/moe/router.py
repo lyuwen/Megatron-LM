@@ -296,16 +296,16 @@ class TopKRouter(Router):
             moe_aux_loss_coeff=moe_aux_loss_coeff, sequence_partition_group=sequence_partition_group
         )
         # LFu: disable loss aggregationg during the recompute forward pass
-        if not RecomputeContext.is_recompute:
-            save_to_aux_losses_tracker(
-                "load_balancing_loss",
-                aux_loss / moe_aux_loss_coeff,
-                self.layer_number,
-                self.config.num_layers,
-                layer_pattern = self.config.moe_layer_pattern,
-                reduce_group=sequence_partition_group,
-                avg_group=mpu.get_data_parallel_group()
-            )
+        # if not RecomputeContext.is_recompute: # LZD: cannot record load_balancing_loss in log and tensorboard
+        save_to_aux_losses_tracker(
+            "load_balancing_loss",
+            aux_loss / moe_aux_loss_coeff,
+            self.layer_number,
+            self.config.num_layers,
+            layer_pattern = self.config.moe_layer_pattern,
+            reduce_group=sequence_partition_group,
+            avg_group=mpu.get_data_parallel_group()
+        )
 
         # LFu: Add device balancing loss
         if self.config.moe_device_balance_loss_coeff or self.config.moe_communication_balance_loss_coeff:
@@ -320,25 +320,25 @@ class TopKRouter(Router):
                 expert_model_parallel_size=self.config.expert_model_parallel_size,
                 moe_router_limited_devices=self.config.moe_router_topk_limited_devices
             )
-            if not RecomputeContext.is_recompute:
-                save_to_aux_losses_tracker(
-                    "device_balancing_loss",
-                    device_loss,
-                    self.layer_number,
-                    self.config.num_layers,
-                    layer_pattern = self.config.moe_layer_pattern,
-                    reduce_group=sequence_partition_group,
-                    avg_group=mpu.get_data_parallel_group()
-                )
-                save_to_aux_losses_tracker(
-                    "communication_balancing_loss",
-                    communication_loss,
-                    self.layer_number,
-                    self.config.num_layers,
-                    layer_pattern = self.config.moe_layer_pattern,
-                    reduce_group=sequence_partition_group,
-                    avg_group=mpu.get_data_parallel_group()
-                )
+            # if not RecomputeContext.is_recompute: # LZD: cannot record load_balancing_loss in log and tensorboard
+            save_to_aux_losses_tracker(
+                "device_balancing_loss",
+                device_loss,
+                self.layer_number,
+                self.config.num_layers,
+                layer_pattern = self.config.moe_layer_pattern,
+                reduce_group=sequence_partition_group,
+                avg_group=mpu.get_data_parallel_group()
+            )
+            save_to_aux_losses_tracker(
+                "communication_balancing_loss",
+                communication_loss,
+                self.layer_number,
+                self.config.num_layers,
+                layer_pattern = self.config.moe_layer_pattern,
+                reduce_group=sequence_partition_group,
+                avg_group=mpu.get_data_parallel_group()
+            )
             aux_loss += self.config.moe_device_balance_loss_coeff * device_loss
             aux_loss += self.config.moe_communication_balance_loss_coeff * communication_loss
         #
