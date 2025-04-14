@@ -343,6 +343,11 @@ class ModelParallelConfig:
        the user adds a level 1 timer that is not called by all ranks.
     """
 
+    # Fp8 
+    fp8_comm: bool = False
+    """If True, using fp8 stream in P2P comm and A2A comm."""
+
+
     def __post_init__(self):
         """Python dataclass method that is used to modify attributes after initialization.
         See https://docs.python.org/3/library/dataclasses.html#post-init-processing for more
