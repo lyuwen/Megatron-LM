@@ -45,8 +45,8 @@ export INIT_METHOD_STD=0.006
 
 # MOE_ROUTER_GROUPS默认值：8
 export MOE_ROUTER_GROUPS=8
-# MOE_ROUTER_GROUPS_TOPK默认值：4
-export MOE_ROUTER_GROUPS_TOPK=4
+# MOE_ROUTER_GROUPS_TOPK默认值：3
+export MOE_ROUTER_GROUPS_TOPK=3
 
 # ROUTER_SCORE_FUNC默认值：sigmod 可选[sigmod,softmax,pre_softmax]
 export ROUTER_SCORE_FUNC=sigmod
@@ -74,11 +74,24 @@ export TP_PP_DP_MAP=off
 # export WARMUP_TOKENS=
 # OFFLOAD_OPTIMIZER默认值：FALSE  Optimizer精度优化和CPU Offloading 降低内存
 # export OFFLOAD_OPTIMIZER=true
+# PAO: 0407之前可选[true,false] 0407之后可选[none,moments,grads,weights]
+# export PAO=none
 # PYTORCH_CUDA_ALLOC_CONF 是否使用内存碎片，降低内存
 # export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
+# moe-router-load-balancing-type seq_aux_loss \ aux_loss
+# LOAD_BALANCE_TYPE=aux_loss
+# ROUTER_BIAS默认关闭
+# ROUTER_BIAS=false
+# 动态bs 默认关闭
+# ENABLE_RAMPUP_BS=false 
+
 
 ################## 相关路径和数据 #############
+# DATASET_FILE数据集路径
+export DATASET_FILE=
+# VALID_DATASET_FILE 文件路径列表
+export VALID_DATASET_FILE=
 # MEGATRON_PATH：ZJ-Megatron-LM目录路径
 export MEGATRON_PATH=
 # TOKENIZER_PATH TOKENIZER路径
@@ -87,10 +100,8 @@ export TOKENIZER_PATH=
 export OUTPUT_DIR=
 # PRETRAIN_CHECKPOINT_PATH 断点续训时需配置checkpoint路径
 # export PRETRAIN_CHECKPOINT_PATH=
-# DATASET_FILE数据集路径
-export DATASET_FILE=
-# VALID_DATASET_FILE 文件路径列表
-export VALID_DATASET_FILE=
+# 宁波集群：同任务可视化中的日志存储路径，便于开启查看Tensorboard
+# TENSORBOARD_DIR=
 
 ################# benchmark or profiling ##################
 # PRINT_MFU默认值：true 打印MFU计算
@@ -110,4 +121,5 @@ export WARMUP_ROUTER=5
 export BENCHMARK_MFU=false
 
 bash examples/pretrain_021_dsv3.sh
+
 
