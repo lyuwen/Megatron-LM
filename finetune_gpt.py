@@ -47,8 +47,16 @@ from megatron.core.transformer.moe.utils import (
     get_embedding_size,
     get_moe_FLOPs,
 )
-from megatron.core.datasets.json_sft import JSONSFTDataset
+from megatron.core.datasets.json_sft import JSONSFTDataset, SFTPreTokenizedDataset
 
+# import debugpy
+# try:
+#     # 5678 is the default attach port in the VS Code debug configurations. Unless a host and port are specified, host defaults to 127.0.0.1
+#     debugpy.listen(("localhost", 5680))
+#     print("Waiting for debugger attach")
+#     debugpy.wait_for_client()
+# except Exception as e:
+#     pass
 
 stimer = StragglerDetector()
 
@@ -167,7 +175,7 @@ def get_batch(data_iterator):
     #  if args.train_mode == "pretrain":
         #  raise ValueError('The JSON-SFT dataset should only be used for finetuning!')
     # get batches based on the TP rank you are on
-    batch = get_batch_on_this_tp_rank_sft(data_iterator , per_seq_average=True)
+    batch = get_batch_on_this_tp_rank_sft(data_iterator , per_seq_average=False)
     # slice batch along sequence dimension for context parallelism
     num_seqs = batch.pop('num_seqs')
     batch = get_batch_on_this_cp_rank(batch)
@@ -276,8 +284,16 @@ def forward_step(data_iterator, model: GPTModel):
         tokens, labels, loss_mask, attention_mask, position_ids, num_seqs, packed_seq_params = \
             get_batch(data_iterator)
     timers("batch-generator").stop()
+    
+    # if torch.distributed.get_rank() == 0:   
+    #     print("labels: ", labels.detach().cpu().tolist()[0][:1000])
+    #     print("tokens: ", tokens.detach().cpu().tolist()[0][:1000])
+    #     print("loss_mask: ", loss_mask.detach().cpu().tolist())
+    #     print(f"attention_mask shape: {attention_mask.shape}; tokens shape: {tokens.shape}; loss_mask shape: {loss_mask.shape}; labels shape: {labels.shape}")
+    #     exit()
 
     with stimer:
+        # print(f"attention_mask shape: {attention_mask.shape}; tokens shape: {tokens.shape}; loss_mask shape: {loss_mask.shape}; labels shape: {labels.shape}")
         output_tensor = model(tokens, position_ids, attention_mask,
                               labels=labels, packed_seq_params=packed_seq_params)
 
@@ -294,9 +310,17 @@ def train_valid_test_datasets_provider(train_val_test_num_samples):
 
     print_rank_0("> building train, validation, and test datasets for SFT ...")
 
-    train_ds = JSONSFTDataset(args.train_data_path, args.max_padding_length)
-    valid_ds = JSONSFTDataset(args.valid_data_path, args.max_padding_length)
-    test_ds  = JSONSFTDataset(args.valid_data_path, args.max_padding_length)
+    # train_ds = JSONSFTDataset(args.train_data_path, args.max_padding_length)
+    # valid_ds = None
+    # if args.valid_data_path:
+    #     valid_ds = JSONSFTDataset(args.valid_data_path, args.max_padding_length)
+    # test_ds = None
+    # if args.test_data_path:
+    #     test_ds  = JSONSFTDataset(args.test_data_path, args.max_padding_length)
+
+    train_ds = SFTPreTokenizedDataset(args.train_data_path[0])
+    valid_ds = SFTPreTokenizedDataset(args.train_data_path[0]) if args.valid_data_path else None
+    test_ds  = SFTPreTokenizedDataset(args.train_data_path[0])  if args.test_data_path  else None
 
     print_rank_0("> finished creating SFT datasets ...")
 
