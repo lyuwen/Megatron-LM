@@ -207,12 +207,12 @@ moe_options=" \
 
 elif [ $MODEL_SIZE = 200B ]; then
 
-HIDDEN_SIZE=5120
+HIDDEN_SIZE=${HIDDEN_SIZE:-5120}
 NUM_ATTN_HEADS=128
 NUM_LAYERS=${NUM_LAYERS:-60} 
-INTERMEDIATE_SIZE=12288
-MOE_INTERMEDIATE_SIZE=1536
-# MAX_POSITION_EMBEDDINGS=${SEQ_LEN} 
+INTERMEDIATE_SIZE=${INTERMEDIATE_SIZE:-12288}
+MOE_INTERMEDIATE_SIZE=${MOE_INTERMEDIATE_SIZE:-1536}
+#MAX_POSITION_EMBEDDINGS=${SEQ_LEN} 
 MAX_POSITION_EMBEDDINGS=163840
 EXTRA_VOCAB_SIZE=2400
 Q_LORA_RANK=1536
@@ -222,12 +222,12 @@ QK_ROPE_HEAD_DIM=64
 V_HEAD_DIM=128
 ROPE_THETA=10000
 SCALE_FACTOR=40
-NUM_EXPERTS=160
+NUM_EXPERTS=${NUM_EXPERTS:-160}
 # NUM_EXPERTS=120
-ROUTER_TOPK=6
-NUM_SHARED_EXPERTS=2
+ROUTER_TOPK=${ROUTER_TOPK:-6}
+NUM_SHARED_EXPERTS=${NUM_SHARED_EXPERTS:-2}
 MOE_LAYER_FREQ=1
-MOE_FIRST_K_DENSE_REPLACE=1
+MOE_FIRST_K_DENSE_REPLACE=${MOE_FIRST_K_DENSE_REPLACE:-1}
 RMS_NORM_EPS=1e-6
 
 moe_options=" \
@@ -391,6 +391,10 @@ elif [ $AC = moe ]; then
     activation_checkpoint_options=" \
         --moe-layer-recompute \
     "
+elif [ $AC = attn ]; then
+    activation_checkpoint_options=" \
+        --recompute-beside-moe \
+    "
 elif [ $AC = offload ]; then
     activation_checkpoint_options=" \
 		    --cpu-offloading \
@@ -423,9 +427,23 @@ elif [ $PR = bf16 ]; then
 elif [ $PR = fp8 ]; then
     pr_options=" \
         --bf16 \
-        --fp8-format hybrid \
+        --fp8-format ${FP8_FORMAT:-e4m3} \
+        --fp8-recipe ${FP8_RECIPE:-tensorwise} \
         --fp8-amax-compute-algo max \
         --fp8-amax-history-len 1024"
+
+        if [[ ${FP8_PARAM_GATHER:-false} = true ]]; then
+            pr_options=" ${pr_options} --fp8-param-gather "
+        fi
+fi
+
+if [[ ${FP8_COMM:-false} = true ]]; then
+    pr_options=" ${pr_options} --fp8-comm \
+     "
+fi
+
+if [[ ${FP8_CKPT:-false} = true ]]; then
+    pr_options=" ${pr_options} --fp8-ckpt "
 fi
 
 if [ $DO = true ]; then
@@ -475,8 +493,18 @@ PREFIX="pretrain-zjmcore-dsv3-${MODEL_SIZE}-lr-${LR}-minlr-${MIN_LR}-bs-${BATCH_
 dataset_option=" \
     --data-path ${DATASET_PATH} \
     --data-cache-path ${OUTPUT_DIR}/data_cache \
-    --num-workers 4 \
+    --num-workers 1 \
     --split 989,10,1"
+
+if [[ ${MOCK_DATASET:-false} = true ]]; then
+    dataset_option=" \
+        --mock-data \
+    "
+fi
+
+if [[ ${NO_MMAP_BIN_FILES:-false} = true ]]; then
+    dataset_option=" ${dataset_option} --no-mmap-bin-files "
+fi
 
 TIMESTAMP=$(date "+%Y%m%d-%H%M")
 NAME="${PREFIX}-pr-${PR}-pp-${PP}-ep-${EP}-ac-${AC}_${DLC_JOB_ID:-${TIMESTAMP}}"
@@ -644,9 +672,9 @@ fi
 if [[ ${BENCHMARK_MFU:-true} = true ]] ; then
     new_options=" ${new_options} \
     --num-steps-average-throughput 5 \
-    --benchmark-target-tflops 1200.00 \
-    --benchmark-check-begins 30 \
-    --benchmark-check-ends 50 \
+    --benchmark-target-tflops 200.00 \
+    --benchmark-check-begins 3000 \
+    --benchmark-check-ends 5000 \
     --benchmark-pass-action continue"
 fi                    
 
