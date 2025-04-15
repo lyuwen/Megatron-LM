@@ -450,10 +450,10 @@ def _communicate_fp8(
         else:
             reqs.update(p2p_reqs)
 
-    if wait_on_reqs and len(reqs) > 0:
-        for req in reqs if isinstance(reqs, list) else reqs.values():
-            req.wait()
-        reqs = None
+    # if wait_on_reqs and len(reqs) > 0:
+    for req in reqs if isinstance(reqs, list) else reqs.values():
+        req.wait()
+    reqs = None
 
     # Step3: Fp8 dequantize
     tensor_recv_prev_list = []

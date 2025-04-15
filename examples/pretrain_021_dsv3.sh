@@ -425,7 +425,6 @@ elif [ $PR = fp8 ]; then
 elif [ $PR = bf16_fp8_comm ]; then
     pr_options=" \
         --fp8-comm \
-        --no-overlap-p2p-communication \
         --fp8-ckpt \
         --bf16"
 fi
