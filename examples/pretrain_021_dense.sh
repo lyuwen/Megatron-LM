@@ -1,5 +1,6 @@
 #!/bin/bash
 set -ex
+set -o pipefail
 
 ######################################
 # Change the below configurations here
@@ -28,6 +29,8 @@ if [[ ${RUN_CPT} = on ]]; then
                --no-load-optim \
                --no-load-rng \
                "
+    else
+        LOAD_CHECKPOINT_PATH=${CHECKPOINT_PATH}
     fi
 fi
 if [[ -z "${LOAD_CHECKPOINT_PATH}" ]]; then
@@ -97,6 +100,25 @@ elif [[ ${MODEL_SIZE} = "1B" ]]; then
   NUM_LAYERS=16
   NUM_HEADS=16
   GQA_CONFIG=" "
+elif [[ ${MODEL_SIZE} = "8B" ]]; then
+  HIDDEN_SIZE=4096
+  FFN_HIDDEN_SIZE=14336
+  NUM_LAYERS=32
+  NUM_HEADS=32
+  SEQ_LENGTH=${SEQ_LENGTH:-4096}
+  GQA_CONFIG=" \
+      --rotary-base 500000 \
+      "
+elif [[ ${MODEL_SIZE} = "14B" ]]; then
+  HIDDEN_SIZE=5120
+  FFN_HIDDEN_SIZE=13824 
+  NUM_LAYERS=48
+  NUM_HEADS=40
+  SEQ_LENGTH=${SEQ_LENGTH:-4096}
+  # NUM_KV_HEADS=8 # llama2 70B uses GQA
+  GQA_CONFIG=" \
+      --rotary-base 500000 \
+      "
 elif [[ ${MODEL_SIZE} = "32B" ]]; then
   HIDDEN_SIZE=5120
   FFN_HIDDEN_SIZE=27648
@@ -106,6 +128,8 @@ elif [[ ${MODEL_SIZE} = "32B" ]]; then
   GQA_CONFIG=" \
       --group-query-attention \
       --num-query-groups $NUM_KV_HEADS \
+      --rotary-base 1000000 \
+      --norm-epsilon 1e-6 \
       "
   MAX_POSITION_EMBEDDINGS=32768
 fi

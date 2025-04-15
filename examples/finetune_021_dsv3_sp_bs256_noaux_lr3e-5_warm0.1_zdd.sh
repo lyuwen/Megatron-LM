@@ -1,28 +1,27 @@
-set -eo pipefail
-set -x  # 如果你要调试的话
-# export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-ENV=${ENV:-dsw}
+set -ex
+
+# ENV=${ENV:-dsw}
+ENV=dsw
 
 ### BASE CONFIG ###
-DEFAULT_MODEL_SIZE=200B
+DEFAULT_MODEL_SIZE=2B
 MODEL_SIZE=${MODEL_SIZE:-${DEFAULT_MODEL_SIZE}}
-BATCH_SIZE=${MICRO_BATCH_SIZE:-1}
-GLOBAL_BATCH_SIZE=${GLOBAL_BATCH_SIZE:-9600}
-DEFAULT_LR=4E-5
+BATCH_SIZE=${MICRO_BATCH_SIZE:-2}
+GLOBAL_BATCH_SIZE=${GLOBAL_BATCH_SIZE:-256}
+DEFAULT_LR=3E-5
 LR=${LR:-${DEFAULT_LR}}
-DEFAULT_MIN_LR=4E-6
+DEFAULT_MIN_LR=0
 MIN_LR=${MIN_LR:-${DEFAULT_MIN_LR}}
 INIT_METHOD_STD=${INIT_METHOD_STD:-0.006} # 0.006 
 
 SEQ_LEN=${SEQ_LEN:-4096}
 PAD_LEN=${PAD_LEN:-${SEQ_LEN}}
-PR=${PR:-bf16}
+PR=bf16
 ### BASE CONFIG ###
-
 
 ### PARALLEL / BOOL OPTION ###
 PP=${PP:-1} # 6
-EP=${EP:-1} # 8
+EP=${EP:-8} # 8
 FL=${FLASH_ATTENTION:-true} # true
 TP=1
 CP=1
@@ -33,40 +32,39 @@ SFT=false
 
 ### OTHERS ###
 AC=${AC:-none} # full
-SAVE_INTERVAL=${SAVE_INTERVAL:-1000}
-if [[ -z $DATASET_FILE ]] ; then
-    echo "Missing environment variable DATASET_FILE."
-    exit 1
-fi
-DATASET_PATH="$(cat ${DATASET_FILE})"
-#VALID_DATASET_PATH="$(cat ${VALID_DATASET_FILE})"
-VALID_DATASET_PATH=${DATASET_PATH}
+SAVE_INTERVAL=3720
 OUTPUT_DIR=${OUTPUT_DIR:-$PWD}
+TOKENIZER_PATH=${TOKENIZER_PATH:-"/mnt/data/lufanfeng/Megatron-Core/zjllm-llama3-tokenizer/"}
 if [[ -z $TOKENIZER_PATH ]] ; then
     echo "Missing environment variable TOKENIZER_PATH."
     exit 1
 fi
-CKPT_FORMAT=${CKPT_FORMAT:-torch}
-if [ ${CKPT_FORMAT} = torch_dist_async ] ; then
-    ckpt_options=" --ckpt-format torch_dist --async-save "
-elif [ ${CKPT_FORMAT} = torch_dist_no_optim ] ; then
-    ckpt_options=" --ckpt-format torch_dist --no-save-optim "
-elif [ ${CKPT_FORMAT} = torch_dist ] ; then
-    ckpt_options=" --ckpt-format torch_dist "
-elif [ ${CKPT_FORMAT} = torch ] ; then
-    ckpt_options=" --ckpt-format torch "
+if [[ ${ASYNC_SAVE:-false} = true ]] ; then
+    ckpt_options=" --ckpt-format torch_dist --async-save --auto-detect-ckpt-format"
+else
+    ckpt_options=" --ckpt-format ${CKPT_FORMAT:-torch} "
 fi
 
+PRETRAIN_CHECKPOINT_PATH="/mnt/data/gft/output/deepseek2B_v3_dlc_8T_baseline_3b4/checkpoints/pretrain-mcore-deepseek-v2-DS_V3_2B_7.5t_baseline-lr-2.4e-4-minlr-2.397e-5-bs-4-gbs-2560-seqlen-4096-pr-bf16-pp-1-ac-false"
 
+TRAIN_ITERS=12000
+LR_WARMUP_ITERS=1200
 # training configuraitons
+if [[ -z $TRAIN_ITERS ]] ; then
+    echo "Missing environment variable TOKENIZER_PATH."
+    exit 1
+fi
 TRAIN_TOKENS=${TRAIN_TOKENS:-200000000000}
 WARMUP_TOKENS=${WARMUP_TOKENS:-4194304000}
 TOTAL_TRAIN_ITERS=$(( ${TRAIN_TOKENS} / ${GLOBAL_BATCH_SIZE} / ${SEQ_LEN} ))
 TRAIN_ITERS=${TRAIN_ITERS:-${TOTAL_TRAIN_ITERS}}
 
+MOE_ROUTER_GROUPS=${MOE_ROUTER_GROUPS:-8} # 8
+MOE_ROUTER_GROUPS_TOPK=${MOE_ROUTER_GROUPS_TOPK:-4} # 4
+
 OUTPUT_BASEPATH=${OUTPUT_DIR}
 ### OTHERS ###
-if [[ ${DEBUG} = on ]]; then
+if [[ ${DEBUG} = on ]] ; then
     export NVTE_DEBUG=1
     export NVTE_DEBUG_LEVEL=2
     export CUDNN_LOGERR_DBG=1
@@ -81,7 +79,6 @@ if [ -z $MEGATRON_PATH ]; then
 fi
 export PYTHONPATH=${MEGATRON_PATH}:$PYTHONPATH
 export CUDA_DEVICE_MAX_CONNECTIONS=1
-export NVTE_BIAS_GELU_NVFUSION=0
 
 if [ -z ${MP_AC_LAYERS} ];then
     MP_AC_LAYERS=1
@@ -106,6 +103,12 @@ else
     vp_options=" \
         --num-layers-per-virtual-pipeline-stage ${MP_VP}"
 fi
+
+
+TIMESTAMP=$(date "+%Y%m%d-%H%M")
+DISTRIBUTED_ARGS="--nproc_per_node $GPUS_PER_NODE --nnodes $NNODES \
+    --node_rank $NODE_RANK --master_addr $MASTER_ADDR --master_port $MASTER_PORT \
+    --tee 3 --log_dir ${OUTPUT_DIR}/logs/${TIMESTAMP}"
 
 if [ $FL = true ]; then
     export NVTE_FLASH_ATTN=1 NVTE_FUSED_ATTN=0
@@ -135,7 +138,7 @@ NUM_EXPERTS=64
 ROUTER_TOPK=7
 NUM_SHARED_EXPERTS=1
 MOE_LAYER_FREQ=1
-MOE_FIRST_K_DENSE_REPLACE=2
+MOE_FIRST_K_DENSE_REPLACE=1
 RMS_NORM_EPS=1e-6
 
 moe_options=" \
@@ -144,15 +147,25 @@ moe_options=" \
     --num-experts ${NUM_EXPERTS} \
     --moe-layer-freq ${MOE_LAYER_FREQ} \
     --moe-first-k-dense-replace ${MOE_FIRST_K_DENSE_REPLACE} \
-    --moe-aux-loss-coeff 0.001 \
+    --moe-aux-loss-coeff 0.000 \
     --moe-shared-expert-intermediate-size $((${MOE_INTERMEDIATE_SIZE} * ${NUM_SHARED_EXPERTS} )) \
     --expert-model-parallel-size ${EP} \
     --kv-lora-rank ${KV_LORA_RANK} \
     --qk-head-dim ${QK_NOPE_HEAD_DIM} \
     --qk-pos-emb-head-dim ${QK_ROPE_HEAD_DIM} \
     --v-head-dim ${V_HEAD_DIM} \
-    --moe-grouped-gemm"
-
+    --moe-token-dispatcher-type alltoall_seq \
+    --moe-grouped-gemm \
+    --moe-router-num-groups ${MOE_ROUTER_GROUPS} \
+    --moe-router-group-topk ${MOE_ROUTER_GROUPS_TOPK} \
+    --moe-router-score-function sigmoid \
+    --moe-router-enable-expert-bias \
+    --moe-router-load-balancing-type seq_aux_loss \
+    --moe-router-bias-update-rate 0.000"
+    # --q-lora-rank ${Q_LORA_RANK}"
+    if [[ ${ROUTER_TOPK_SCALING_FACTOR:-none} != none ]]; then
+    moe_options=" ${moe_options}  --moe-router-topk-scaling-factor ${ROUTER_TOPK_SCALING_FACTOR} "
+    fi
 
 elif [ $MODEL_SIZE = 16B ]; then
 
@@ -190,7 +203,18 @@ moe_options=" \
     --qk-head-dim ${QK_NOPE_HEAD_DIM} \
     --qk-pos-emb-head-dim ${QK_ROPE_HEAD_DIM} \
     --v-head-dim ${V_HEAD_DIM} \
-    --moe-grouped-gemm"
+    --moe-token-dispatcher-type alltoall_seq \
+    --moe-grouped-gemm \
+    --moe-router-num-groups ${MOE_ROUTER_GROUPS} \
+    --moe-router-group-topk ${MOE_ROUTER_GROUPS_TOPK} \
+    --moe-router-score-function sigmoid \
+    --moe-router-enable-expert-bias \
+    --moe-router-load-balancing-type seq_aux_loss \
+    --moe-router-bias-update-rate 1e-3"
+    # --q-lora-rank ${Q_LORA_RANK} \
+    if [[ ${ROUTER_TOPK_SCALING_FACTOR:-none} != none ]]; then
+    moe_options=" ${moe_options} --moe-router-topk-scaling-factor ${ROUTER_TOPK_SCALING_FACTOR} "
+    fi
 
 elif [ $MODEL_SIZE = 200B ]; then
 
@@ -199,18 +223,16 @@ NUM_ATTN_HEADS=128
 NUM_LAYERS=${NUM_LAYERS:-60} 
 INTERMEDIATE_SIZE=12288
 MOE_INTERMEDIATE_SIZE=1536
-# MAX_POSITION_EMBEDDINGS=${SEQ_LEN} 
-MAX_POSITION_EMBEDDINGS=163840
+MAX_POSITION_EMBEDDINGS=${SEQ_LEN}
 EXTRA_VOCAB_SIZE=2400
 Q_LORA_RANK=1536
 KV_LORA_RANK=512
-QK_NOPE_HEAD_DIM=${QK_NOPE_HEAD_DIM:-128} 
+QK_NOPE_HEAD_DIM=128
 QK_ROPE_HEAD_DIM=64
 V_HEAD_DIM=128
 ROPE_THETA=10000
 SCALE_FACTOR=40
 NUM_EXPERTS=160
-# NUM_EXPERTS=120
 ROUTER_TOPK=6
 NUM_SHARED_EXPERTS=2
 MOE_LAYER_FREQ=1
@@ -231,7 +253,20 @@ moe_options=" \
     --qk-head-dim ${QK_NOPE_HEAD_DIM} \
     --qk-pos-emb-head-dim ${QK_ROPE_HEAD_DIM} \
     --v-head-dim ${V_HEAD_DIM} \
-    --moe-grouped-gemm"
+    --moe-token-dispatcher-type alltoall_seq \
+    --moe-grouped-gemm \
+    --moe-router-num-groups ${MOE_ROUTER_GROUPS} \
+    --moe-router-group-topk ${MOE_ROUTER_GROUPS_TOPK} \
+    --moe-router-score-function sigmoid \
+    --moe-router-enable-expert-bias \
+    --moe-router-load-balancing-type seq_aux_loss \
+    --moe-router-bias-update-rate 1e-3"
+# --moe-token-drop-policy probs 
+# --moe-grouped-gemm \
+# --moe-router-topk-limited-devices 4 \
+    if [[ ${ROUTER_TOPK_SCALING_FACTOR:-none} != none ]]; then
+    moe_options=" ${moe_options} --moe-router-topk-scaling-factor ${ROUTER_TOPK_SCALING_FACTOR} "
+    fi
 
 elif [ $MODEL_SIZE = 600B ]; then
 
@@ -270,76 +305,23 @@ moe_options=" \
     --qk-head-dim ${QK_NOPE_HEAD_DIM} \
     --qk-pos-emb-head-dim ${QK_ROPE_HEAD_DIM} \
     --v-head-dim ${V_HEAD_DIM} \
-    --moe-grouped-gemm"
+    --moe-token-dispatcher-type alltoall_seq \
+    --moe-grouped-gemm \
+    --moe-router-num-groups ${MOE_ROUTER_GROUPS} \
+    --moe-router-group-topk ${MOE_ROUTER_GROUPS_TOPK} \
+    --moe-router-score-function sigmoid \
+    --moe-router-enable-expert-bias \
+    --moe-router-load-balancing-type seq_aux_loss \
+    --moe-router-bias-update-rate 1e-3"
+    if [[ ${ROUTER_TOPK_SCALING_FACTOR:-none} != none ]]; then
+    moe_options=" ${moe_options} --moe-router-topk-scaling-factor ${ROUTER_TOPK_SCALING_FACTOR} "
+    fi
+
 else
 
 echo "Unsupported model size: ${MODEL_SIZE}"
 exit 1
 
-fi
-
-LOAD_BALANCE_TYPE=${LOAD_BALANCE_TYPE:-aux_loss}
-if [ ${LOAD_BALANCE_TYPE} = aux_loss ] ; then
-    moe_options=" ${moe_options} --moe-router-load-balancing-type ${LOAD_BALANCE_TYPE} "
-elif [ ${LOAD_BALANCE_TYPE} = seq_aux_loss ] ; then
-    moe_options=" ${moe_options}  --moe-router-load-balancing-type ${LOAD_BALANCE_TYPE} "
-else
-echo "Unsupported moe-router-load-balancing-type: ${LOAD_BALANCE_TYPE}"
-exit 1
-fi
-
-MOE_ROUTER_GROUPS=${MOE_ROUTER_GROUPS:-0} # 8
-MOE_ROUTER_GROUPS_TOPK=${MOE_ROUTER_GROUPS_TOPK:-0} # 3
-
-if [ $MOE_ROUTER_GROUPS -gt 0 ] && [ $MOE_ROUTER_GROUPS_TOPK -gt 0 ]; then
-    moe_options=" ${moe_options}  --moe-router-num-groups ${MOE_ROUTER_GROUPS} \
-    --moe-router-group-topk ${MOE_ROUTER_GROUPS_TOPK} "
-fi
-
-if [[ ${ROUTER_TOPK_SCALING_FACTOR:-none} != none ]]; then
-moe_options=" ${moe_options} --moe-router-topk-scaling-factor ${ROUTER_TOPK_SCALING_FACTOR} "
-fi
-
-if [[ ${ROUTER_BIAS:-false} = true ]]; then
-moe_options=" ${moe_options} --moe-router-enable-expert-bias \
-            --moe-router-bias-update-rate 1e-3"
-fi
-
-if [[ ${BIAS_MEAN:-false} = true ]]; then
-moe_options=" ${moe_options} --moe-router-bias-mean-update-rate 1e-3 "
-fi
-
-DISPATCHER_TYPE=${DISPATCHER_TYPE:-alltoall_seq}
-if [ $DISPATCHER_TYPE = alltoall_seq ]; then
-    moe_options=" ${moe_options}  --moe-token-dispatcher-type alltoall_seq  "
-elif [ $DISPATCHER_TYPE = alltoall ]; then
-    moe_options=" ${moe_options}  --moe-token-dispatcher-type alltoall --moe-shared-expert-overlap "
-elif [ $DISPATCHER_TYPE = flex_deepep ]; then
-    moe_options=" ${moe_options} --moe-token-dispatcher-type flex --moe-enable-deepep "
-else
-echo "Unsupported dispatcher type: ${DISPATCHER_TYPE}"
-exit 1
-fi
-
-ROUTER_SCORE_FUNC=${ROUTER_SCORE_FUNC:-sigmod}
-if [ $ROUTER_SCORE_FUNC = sigmod ]; then
-    moe_options=" ${moe_options}  --moe-router-score-function sigmoid  "
-elif [ $ROUTER_SCORE_FUNC = softmax ]; then
-    moe_options=" ${moe_options}  --moe-router-score-function softmax "
-elif [ $ROUTER_SCORE_FUNC = pre_softmax ]; then
-    moe_options=" ${moe_options} --moe-router-score-function softmax --moe-router-pre-softmax "
-else
-echo "Unsupported router score function: ${ROUTER_SCORE_FUNC}"
-exit 1
-fi
-
-# For MoE Stability
-if [[ ${WARMUP_ROUTER:-0} -gt 0 ]]; then
-    moe_options=" ${moe_options}  --moe-warmup-router  ${WARMUP_ROUTER}  "
-fi
-
-if [ ! -z ${APPLY_NORM_HEAD} ];then
-    moe_options=" ${moe_options}  --moe-apply-norm-head "
 fi
 
 TP_COMM_OVERLAP=$(( ($TP > 1) ? 1 : 0 ))
@@ -387,12 +369,10 @@ elif [ $AC = offload ]; then
         echo "Disable --overlap-grad-reduce and --overlap-param-gather when cpu offloading is on..."
         comm_overlap_option=""
     fi
+# for custom AC
 elif [ $AC = custom ]; then
     #TODO: fill in custom AC options
     activation_checkpoint_options=" \
-        --recompute-beside-moe \
-        --moe-layer-recompute \
-        --moe-perm-checkpoint ${MOE_PERMUTE_CHECKPOINT:-half} \
     "
 fi
 
@@ -433,70 +413,71 @@ elif [ $SP = false ]; then
                     "
 fi
 
-uneven_split_option=""
-if [[ ${MP_PP0_LAYERS:-0} -gt 0 ]]; then
-    uneven_split_option="${uneven_split_option} \
+if [ -z ${MP_PP0_LAYERS} ];then
+    uneven_split_option=""
+elif [ ${PP} -gt 1 ]; then
+    _check=$(( ( $NUM_LAYERS - ${MP_PP0_LAYERS} ) % ( ${PP} - 1 ) ))
+    if [ $_check != 0 ]; then
+        echo "With uneven pipelineing the left over layers must be divisible by left over stages."
+        exit -1
+    fi
+
+    uneven_split_option=" \
         --decoder-first-pipeline-num-layers ${MP_PP0_LAYERS}
     "
-fi
-if [[ ${MP_PPN_LAYERS:-0} -gt 0 ]]; then
-    uneven_split_option="${uneven_split_option} \
-        --decoder-last-pipeline-num-layers ${MP_PPN_LAYERS}
-    "
-fi
-
-LR_DECAY_ITERS=$(( ${TRAIN_TOKENS} /  ${GLOBAL_BATCH_SIZE} / ${SEQ_LEN} ))
-PREFIX="pretrain-zjmcore-dsv3-${MODEL_SIZE}-bs-${BATCH_SIZE}-gbs-${GLOBAL_BATCH_SIZE}"
-NAME="${PREFIX}-pr-${PR}-pp-${PP}-ep-${EP}-ac-${AC}"
-TIMESTAMP=$(date "+%Y%m%d-%H%M")
-NAME_DLC_TIME="${PREFIX}-pr-${PR}-pp-${PP}-ep-${EP}-ac-${AC}_${DLC_JOB_ID:-${TIMESTAMP}}"
-
-PRETRAIN_CHECKPOINT_PATH_DEFAULT="${OUTPUT_BASEPATH}/checkpoints/${NAME}"
-PRETRAIN_CHECKPOINT_PATH=${PRETRAIN_CHECKPOINT_PATH:-$PRETRAIN_CHECKPOINT_PATH_DEFAULT}
-
-SAVED_PRETRAIN_CHECKPOINT_PATH="${OUTPUT_BASEPATH}/checkpoints/${NAME}"
-mkdir -p ${SAVED_PRETRAIN_CHECKPOINT_PATH}
-# find -L ${PRETRAIN_CHECKPOINT_PATH} -maxdepth 1 -type f -name "*.json" -print0 | xargs -0 cp -t ${SAVED_PRETRAIN_CHECKPOINT_PATH}
-#find -L ${PRETRAIN_CHECKPOINT_PATH} -maxdepth 1 -type f -name "merges.txt" -print0 | xargs -0 cp -t ${SAVED_PRETRAIN_CHECKPOINT_PATH}
-
-# DEBUG model without saving optim
-if [[ ${DEBUG_PRETRAIN_CHECKPOINT_PATH:-none} != none ]]; then
-    PRETRAIN_CHECKPOINT_PATH=$DEBUG_PRETRAIN_CHECKPOINT_PATH
-    ckpt_options=" ${ckpt_options} \
-        --auto-detect-ckpt-format \
-        --no-load-optim \
-        --no-load-rng \
-        --no-save-optim \
-        --no-save-rng \
-        "
+else
+    echo "uneven pipeline split must be used when PP > 1"
+    exit -1
 fi
 
 if [ $PRETRAIN_CHECKPOINT_PATH != none ]; then
     load_options=" \
-            --load $PRETRAIN_CHECKPOINT_PATH "
+            --load $PRETRAIN_CHECKPOINT_PATH \
+            --override-opt_param-scheduler \
+            --no-load-optim \
+            --no-load-rng \
+            --reset-iterations \
+            --reset-dataloader \
+            "
+                        # --reset-dataloader \
 fi
 
+# TRAIN_ITERS=$(( ${TRAIN_TOKENS} / ${GLOBAL_BATCH_SIZE} / ${SEQ_LEN} ))
+LR_WARMUP_ITERS=${LR_WARMUP_ITERS:-0}
+# LR_WARMUP_ITERS=$(( ${WARMUP_TOKENS}  / ${GLOBAL_BATCH_SIZE} / ${SEQ_LEN} ))
+LR_DECAY_ITERS=${LR_DECAY_ITERS:-${TRAIN_ITERS}}
+PREFIX="finetune-zjmcore-dsv3-${MODEL_SIZE}-lr-${LR}-minlr-${MIN_LR}-bs-${BATCH_SIZE}-gbs-${GLOBAL_BATCH_SIZE}-seqlen-${SEQ_LEN}_torch"
+
+# TRAIN_DATA="'/mnt/data/lusongshuo/datasets/tulu3_mixed_part_1.json' '/mnt/data/lusongshuo/datasets/tulu3_mixed_part_2.json' '/mnt/data/lusongshuo/datasets/tulu3_mixed_part_3.json' '/mnt/data/lusongshuo/datasets/tulu3_mixed_part_4.json' '/mnt/data/lusongshuo/datasets/tulu3_mixed_part_5.json'"
+
+# TRAIN_DATA="/mnt/data/lusongshuo/datasets/tulu3_mixed_test.json"
+
+TRAIN_DATA="/mnt/data/lusongshuo/ZJ-Megatron-LM/megatron/core/datasets/tuluv3_train"
+
+# 
 dataset_option=" \
-    --data-path ${DATASET_PATH} \
+    --train-data-path $TRAIN_DATA \
     --data-cache-path ${OUTPUT_DIR}/data_cache \
-    --num-workers 4 \
-    --split 100,0,0"
-
-DISTRIBUTED_ARGS="--nproc_per_node $GPUS_PER_NODE --nnodes $NNODES \
-    --node_rank $NODE_RANK --master_addr $MASTER_ADDR --master_port $MASTER_PORT \
-    --tee 3 --log_dir ${OUTPUT_DIR}/logs/${NAME_DLC_TIME}"
-
+    --max-padding-length ${PAD_LEN} \
+    --dataloader-type cyclic \
+    "
+    # --valid-data-path ${VALID_DATA:-/mnt/data/llf/alpaca_gpt4_data_en.json} \
+    # --test-data-path ${TEST_DATA:-/mnt/data/llf/alpaca_gpt4_data_en.json} \
 ##### Prepare logdirs #######
-
+NAME="${PREFIX}-pr-${PR}-pp-${PP}-ac-${AC}-noaux"
 # NAME="${PREFIX}-pr-${PR}-tp-${TP}-pp-${PP}-cp-${CP}-ac-${AC}-do-${DO}-sp-${SP}-ti-${TRAIN_ITERS}-wi-${LR_WARMUP_ITERS}"
 mkdir -p "${OUTPUT_BASEPATH}/data_cache/"
 mkdir -p "${OUTPUT_BASEPATH}/tensorboard/"
 mkdir -p "${OUTPUT_BASEPATH}/checkpoints/"
 mkdir -p "${OUTPUT_BASEPATH}/logs/"
-DEFAULT_TENSORBOARD_DIR="${OUTPUT_BASEPATH}/tensorboard/${NAME_DLC_TIME}"
-# 宁波集群：同任务可视化中的日志存储路径，便于开启查看Tensorboard
-TENSORBOARD_DIR=${TENSORBOARD_DIR:-${DEFAULT_TENSORBOARD_DIR}}
+current_time=$(date "+%Y.%m.%d-%H.%M")
+TENSORBOARD_DIR="${OUTPUT_BASEPATH}/tensorboard/${NAME}_${current_time}"
 mkdir -p ${TENSORBOARD_DIR}
+SAVED_PRETRAIN_CHECKPOINT_PATH="${OUTPUT_BASEPATH}/checkpoints/${NAME}"
+
+mkdir -p ${SAVED_PRETRAIN_CHECKPOINT_PATH}
+# find -L ${PRETRAIN_CHECKPOINT_PATH} -maxdepth 1 -type f -name "*.json" -print0 | xargs -0 cp -t ${SAVED_PRETRAIN_CHECKPOINT_PATH}
+#find -L ${PRETRAIN_CHECKPOINT_PATH} -maxdepth 1 -type f -name "merges.txt" -print0 | xargs -0 cp -t ${SAVED_PRETRAIN_CHECKPOINT_PATH}
 
 megatron_options="  \
         --save ${SAVED_PRETRAIN_CHECKPOINT_PATH} \
@@ -510,6 +491,9 @@ megatron_options="  \
         --init-method-std ${INIT_METHOD_STD} \
         --attention-dropout 0.0 \
         --hidden-dropout 0.0 \
+        --lr-decay-iters ${LR_DECAY_ITERS} \
+        --lr-warmup-iters ${LR_WARMUP_ITERS} \
+        --train-iters ${TRAIN_ITERS} \
         --micro-batch-size ${BATCH_SIZE} \
         --global-batch-size ${GLOBAL_BATCH_SIZE} \
         --num-layers ${NUM_LAYERS} \
@@ -530,9 +514,8 @@ megatron_options="  \
         --tensor-model-parallel-size ${TP} \
         --pipeline-model-parallel-size ${PP} \
         --context-parallel-size ${CP} \
-        --tokenizer-type 021Tokenizer \
+        --tokenizer-type HuggingFaceTokenizer \
         --tokenizer-model $TOKENIZER_PATH \
-        --vocab-file $TOKENIZER_PATH/tokenizer.model \
         --swiglu \
         --normalization RMSNorm \
         --norm-epsilon ${RMS_NORM_EPS} \
@@ -544,52 +527,34 @@ megatron_options="  \
         --disable-bias-linear \
         --rotary-base ${ROPE_THETA} \
         --rotary-scaling-factor ${SCALE_FACTOR} \
-        --rotary-seq-len-interpolation-factor 1 \
         --kv-channels ${V_HEAD_DIM} \
         --qk-layernorm \
-        --moe-router-dtype fp32 \
-        --moe-permute-fusion \
-        --multi-latent-attention"
+        --multi-latent-attention \
+        --distributed-timeout-minutes 40"
+        # --num-workers 2 \
         # --patch-tokenizer-type DeepSeekV2Tokenizer \
-        # --rotary-seq-len-interpolation-factor 1 增加
 
 # tokenizer_options=" \
 #         --max-padding-length ${PAD_LEN} \
 #         --extra-vocab-size ${EXTRA_VOCAB_SIZE} \
 #         "
 
-#动态bs
-ENABLE_RAMPUP_BS=${ENABLE_RAMPUP_BS:-false}
-if  [[ $ENABLE_RAMPUP_BS = false ]]; then
-    LR_WARMUP_ITERS=2000
-    LR_DECAY_ITERS=$(( ${TRAIN_TOKENS} /  ${GLOBAL_BATCH_SIZE} / ${SEQ_LEN} ))
-    megatron_options=" ${megatron_options} \
-        --lr-decay-iters ${LR_DECAY_ITERS} \
-        --lr-warmup-iters ${LR_WARMUP_ITERS} \
-        --train-iters ${TRAIN_ITERS} "
-else
-    warm_step=2000
-    GLOBAL_BATCH_SIZE_avg=5840
-    TRAIN_SAMPLES=$(( ${TRAIN_TOKENS} / ${SEQ_LEN} ))
-    LR_WARMUP_SAMPLES=$((${warm_step} * ${GLOBAL_BATCH_SIZE_avg} ))
-    LR_DECAY_SAMPLES=$(( ${TRAIN_TOKENS} /  ${SEQ_LEN} ))
-    megatron_options=" ${megatron_options} \
-        --lr-decay-samples ${LR_DECAY_SAMPLES} \
-        --lr-warmup-samples ${LR_WARMUP_SAMPLES} \
-        --train-samples ${TRAIN_SAMPLES} \
-        --rampup-batch-size 1920 960 54931640 "
-fi
+# ckpt_options=" \
+#         --no-load-optim \
+#         --no-load-rng \
+#         --no-save-optim \
+#         "
 
 # Turn on PyTorchProfiler in DSW
-if [ $ENV = dsw ]; then
-    export CUDA_LAUNCH_BLOCKING=1
-    prof_options=" --profile --use-pytorch-profiler --profile-step-end 11 --profile-ranks 0 1 2 3 4 5 6 7 "
-fi
+# if [ $ENV = dsw ]; then
+#     export CUDA_LAUNCH_BLOCKING=1
+#     prof_options=" --profile --use-pytorch-profiler --profile-step-end 11 --profile-ranks 0 1 2 3 4 5 6 7 "
+# fi
 
 # 开启pipeline_timer，将每个rank写到对应的文件中
 if [[ ${PROFILE:-off} = on ]]; then
     export PIPELINE_TIMER_LEVEL=3
-    export PIPELINE_TIMER_LOG_DIR=$OUTPUT_DIR/logs/${TIMESTAMP}_${NNODES}/
+    export PIPELINE_TIMER_LOG_DIR=$OUTPUT_DIR/logs/${current_time}_${NNODES}/
     mkdir -p $PIPELINE_TIMER_LOG_DIR
 fi
 
@@ -623,61 +588,14 @@ fi
 if [[ ${OFFLOAD_OPTIMIZER:-false} = true ]] ; then
     new_options=" ${new_options} --optimizer-cpu-offload --use-precision-aware-optimizer \
         --main-grads-dtype bf16 "
-        # --main-params-dtype fp16 \
 fi
 
-# Precision Aware Optimizer
-PAO_LEVEL=${PAO:-none}
-if [[ $PAO_LEVEL = none ]]; then
-    new_options=" ${new_options} \
-    "
-elif [[ $PAO_LEVEL = moments ]]; then
-    new_options=" ${new_options} \
-        --use-precision-aware-optimizer \
-        --exp-avg-dtype fp16 \
-        --exp-avg-sq-dtype fp16 \
-    "
-elif [[ $PAO_LEVEL = grads ]]; then
-    new_options=" ${new_options} \
-        --use-precision-aware-optimizer \
-        --exp-avg-dtype fp16 \
-        --exp-avg-sq-dtype fp16 \
-        --main-grads-dtype bf16 \
-    "
-elif [[ $PAO_LEVEL = weights ]]; then
-    new_options=" ${new_options} \
-        --use-precision-aware-optimizer \
-        --exp-avg-dtype fp16 \
-        --exp-avg-sq-dtype fp16 \
-        --main-grads-dtype bf16 \
-        --main-params-dtype fp16 \
-    "
-else
-    echo "PAO_LEVEL=${PAO_LEVEL} is not a valid option. Valid options include: none, moments, grads, weights"
-    exit 1
-fi
-
-# 开启12LHSD的atten计算方法,打印MFU
-if [[ ${BENCHMARK_MFU:-true} = true ]] ; then
-    new_options=" ${new_options} \
-    --num-steps-average-throughput 5 \
-    --benchmark-target-tflops 1200.00 \
-    --benchmark-check-begins 30 \
-    --benchmark-check-ends 50 \
-    --benchmark-pass-action continue"
-fi                    
-
-# 开启12LHSD的atten计算方法,打印MFU
-if [[ ${PRINT_MFU:-true} = true ]] ; then
-    new_options=" ${new_options} --use-legacy-throughput "
-fi
-
-run_cmd="torchrun $DISTRIBUTED_ARGS ${MEGATRON_PATH}/pretrain_gpt.py
+run_cmd="torchrun $DISTRIBUTED_ARGS ${MEGATRON_PATH}/finetune_gpt.py
  ${megatron_options} ${dataset_option} ${pr_options} ${load_options} ${te_options} ${activation_checkpoint_options} \
  ${do_options} ${fl_options} ${sp_options} ${moe_options} ${offload_option} ${sft_option} ${vp_options} \
  ${uneven_split_option} ${prof_options} ${seqwarm_options} ${new_options} ${fsdp_options} ${ckpt_options}"
 
 echo ${run_cmd}
-[[ $RANK = 0 ]] && mkdir -p ${OUTPUT_DIR}/logs/${NAME_DLC_TIME} && echo ${run_cmd} > ${OUTPUT_DIR}/logs/${NAME_DLC_TIME}/${MODEL_SIZE}-pp-${PP}-ep-${EP}-AC-${AC}-gbs-${GLOBAL_BATCH_SIZE}-cmd.sh
+[[ $RANK = 0 ]] && echo echo ${run_cmd} > ${OUTPUT_DIR}/logs/${TIMESTAMP}/cmd.sh
 eval ${run_cmd}
 

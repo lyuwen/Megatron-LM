@@ -615,8 +615,11 @@ def get_batch_on_this_tp_rank_sft(data_iterator, per_seq_average=False):
 
         tokens_ = data['input_ids'].long()
         labels_ = data['labels'].long()
-        tokens = tokens_[:, :-1].contiguous()
-        labels = labels_[:, 1:].contiguous()
+        # tokens = tokens_[:, :-1].contiguous() 
+        # labels = labels_[:, 1:].contiguous() 
+        tokens = tokens_.contiguous() 
+        labels = labels_.roll(-1,-1).contiguous()
+        labels[:,-1]=-100
         # core/tensor_parallel/cross_entropy.py, target_mask = (target < vocab_start_index) | (target >= vocab_end_index)
         # labels[labels == tokenizer.eos_token_id] = -100
         # NOTE: if eos == pad, we map <eos> to  - 1 - eos_id, map these tokens back
@@ -631,6 +634,11 @@ def get_batch_on_this_tp_rank_sft(data_iterator, per_seq_average=False):
             args.reset_position_ids,
             args.reset_attention_mask,
             args.eod_mask_loss)
+
+        for label_id, label in enumerate(labels):
+            for idx, item in enumerate(label):
+                if item == -100:
+                    loss_mask[label_id][idx] = 0.
 
         num_seqs = None
         if per_seq_average:
@@ -661,12 +669,13 @@ def get_batch_on_this_tp_rank_sft(data_iterator, per_seq_average=False):
             _broadcast(batch['position_ids'])
 
         elif mpu.is_pipeline_last_stage():
-            if args.use_multi_token_prediction:
-                _broadcast(batch['tokens'])
+            # if args.use_multi_token_prediction:
+            #     _broadcast(batch['tokens'])
             _broadcast(batch['labels'])
             _broadcast(batch['loss_mask'])
             _broadcast(batch['attention_mask'])
             _broadcast(batch['num_seqs'])
+            _broadcast(batch['position_ids'])
 
     else:
 
@@ -705,10 +714,10 @@ def get_batch_on_this_tp_rank_sft(data_iterator, per_seq_average=False):
             _broadcast(position_ids)
 
         elif mpu.is_pipeline_last_stage():
-            if args.use_multi_token_prediction:
-                _broadcast(tokens)
-            else:
-                tokens = None
+            # if args.use_multi_token_prediction:
+            #     _broadcast(tokens)
+            # else:
+            tokens = None
             position_ids = None
 
             _broadcast(labels)
