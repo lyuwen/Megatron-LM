@@ -29,6 +29,23 @@ try:
 except ModuleNotFoundError:
     HAVE_TE = False
 
+from transformer_engine.pytorch.tensor.float8_tensor import (
+    Float8Tensor,
+    Float8CurrentScalingQuantizer,
+)
+
+from transformer_engine.pytorch.tensor.quantized_tensor import (
+    QuantizedTensor,
+    Quantizer,
+    prepare_for_saving,
+    restore_from_saved,
+)
+
+from transformer_engine.pytorch.tensor._internal.float8_tensor_base import (
+    Float8TensorBase
+)
+
+import transformer_engine_torch as tex
 
 # Default name for the model parallel rng tracker.
 _MODEL_PARALLEL_RNG_TRACKER_NAME = 'model-parallel-rng'
@@ -386,7 +403,7 @@ class CheckpointFunction(torch.autograd.Function):
 
     # pylint: disable=missing-function-docstring
     @staticmethod
-    def forward(ctx, run_function, distribute_saved_activations, *args):
+    def forward(ctx, run_function, distribute_saved_activations, fp8_ckpt, *args):
         """Forward pass."""
         ctx.run_function = run_function
         ctx.distribute_saved_activations = distribute_saved_activations
@@ -408,7 +425,30 @@ class CheckpointFunction(torch.autograd.Function):
             )
 
         # Store everything.
-        ctx.save_for_backward(*args)
+        # add fp8-ckpt flag
+        if fp8_ckpt and len(args) > 0:
+            inp = args[0]  # this is the first argument, shall be the activations, typed torch.Tensor
+            # define a quantizer
+            quantizer = Float8CurrentScalingQuantizer(
+                fp8_dtype = tex.DType.kFloat8E4M3,
+                device = "cuda",
+                rowwise = True,
+                columnwise = False,
+                force_pow_2_scales = True,
+                amax_epsilon = 0.0,
+            )
+            # returns a internal class
+            quantizer.internal = True
+            # perform quantization, returns an Float8TensorBase item
+            inp_fp8 = quantizer(inp)  # --> Float8TensorBase
+            # prepare for saving
+            fp8_data = inp_fp8._data   # --> torch.uint8 Tensor
+            fp8_scale = inp_fp8._scale_inv  # --> torch.float32 Tensor
+            tensors_to_save = (fp8_data,fp8_scale,) + args[1:]
+            ctx.save_for_backward(*tensors_to_save)
+        else:
+            ctx.save_for_backward(*args)
+        ctx.fp8_ckpt = fp8_ckpt
 
         return outputs
 
@@ -421,7 +461,27 @@ class CheckpointFunction(torch.autograd.Function):
                 "Checkpointing is not compatible with .grad(), "
                 "please use .backward() if possible"
             )
-        inputs = ctx.saved_tensors
+        # add fp8-ckpt flag
+        if ctx.fp8_ckpt:
+            fp8_data, fp8_scale = ctx.saved_tensors[0:2]
+            # create an empty Float8TensorBase
+            # print("===============creating fp8tensor base for quant==============")
+            inp_fp8 = Float8TensorBase(
+                data = fp8_data,
+                fp8_scale_inv = fp8_scale,
+                fp8_dtype = tex.DType.kFloat8E4M3,
+                requires_grad = False,
+                data_transpose = None,
+                quantizer = None,
+            )
+
+            inp = inp_fp8.dequantize(dtype=torch.bfloat16)  # --> BF16 tensor
+
+            inputs = (inp,) + ctx.saved_tensors[2:]
+            # print("=============type of dequanztized tensor is : ", type(inputs))
+        else:
+            inputs = ctx.saved_tensors
+
         if ctx.distribute_saved_activations:
             safely_set_viewless_tensor_data(
                 inputs[0], gather_split_1d_tensor(inputs[0].data).view(ctx.input_0_shape)
@@ -456,10 +516,9 @@ class CheckpointFunction(torch.autograd.Function):
         )
         torch.autograd.backward(outputs, args)
         grads = tuple(inp.grad if isinstance(inp, torch.Tensor) else inp for inp in detached_inputs)
-        return (None, None) + grads
+        return (None, None, None) + grads
 
-
-def checkpoint(function, distribute_saved_activations, *args):
+def checkpoint(function, distribute_saved_activations, fp8_ckpt, *args):
     """Checkpoint a model or part of the model.
     This has been directly copied from torch.utils.checkpoint."""
-    return CheckpointFunction.apply(function, distribute_saved_activations, *args)
+    return CheckpointFunction.apply(function, distribute_saved_activations, fp8_ckpt, *args)

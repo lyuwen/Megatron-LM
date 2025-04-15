@@ -1014,6 +1014,9 @@ def _add_transformer_engine_args(parser):
                             'Required for CUDA graphs support.')
     group.add_argument('--inference-rng-tracker', action='store_true', default=False,
                        help='Use a random number generator configured for inference.')
+    group.add_argument('--fp8-ckpt', action='store_true', default=False,
+                       help='Whether to use FP8 format on checkpoints (for re-computation).',
+                       dest='fp8_ckpt')
     return parser
 
 def _add_inference_args(parser):

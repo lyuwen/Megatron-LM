@@ -245,6 +245,11 @@ class TransformerConfig(ModelParallelConfig):
     choices (1) 'tensorwise' uses per tensor current scaling recipe, (2) 'delayed'
     uses delayed scaling recipe, 3) 'mxfp8' for Blackwell architecture only"""
 
+    fp8_ckpt: bool = False
+    """If set, activations saved for checkpointing (for recomputations only) will be quantized to
+    FP8. Likewise, activations load from checkpoints will be dequantized to bf16 immediately after
+    loading."""
+
     fp8_margin: int = 0
     """Margin for the scaling factor computation."""
 
