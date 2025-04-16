@@ -18,12 +18,7 @@ from typing import Optional, List
 import torch
 import os
 from torch.cuda.amp import custom_bwd, custom_fwd
-from megatron.core.parallel_state import (
-    get_global_memory_buffer,
-    get_tensor_model_parallel_group,
-    get_tensor_model_parallel_rank,
-    get_tensor_model_parallel_world_size,
-)
+from megatron.core.parallel_state import get_global_memory_buffer
 
 _grad_accum_fusion_available = True
 try:
@@ -43,6 +38,7 @@ def normed_linear_with_grad_accumulation_and_async_allreduce(
     grad_output_buffer: Optional[List[torch.Tensor]] = None,
     wgrad_deferral_limit: Optional[int] = 0,
     async_grad_allreduce: Optional[bool] = None,
+    tp_group: Optional[torch.distributed.ProcessGroup] = None,
 ) -> torch.Tensor:
     """Linear layer execution with asynchronous communication and
     gradient accumulation fusion in backprop.
@@ -105,6 +101,9 @@ def normed_linear_with_grad_accumulation_and_async_allreduce(
 
         async_grad_allreduce (bool optional): Will be removed with 0.11.0.
                                             Please use allreduce_dgrad instead.
+
+        tp_group (torch.distributed.ProcessGroup required): The process group to use for tensor
+                                                   parallel operations.
     """
 
     if async_grad_allreduce is not None:
@@ -112,6 +111,8 @@ def normed_linear_with_grad_accumulation_and_async_allreduce(
             "async_grad_allreduce is deprecated, not in use anymore and will"
             " be fully removed with 0.11.0. Please use allreduce_dgrad instead."
         )
+
+    tp_group = get_tensor_model_parallel_group_if_none(tp_group)
 
     args = [
         input,
@@ -122,6 +123,7 @@ def normed_linear_with_grad_accumulation_and_async_allreduce(
         sequence_parallel,
         grad_output_buffer,
         wgrad_deferral_limit,
+        tp_group,
     ]
 
     if not linear_with_grad_accumulation_and_async_allreduce.warned:
@@ -162,6 +164,7 @@ class NormedLinearWithGradAccumulationAndAsyncCommunication(torch.autograd.Funct
         sequence_parallel,
         grad_output_buffer,
         wgrad_deferral_limit,
+        tp_group,
     ):
         """Forward."""
         #  ctx.save_for_backward(input, weight)
@@ -174,14 +177,14 @@ class NormedLinearWithGradAccumulationAndAsyncCommunication(torch.autograd.Funct
         ctx.sequence_parallel = sequence_parallel
         ctx.wgrad_deferral_limit = wgrad_deferral_limit
         ctx.grad_output_buffer = grad_output_buffer
+        ctx.tp_group = tp_group
 
         if sequence_parallel:
-            world_size = get_tensor_model_parallel_world_size()
             dim_size = list(input.size())
-            dim_size[0] = dim_size[0] * world_size
+            dim_size[0] = dim_size[0] * tp_group.size()
 
             all_gather_buffer = get_global_memory_buffer().get_tensor(dim_size, input.dtype, "mpu")
-            dist_all_gather_func(all_gather_buffer, input, group=get_tensor_model_parallel_group())
+            dist_all_gather_func(all_gather_buffer, input, group=tp_group)
             total_input = all_gather_buffer
         else:
             total_input = input
@@ -200,6 +203,8 @@ class NormedLinearWithGradAccumulationAndAsyncCommunication(torch.autograd.Funct
         use_bias = ctx.use_bias
         grad_output_buffer = ctx.grad_output_buffer
         wgrad_deferral_limit = ctx.wgrad_deferral_limit
+        handle = None
+        tp_group = ctx.tp_group
 
         wgrad_compute = True
         if grad_output_buffer is not None:
@@ -209,15 +214,14 @@ class NormedLinearWithGradAccumulationAndAsyncCommunication(torch.autograd.Funct
 
         if wgrad_compute:
             if ctx.sequence_parallel:
-                world_size = get_tensor_model_parallel_world_size()
                 dim_size = list(input.size())
-                dim_size[0] = dim_size[0] * world_size
+                dim_size[0] = dim_size[0] * tp_group.size()
 
                 all_gather_buffer = get_global_memory_buffer().get_tensor(
                     dim_size, input.dtype, "mpu"
                 )
                 handle = dist_all_gather_func(
-                    all_gather_buffer, input, group=get_tensor_model_parallel_group(), async_op=True
+                    all_gather_buffer, input, group=tp_group, async_op=True
                 )
 
                 # Here we rely on CUDA_DEVICE_MAX_CONNECTIONS=1 to ensure that the
@@ -237,9 +241,7 @@ class NormedLinearWithGradAccumulationAndAsyncCommunication(torch.autograd.Funct
 
         if ctx.allreduce_dgrad:
             # Asynchronous all-reduce
-            handle = torch.distributed.all_reduce(
-                grad_input, group=get_tensor_model_parallel_group(), async_op=True
-            )
+            handle = torch.distributed.all_reduce(grad_input, group=tp_group, async_op=True)
             # Here we rely on CUDA_DEVICE_MAX_CONNECTIONS=1 to ensure that the
             # all-reduce is scheduled before the weight gradient computation
 
@@ -251,7 +253,7 @@ class NormedLinearWithGradAccumulationAndAsyncCommunication(torch.autograd.Funct
             )
             # reduce_scatter
             handle = dist_reduce_scatter_func(
-                sub_grad_input, grad_input, group=get_tensor_model_parallel_group(), async_op=True
+                sub_grad_input, grad_input, group=tp_group, async_op=True
             )
             # Here we rely on CUDA_DEVICE_MAX_CONNECTIONS=1 to ensure that the
             # reduce scatter is scheduled before the weight gradient computation

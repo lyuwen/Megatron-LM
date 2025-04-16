@@ -67,7 +67,6 @@ from megatron.training.utils import (
     get_batch_on_this_cp_rank,
     get_batch_on_this_tp_rank,
 )
-from megatron.legacy.data.data_samplers import build_pretraining_data_loader
 from megatron.core.optimizer_param_scheduler import OptimizerParamScheduler
 from megatron.core.transformer.moe import upcycling_utils
 from megatron.core.transformer.moe.moe_utils import track_moe_metrics
@@ -2528,6 +2527,7 @@ def build_train_valid_test_data_loaders(
 
     # Construct the data pipeline
     if is_distributed or mpu.get_tensor_model_parallel_rank() == 0:
+        from megatron.legacy.data.data_samplers import build_pretraining_data_loader
 
         # Build datasets.
         train_ds, valid_ds, test_ds = build_train_valid_test_datasets(
