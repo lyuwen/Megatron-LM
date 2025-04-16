@@ -1314,7 +1314,6 @@ def train_step(forward_step_func, data_iterator,
             )
         else:
             adjust_tensor_shapes_fn = None
-
         # Forward pass.
         forward_backward_func = get_forward_backward_func()
         losses_reduced = forward_backward_func(
@@ -1323,7 +1322,6 @@ def train_step(forward_step_func, data_iterator,
             model=model,
             num_microbatches=get_num_microbatches(),
             seq_length=get_sequence_length(),
-            #seq_length=args.seq_length,
             micro_batch_size=args.micro_batch_size,
             decoder_seq_length=args.decoder_seq_length,
             forward_only=False,

@@ -381,7 +381,6 @@ class RecomputeContext:
         cls.is_recompute = True
         yield cls
         cls.is_recompute = False
-        
 def _get_all_rng_states():
     """Get all the rng states."""
     cpu_rng_state = torch.get_rng_state()

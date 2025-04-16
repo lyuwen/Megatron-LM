@@ -1585,7 +1585,6 @@ def _add_training_args(parser):
                        help="Use activation checkpointing.")
     group.add_argument("--cpu-offloading-num-layers", type=int, default=0,
                        help="The num of layers to be moved to CPU")
-    #
     group.add_argument('--no-check-for-nan-in-loss-and-grad', action='store_false',
                        help='Check for NaNs in loss and grad',
                        dest='check_for_nan_in_loss_and_grad')
@@ -2376,8 +2375,6 @@ def _add_data_args(parser):
                        help='Reset dataloader to start from 0.')
     group.add_argument('--reset-iterations', nargs="?", const=0, type=int,
                        help='Reset iterations to a given value.')
-    group.add_argument('--s3-cache-path', type=str, default=None,
-                       help='Path to cache index files when using s3 dataloader')
     group.add_argument('--object-storage-cache-path', type=str, default=None,
                        help='Path to cache index files when using s3 or msc dataloader')
     group.add_argument('--mid-level-dataset-surplus', type=float, default=0.005,

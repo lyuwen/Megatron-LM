@@ -2,21 +2,18 @@
 
 """Pretrain GPT."""
 
+import torch
 import numpy as np
 from functools import partial
 from typing import List, Optional, Tuple, Union
 
-import torch
-
 from megatron.core import mpu
 from megatron.core.datasets.blended_megatron_dataset_builder import BlendedMegatronDatasetBuilder
-from megatron.core.datasets.utils import get_blend_from_list
-from megatron.core.datasets.gpt_dataset import GPTDatasetConfig
-from megatron.core.datasets.gpt_dataset import MockGPTDataset, GPTDataset
-from megatron.core.datasets.gpt_dataset_mm import GPTDatasetMM
-from megatron.core.rerun_state_machine import get_rerun_state_machine
-import megatron.legacy.model
 from megatron.core.enums import ModelType
+from megatron.core.datasets.utils import get_blend_from_list
+from megatron.legacy.data.data_samplers import build_pretraining_data_loader
+from megatron.core.datasets.gpt_dataset import GPTDataset, GPTDatasetConfig, MockGPTDataset
+from megatron.core.datasets.gpt_dataset_mm import GPTDatasetMM
 from megatron.core.models.gpt import GPTModel
 from megatron.core.models.gpt.gpt_layer_specs import (
     get_gpt_decoder_block_spec,
@@ -24,15 +21,6 @@ from megatron.core.models.gpt.gpt_layer_specs import (
     get_gpt_layer_with_transformer_engine_spec,
     get_gpt_mtp_block_spec,
 )
-from megatron.core.transformer.transformer_block import TransformerBlockSubmodules
-# LFu
-from megatron.core.transformer.moe.utils import (
-    get_moe_model_size,
-    get_moe_activated_size,
-    get_embedding_size,
-    get_moe_FLOPs,
-)
-from megatron.training.training import num_floating_point_operations
 from megatron.core.models.gpt.heterogeneous.heterogeneous_layer_specs import (
     get_gpt_heterogeneous_layer_spec,
 )
@@ -47,6 +35,14 @@ from megatron.training.utils import (
     get_blend_and_blend_per_split,
 )
 from megatron.training.yaml_arguments import core_transformer_config_from_yaml
+# LFu
+from megatron.core.transformer.moe.utils import (
+    get_moe_model_size,
+    get_moe_activated_size,
+    get_embedding_size,
+    get_moe_FLOPs,
+)
+from megatron.training.training import num_floating_point_operations
 
 #import megatron.legacy.model  # isort: skip
 # NOTE: Loading `megatron.legacy.model` earlier fails due to circular import
@@ -154,7 +150,6 @@ def model_provider(pre_process=True, post_process=True) -> Union[GPTModel, megat
             rope_scaling=args.use_rope_scaling,
             mtp_block_spec=mtp_block_spec,
         )
-        
         if args.num_experts is not None:
             print_rank_0("-" * 18 + " Model  Summary " + "-" * 18)
             print_rank_0(f"Number of trainable parameters in the model (exclude embedding): {get_moe_model_size(args):,d}")
@@ -316,14 +311,10 @@ def core_gpt_dataset_config_from_args(args):
         reset_attention_mask=args.reset_attention_mask,
         eod_mask_loss=args.eod_mask_loss,
         create_attention_mask=args.create_attention_mask_in_dataloader,
-#<<<<<<< HEAD
-#        s3_cache_path = args.s3_cache_path,
-#        use_distributed_builder = True,
-#        use_fast_blend_indices = True,
-#=======
         object_storage_cache_path=args.object_storage_cache_path,
         mid_level_dataset_surplus=args.mid_level_dataset_surplus,
-#>>>>>>> upstream/main
+        use_distributed_builder = True,
+        use_fast_blend_indices = True,
     )
 
 
@@ -441,7 +432,10 @@ def add_extra_args(parser):
                        help='Use the legacy method for calculating throughput.'
                        )
 
-    return parser
+    if has_nvidia_modelopt:
+      return add_modelopt_args(parser)
+    else:
+      return parser
 
 
 def build_extra_valid_data_loaders(
@@ -530,12 +524,7 @@ if __name__ == "__main__":
         ModelType.encoder_or_decoder,
         forward_step,
         args_defaults={'tokenizer_type': 'GPT2BPETokenizer'},
-#<<<<<<< HEAD
         extra_args_provider=add_extra_args,
         extra_valid_data_iterators_builder=partial(build_extra_valid_data_iterators, extra_valid_datasets_provider=extra_valid_datasets_provider),
         num_floating_point_operations=wrap_get_moe_FLOPs,
         )
-#=======
-#        extra_args_provider=add_modelopt_args if has_nvidia_modelopt else None,
-#    )
-#>>>>>>> upstream/main

@@ -1,8 +1,8 @@
 # Copyright (c) 2024, NVIDIA CORPORATION. All rights reserved.
 
 import math
-import threading
 from typing import List, Optional, Union
+import threading
 
 import torch
 

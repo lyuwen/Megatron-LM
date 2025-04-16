@@ -95,8 +95,6 @@ class BlendedDataset(torch.utils.data.Dataset):
             self.unique_description.encode("utf-8")
         ).hexdigest()
 
-        self.built_anew_on_cache_miss = False
-
         self.async_shuffle = async_shuffle or None
         self.dataset_index, self.dataset_sample_index, self.dataset_shuffle_index = self._build_indices()
 
@@ -191,13 +189,6 @@ class BlendedDataset(torch.utils.data.Dataset):
                     dataset_index, dataset_sample_index, self.weights, len(self.datasets)
                 )
 
-            if self.async_shuffle is None:
-                dataset_shuffle_index = _build_shuffle_index(size, numpy_random_state, queue)
-            else:
-                self.async_shuffle.join()
-                dataset_shuffle_index = self.async_shuffle.get_result()
-                self.async_shuffle.shutdown()
-                
             dataset_indices, dataset_sizes = numpy.unique(dataset_index, return_counts=True)
             for i, (_index, _size) in enumerate(zip(dataset_indices, dataset_sizes)):
                 if len(self.datasets[_index]) < _size:
@@ -210,6 +201,13 @@ class BlendedDataset(torch.utils.data.Dataset):
                         f"its current value ({self.config.mid_level_dataset_surplus}) to ensure a "
                         f"sufficient mid-level dataset sample margin from which to draw."
                     )
+
+            if self.async_shuffle is None:
+                dataset_shuffle_index = _build_shuffle_index(size, numpy_random_state, queue)
+            else:
+                self.async_shuffle.join()
+                dataset_shuffle_index = self.async_shuffle.get_result()
+                self.async_shuffle.shutdown()
 
             if path_to_cache:
                 os.makedirs(path_to_cache, exist_ok=True)
