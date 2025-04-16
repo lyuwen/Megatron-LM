@@ -296,7 +296,7 @@ class TopKRouter(Router):
             moe_aux_loss_coeff=moe_aux_loss_coeff, sequence_partition_group=sequence_partition_group
         )
         # LFu: disable loss aggregationg during the recompute forward pass
-        if not RecomputeContext.is_recompute:
+        if self.training and torch.is_grad_enabled():
             save_to_aux_losses_tracker(
                 "load_balancing_loss",
                 aux_loss / moe_aux_loss_coeff,
@@ -318,9 +318,9 @@ class TopKRouter(Router):
                 seq_length=seq_length,
                 topk=self.topk,
                 expert_model_parallel_size=self.config.expert_model_parallel_size,
-                moe_router_limited_devices=self.config.moe_router_topk_limited_devices
+                moe_router_limited_devices=self.config.moe_router_group_topk,
             )
-            if not RecomputeContext.is_recompute:
+            if self.training and torch.is_grad_enabled():
                 save_to_aux_losses_tracker(
                     "device_balancing_loss",
                     device_loss,
@@ -465,7 +465,7 @@ class TopKRouter(Router):
         #
 
         scores, routing_map = self.routing(logits)
-        if self.training and self.config.show_moe_experts_tokens and not RecomputeContext.is_recompute:
+        if self.training and self.config.show_moe_experts_tokens and not torch.is_grad_enabled():
             tokens_per_expert = routing_map.sum(dim=0)
             save_to_tokens_experts_info_tracker("tokens each experts", tokens_per_expert, self.layer_number,
                                                 self.config.num_layers, self.num_experts, self.config.moe_layer_pattern,
