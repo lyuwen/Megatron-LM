@@ -88,6 +88,18 @@ def parse_args(extra_args_provider=None, ignore_unknown_args=False):
     args.rank = int(os.getenv('RANK', '0'))
     args.world_size = int(os.getenv("WORLD_SIZE", '1'))
 
+    if (args.v3_fp8_linear or args.v3_fp8_grouped_linear):
+        try:
+            import transformer_engine
+        except ImportError:
+            raise ImportError("The 'transformer_engine' package is not installed.")
+        if args.v3_fp8_linear:
+            from transformer_engine.pytorch.module import linear_open_block_fp8
+            linear_open_block_fp8(True,args.v3_fp8_linear_save_mem)
+        if args.v3_fp8_grouped_linear:
+            from transformer_engine.pytorch.module import groupedlinear_open_block_fp8
+            groupedlinear_open_block_fp8(True,args.v3_fp8_grouped_linear_save_mem)
+
     return args
 
 
@@ -1014,6 +1026,15 @@ def _add_transformer_engine_args(parser):
                             'Required for CUDA graphs support.')
     group.add_argument('--inference-rng-tracker', action='store_true', default=False,
                        help='Use a random number generator configured for inference.')
+    group.add_argument('--v3-fp8-linear', action='store_true', default=False,
+                       help="Using fp8 in TE Linear")
+    group.add_argument('--v3-fp8-grouped-linear', action='store_true', default=False,
+                       help="Using fp8 in TE Grouped Linear")
+    group.add_argument('--v3-fp8-linear-save-mem', action='store_true', default=False,
+                       help="Save gpu memory when using fp8 in TE Linear")
+    group.add_argument('--v3-fp8-grouped-linear-save-mem', action='store_true', default=False,
+                       help="Save gpu memory when using fp8 in TE Grouped Linear")   
+
     return parser
 
 def _add_inference_args(parser):
