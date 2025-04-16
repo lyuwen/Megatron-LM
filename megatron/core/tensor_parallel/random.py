@@ -493,18 +493,7 @@ class FP8CheckpointFunction(torch.autograd.Function):
         # Copy the rng states.
         ctx.rng_states = _get_all_rng_states()
 
-        with torch.no_grad():
-            outputs = run_function(*args)
-
-        # Divide hidden states across model parallel group and only keep
-        # the chunk corresponding to the current rank.
-        if distribute_saved_activations:
-            ctx.input_0_shape = args[0].data.shape
-            safely_set_viewless_tensor_data(
-                args[0], split_tensor_into_1d_equal_chunks(args[0].data, new_buffer=True)
-            )
-
-        # Save activation as FP8
+        # Transform activation as FP8
         with torch.no_grad():
             quantizer = Float8CurrentScalingQuantizer(
                 fp8_dtype=tex.DType.kFloat8E4M3,
@@ -516,10 +505,21 @@ class FP8CheckpointFunction(torch.autograd.Function):
             )
             ctx.fp8_tensor = quantizer(args[0])
             ctx.fp8_tensor.raw_dtype = args[0].dtype
-            args = args[1:]
+            inp_deq = ctx.fp8_tensor.dequantize(dtype=ctx.fp8_tensor.dtype)
+
+        with torch.no_grad():
+            outputs = run_function(inp_deq, *args[1:])
+
+        # Divide hidden states across model parallel group and only keep
+        # the chunk corresponding to the current rank.
+        if distribute_saved_activations:
+            ctx.input_0_shape = args[0].data.shape
+            safely_set_viewless_tensor_data(
+                args[0], split_tensor_into_1d_equal_chunks(args[0].data, new_buffer=True)
+            )
 
         # Store everything.
-        ctx.save_for_backward(*args)
+        ctx.save_for_backward(*args[1:])
 
         return outputs
 
