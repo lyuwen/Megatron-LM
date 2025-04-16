@@ -1,5 +1,6 @@
 # Copyright (c) 2023, NVIDIA CORPORATION. All rights reserved.
 
+import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Optional, Union
@@ -187,18 +188,23 @@ class MoELayer(BaseMoELayer):
             return output, mlp_bias
 
         def custom_forward_perm_checkpoint(hidden_states):
-            probs, routing_map = tensor_parallel.checkpoint(self.router, False, hidden_states)
+            probs, routing_map = self.router(hidden_states)
             (dispatched_input, tokens_per_expert) = self.token_dispatcher.token_permutation(
                 hidden_states, probs, routing_map
             )
-            expert_output, mlp_bias = tensor_parallel.checkpoint(self.experts, False, dispatched_input, tokens_per_expert)
+            if os.getenv('FP8_CHECKPOINT', '0') == '1':
+                expert_output, mlp_bias = tensor_parallel.fp8_checkpoint(self.experts, False, dispatched_input, tokens_per_expert)
+            else:
+                expert_output, mlp_bias = tensor_parallel.checkpoint(self.experts, False, dispatched_input, tokens_per_expert)
             output, mlp_bias = self.token_dispatcher.token_unpermutation(expert_output, mlp_bias)
             if self.use_shared_expert and not self.shared_expert_overlap:
                 # if shared_expert_overlap is True, the expert calculation happens in
                 # the token_dispatcher to overlap communications and computations
-                output = output + tensor_parallel.checkpoint(self.shared_experts, False, hidden_states)
+                if os.getenv('FP8_CHECKPOINT', '0') == '1':
+                    output = output + tensor_parallel.fp8_checkpoint(self.shared_experts, False, hidden_states)
+                else:
+                    output = output + tensor_parallel.checkpoint(self.shared_experts, False, hidden_states)
             return output, mlp_bias
-        
 
         if self.moe_layer_recompute:
             if self.moe_perm_checkpoint == 'full' or (self.moe_perm_checkpoint == 'half' and (self.layer_number > 24 or self.layer_number % 2 == 0)):
