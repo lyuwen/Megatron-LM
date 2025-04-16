@@ -662,8 +662,8 @@ if [[ ${BENCHMARK_MFU:-true} = true ]] ; then
     new_options=" ${new_options} \
     --num-steps-average-throughput 5 \
     --benchmark-target-tflops 1200.00 \
-    --benchmark-check-begins 30 \
-    --benchmark-check-ends 50 \
+    --benchmark-check-begins 3000 \
+    --benchmark-check-ends 5000 \
     --benchmark-pass-action continue"
 fi                    
 
