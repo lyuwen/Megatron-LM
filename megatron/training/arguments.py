@@ -2564,6 +2564,8 @@ def _add_moe_args(parser):
     group.add_argument('--moe-use-upcycling', action='store_true',
                        help='Load a checkpoint of a dense model, convert it into an MoE model, and save the converted model to the path specified by --save. '
                        'Upcycling is implemented on the top of distributed checkpointing, so it supports parallel modes different from the dense model.')
+    group.add_argument('--moe-permute-fusion', action='store_true',
+                       help='Fuse token rearrangement ops during token dispatching.')
     # Router arguments
     group.add_argument('--moe-router-load-balancing-type', type=str,
                        choices=['aux_loss', 'seq_aux_loss', 'sinkhorn', 'none'],
@@ -2635,19 +2637,10 @@ def _add_moe_args(parser):
                        help='Pads the input for each expert to match the expert capacity length, effective only after the --moe-expert-capacity-factor is set.')
     group.add_argument('--moe-token-drop-policy', type=str, default='probs', choices=['probs', 'position'],
                        help='The policy to drop tokens. Can be either "probs" or "position". If "probs", the tokens with the lowest probabilities will be dropped. If "position", tokens at the end of each batch will be dropped.')
-    group.add_argument('--moe-layer-recompute', action='store_true',
-                       help='Enable checkpointing for moe_layer, should be used when memory is not sufficient.')
     group.add_argument('--moe-perm-checkpoint', type=str, default='none', choices=['full', 'half', 'none'],
                        help='Use checkpointing for permutation of MoE layer. Options are "full", "half", "none".')
     group.add_argument('--recompute-beside-moe', action='store_true',
                        help='Recompute the operations beside the MoE layer.')
-    group.add_argument('--moe-extended-tp', action='store_true',
-                       help='Deprecated. Use --expert-tensor-parallel-size instead.')
-    group.add_argument('--moe-use-upcycling', action='store_true',
-                       help='Load a checkpoint of a dense model, convert it into an MoE model, and save the converted model to the path specified by --save. '
-                       'Upcycling is implemented on the top of distributed checkpointing, so it supports parallel modes different from the dense model.')
-    group.add_argument('--moe-permute-fusion', action='store_true',
-                       help='Fuse token rearrangement ops during token dispatching.')
     #
     group.add_argument('--moe-warmup-router', type=int, default=-1,
                        help='Number of steps to apply router warmup randomness.')
