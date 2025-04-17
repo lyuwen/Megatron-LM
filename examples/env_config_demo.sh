@@ -85,6 +85,8 @@ export TP_PP_DP_MAP=off
 # ROUTER_BIAS=false
 # 动态bs 默认关闭
 # ENABLE_RAMPUP_BS=false 
+# SCALE_FACTOR默认40
+export SCALE_FACTOR=1
 
 
 ################## 相关路径和数据 #############
@@ -92,6 +94,8 @@ export TP_PP_DP_MAP=off
 export DATASET_FILE=
 # VALID_DATASET_FILE 文件路径列表
 export VALID_DATASET_FILE=
+# 数据集cache路径
+# export DATASET_CACHE_PATH=
 # MEGATRON_PATH：ZJ-Megatron-LM目录路径
 export MEGATRON_PATH=
 # TOKENIZER_PATH TOKENIZER路径
@@ -100,8 +104,10 @@ export TOKENIZER_PATH=
 export OUTPUT_DIR=
 # PRETRAIN_CHECKPOINT_PATH 断点续训时需配置checkpoint路径
 # export PRETRAIN_CHECKPOINT_PATH=
-# 宁波集群：同任务可视化中的日志存储路径，便于开启查看Tensorboard
+# 宁波集群：同任务可视化中的日志存储路径，便于开启查看Tensorboard,如不配置将页面任务可视化中的日志存储路径在OUTPUT_DIR后加 /tensorboard
 # TENSORBOARD_DIR=
+# 宁波集群：不加载MMAP文件
+# export NO_MMAP_BIN_FILES=true
 
 ################# benchmark or profiling ##################
 # PRINT_MFU默认值：true 打印MFU计算
