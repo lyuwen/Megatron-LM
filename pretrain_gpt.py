@@ -44,7 +44,7 @@ from megatron.core.transformer.moe.utils import (
 )
 from megatron.training.training import num_floating_point_operations
 
-#import megatron.legacy.model  # isort: skip
+import megatron.legacy.model  # isort: skip
 # NOTE: Loading `megatron.legacy.model` earlier fails due to circular import
 
 try:
