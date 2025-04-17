@@ -488,10 +488,11 @@ if [ $PRETRAIN_CHECKPOINT_PATH != none ]; then
             --load $PRETRAIN_CHECKPOINT_PATH "
 fi
 
+NUM_WORKERS=${NUM_WORKERS:-1}
 dataset_option=" \
     --data-path ${DATASET_PATH} \
     --data-cache-path ${DATASET_CACHE_PATH} \
-    --num-workers 1 \
+    --num-workers ${NUM_WORKERS} \
     --distributed-timeout-minutes 60 \
     --split 100,0,0"
 

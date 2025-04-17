@@ -90,6 +90,8 @@ export SCALE_FACTOR=1
 
 
 ################## 相关路径和数据 #############
+# num_workers默认1
+export NUM_WORKERS=
 # DATASET_FILE数据集路径
 export DATASET_FILE=
 # VALID_DATASET_FILE 文件路径列表
@@ -127,5 +129,4 @@ export WARMUP_ROUTER=5
 export BENCHMARK_MFU=false
 
 bash examples/pretrain_021_dsv3.sh
-
 
