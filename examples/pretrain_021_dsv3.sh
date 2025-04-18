@@ -1,4 +1,5 @@
-set -ex
+set -eo pipefail
+set -x  # 如果你要调试的话
 # export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 ENV=${ENV:-dsw}
 
@@ -56,20 +57,6 @@ elif [ ${CKPT_FORMAT} = torch ] ; then
     ckpt_options=" --ckpt-format torch "
 fi
 
-PRETRAIN_CHECKPOINT_PATH_DEFAULT=${OUTPUT_DIR}/checkpoints
-PRETRAIN_CHECKPOINT_PATH=${PRETRAIN_CHECKPOINT_PATH:-PRETRAIN_CHECKPOINT_PATH_DEFAULT}
-
-# DEBUG model without saving optim
-if [[ ${DEBUG_PRETRAIN_CHECKPOINT_PATH:-none} != none ]]; then
-    PRETRAIN_CHECKPOINT_PATH=$DEBUG_PRETRAIN_CHECKPOINT_PATH
-    ckpt_options=" ${ckpt_options} \
-        --auto-detect-ckpt-format \
-        --no-load-optim \
-        --no-load-rng \
-        --no-save-optim \
-        --no-save-rng \
-        "
-fi
 
 # training configuraitons
 TRAIN_TOKENS=${TRAIN_TOKENS:-200000000000}
@@ -79,7 +66,7 @@ TRAIN_ITERS=${TRAIN_ITERS:-${TOTAL_TRAIN_ITERS}}
 
 OUTPUT_BASEPATH=${OUTPUT_DIR}
 ### OTHERS ###
-if [[ ${DEBUG} = on ]] ; then
+if [[ ${DEBUG} = on ]]; then
     export NVTE_DEBUG=1
     export NVTE_DEBUG_LEVEL=2
     export CUDNN_LOGERR_DBG=1
@@ -245,9 +232,6 @@ moe_options=" \
     --qk-pos-emb-head-dim ${QK_ROPE_HEAD_DIM} \
     --v-head-dim ${V_HEAD_DIM} \
     --moe-grouped-gemm"
-    # --moe-router-enable-expert-bias \ 需要关闭
-    # --moe-router-bias-update-rate 1e-3" 关闭
-    # --moe-router-load-balancing-type seq_aux_loss \ aux_loss
 
 elif [ $MODEL_SIZE = 600B ]; then
 
@@ -294,10 +278,10 @@ exit 1
 
 fi
 
-LOAD_BALANCE_TYPE=${LOAD_BALANCE_TYPE:-seq_aux_loss}
-if [ ${LOAD_BALANCE_TYPE} = seq_aux_loss ] ; then
+LOAD_BALANCE_TYPE=${LOAD_BALANCE_TYPE:-aux_loss}
+if [ ${LOAD_BALANCE_TYPE} = aux_loss ] ; then
     moe_options=" ${moe_options} --moe-router-load-balancing-type ${LOAD_BALANCE_TYPE} "
-elif [ ${LOAD_BALANCE_TYPE} = aux_loss ] ; then
+elif [ ${LOAD_BALANCE_TYPE} = seq_aux_loss ] ; then
     moe_options=" ${moe_options}  --moe-router-load-balancing-type ${LOAD_BALANCE_TYPE} "
 else
 echo "Unsupported moe-router-load-balancing-type: ${LOAD_BALANCE_TYPE}"
@@ -305,7 +289,7 @@ exit 1
 fi
 
 MOE_ROUTER_GROUPS=${MOE_ROUTER_GROUPS:-0} # 8
-MOE_ROUTER_GROUPS_TOPK=${MOE_ROUTER_GROUPS_TOPK:-0} # 4
+MOE_ROUTER_GROUPS_TOPK=${MOE_ROUTER_GROUPS_TOPK:-0} # 3
 
 if [ $MOE_ROUTER_GROUPS -gt 0 ] && [ $MOE_ROUTER_GROUPS_TOPK -gt 0 ]; then
     moe_options=" ${moe_options}  --moe-router-num-groups ${MOE_ROUTER_GROUPS} \
@@ -383,13 +367,16 @@ if [ $AC = full ]; then
 		    --recompute-granularity full"
 elif [ $AC = sel ]; then
     activation_checkpoint_options=" \
-        --recompute-activations"
+        --recompute-granularity selective \
+        --recompute-modules ${RECOMPUTE_MODULES:-"core_attn moe_act layernorm mla_up_proj mlp moe"} \
+    "
+    if [[ ${MOE_PERMUTE_CHECKPOINT:-none} != none ]]; then
+        activation_checkpoint_options=" ${activation_checkpoint_options} \
+             --moe-perm-checkpoint ${MOE_PERMUTE_CHECKPOINT} 
+        "
+    fi
 elif [ $AC = none ]; then
     activation_checkpoint_options=" \
-    "
-elif [ $AC = moe ]; then
-    activation_checkpoint_options=" \
-        --moe-layer-recompute \
     "
 elif [ $AC = offload ]; then
     activation_checkpoint_options=" \
@@ -403,13 +390,6 @@ elif [ $AC = offload ]; then
         echo "Disable --overlap-grad-reduce and --overlap-param-gather when cpu offloading is on..."
         comm_overlap_option=""
     fi
-elif [ $AC = custom ]; then
-    #TODO: fill in custom AC options
-    activation_checkpoint_options=" \
-        --recompute-beside-moe \
-        --moe-layer-recompute \
-        --moe-perm-checkpoint ${MOE_PERMUTE_CHECKPOINT:-half} \
-    "
 fi
 
 if [ $PR = fp16 ]; then
@@ -424,6 +404,8 @@ elif [ $PR = fp8 ]; then
     pr_options=" \
         --bf16 \
         --fp8-format hybrid \
+        --fp8-recipe delayed \
+        --fp8-param-gather \
         --fp8-amax-compute-algo max \
         --fp8-amax-history-len 1024"
 fi
@@ -461,29 +443,46 @@ if [[ ${MP_PPN_LAYERS:-0} -gt 0 ]]; then
     "
 fi
 
+LR_DECAY_ITERS=$(( ${TRAIN_TOKENS} /  ${GLOBAL_BATCH_SIZE} / ${SEQ_LEN} ))
+PREFIX="pretrain-zjmcore-dsv3-${MODEL_SIZE}-bs-${BATCH_SIZE}-gbs-${GLOBAL_BATCH_SIZE}"
+NAME="${PREFIX}-pr-${PR}-pp-${PP}-ep-${EP}-ac-${AC}"
+TIMESTAMP=$(date "+%Y%m%d-%H%M")
+NAME_DLC_TIME="${PREFIX}-pr-${PR}-pp-${PP}-ep-${EP}-ac-${AC}_${DLC_JOB_ID:-${TIMESTAMP}}"
+
+PRETRAIN_CHECKPOINT_PATH_DEFAULT="${OUTPUT_BASEPATH}/checkpoints/${NAME}"
+PRETRAIN_CHECKPOINT_PATH=${PRETRAIN_CHECKPOINT_PATH:-$PRETRAIN_CHECKPOINT_PATH_DEFAULT}
+
+SAVED_PRETRAIN_CHECKPOINT_PATH="${OUTPUT_BASEPATH}/checkpoints/${NAME}"
+mkdir -p ${SAVED_PRETRAIN_CHECKPOINT_PATH}
+# find -L ${PRETRAIN_CHECKPOINT_PATH} -maxdepth 1 -type f -name "*.json" -print0 | xargs -0 cp -t ${SAVED_PRETRAIN_CHECKPOINT_PATH}
+#find -L ${PRETRAIN_CHECKPOINT_PATH} -maxdepth 1 -type f -name "merges.txt" -print0 | xargs -0 cp -t ${SAVED_PRETRAIN_CHECKPOINT_PATH}
+
+# DEBUG model without saving optim
+if [[ ${DEBUG_PRETRAIN_CHECKPOINT_PATH:-none} != none ]]; then
+    PRETRAIN_CHECKPOINT_PATH=$DEBUG_PRETRAIN_CHECKPOINT_PATH
+    ckpt_options=" ${ckpt_options} \
+        --auto-detect-ckpt-format \
+        --no-load-optim \
+        --no-load-rng \
+        --no-save-optim \
+        --no-save-rng \
+        "
+fi
+
 if [ $PRETRAIN_CHECKPOINT_PATH != none ]; then
     load_options=" \
             --load $PRETRAIN_CHECKPOINT_PATH "
 fi
 
-# TRAIN_ITERS=$(( ${TRAIN_TOKENS} / ${GLOBAL_BATCH_SIZE} / ${SEQ_LEN} ))
-LR_WARMUP_ITERS=2000
-# LR_WARMUP_ITERS=$(( ${WARMUP_TOKENS}  / ${GLOBAL_BATCH_SIZE} / ${SEQ_LEN} ))
-LR_DECAY_ITERS=$(( ${TRAIN_TOKENS} /  ${GLOBAL_BATCH_SIZE} / ${SEQ_LEN} ))
-PREFIX="pretrain-zjmcore-dsv3-${MODEL_SIZE}-lr-${LR}-minlr-${MIN_LR}-bs-${BATCH_SIZE}-gbs-${GLOBAL_BATCH_SIZE}-seqlen-${SEQ_LEN}"
-
 dataset_option=" \
     --data-path ${DATASET_PATH} \
     --data-cache-path ${OUTPUT_DIR}/data_cache \
     --num-workers 4 \
-    --split 989,10,1"
-
-TIMESTAMP=$(date "+%Y%m%d-%H%M")
-NAME="${PREFIX}-pr-${PR}-pp-${PP}-ep-${EP}-ac-${AC}_${DLC_JOB_ID:-${TIMESTAMP}}"
+    --split 100,0,0"
 
 DISTRIBUTED_ARGS="--nproc_per_node $GPUS_PER_NODE --nnodes $NNODES \
     --node_rank $NODE_RANK --master_addr $MASTER_ADDR --master_port $MASTER_PORT \
-    --tee 3 --log_dir ${OUTPUT_DIR}/logs/${NAME}"
+    --tee 3 --log_dir ${OUTPUT_DIR}/logs/${NAME_DLC_TIME}"
 
 ##### Prepare logdirs #######
 
@@ -492,13 +491,10 @@ mkdir -p "${OUTPUT_BASEPATH}/data_cache/"
 mkdir -p "${OUTPUT_BASEPATH}/tensorboard/"
 mkdir -p "${OUTPUT_BASEPATH}/checkpoints/"
 mkdir -p "${OUTPUT_BASEPATH}/logs/"
-TENSORBOARD_DIR="${OUTPUT_BASEPATH}/tensorboard/${NAME}"
+DEFAULT_TENSORBOARD_DIR="${OUTPUT_BASEPATH}/tensorboard/${NAME_DLC_TIME}"
+# 宁波集群：同任务可视化中的日志存储路径，便于开启查看Tensorboard
+TENSORBOARD_DIR=${TENSORBOARD_DIR:-${DEFAULT_TENSORBOARD_DIR}}
 mkdir -p ${TENSORBOARD_DIR}
-SAVED_PRETRAIN_CHECKPOINT_PATH="${OUTPUT_BASEPATH}/checkpoints/${NAME}"
-
-mkdir -p ${SAVED_PRETRAIN_CHECKPOINT_PATH}
-# find -L ${PRETRAIN_CHECKPOINT_PATH} -maxdepth 1 -type f -name "*.json" -print0 | xargs -0 cp -t ${SAVED_PRETRAIN_CHECKPOINT_PATH}
-#find -L ${PRETRAIN_CHECKPOINT_PATH} -maxdepth 1 -type f -name "merges.txt" -print0 | xargs -0 cp -t ${SAVED_PRETRAIN_CHECKPOINT_PATH}
 
 megatron_options="  \
         --save ${SAVED_PRETRAIN_CHECKPOINT_PATH} \
@@ -512,9 +508,6 @@ megatron_options="  \
         --init-method-std ${INIT_METHOD_STD} \
         --attention-dropout 0.0 \
         --hidden-dropout 0.0 \
-        --lr-decay-iters ${LR_DECAY_ITERS} \
-        --lr-warmup-iters ${LR_WARMUP_ITERS} \
-        --train-iters ${TRAIN_ITERS} \
         --micro-batch-size ${BATCH_SIZE} \
         --global-batch-size ${GLOBAL_BATCH_SIZE} \
         --num-layers ${NUM_LAYERS} \
@@ -562,6 +555,28 @@ megatron_options="  \
 #         --max-padding-length ${PAD_LEN} \
 #         --extra-vocab-size ${EXTRA_VOCAB_SIZE} \
 #         "
+
+#动态bs
+ENABLE_RAMPUP_BS=${ENABLE_RAMPUP_BS:-false}
+if  [[ $ENABLE_RAMPUP_BS = false ]]; then
+    LR_WARMUP_ITERS=2000
+    LR_DECAY_ITERS=$(( ${TRAIN_TOKENS} /  ${GLOBAL_BATCH_SIZE} / ${SEQ_LEN} ))
+    megatron_options=" ${megatron_options} \
+        --lr-decay-iters ${LR_DECAY_ITERS} \
+        --lr-warmup-iters ${LR_WARMUP_ITERS} \
+        --train-iters ${TRAIN_ITERS} "
+else
+    warm_step=2000
+    GLOBAL_BATCH_SIZE_avg=5840
+    TRAIN_SAMPLES=$(( ${TRAIN_TOKENS} / ${SEQ_LEN} ))
+    LR_WARMUP_SAMPLES=$((${warm_step} * ${GLOBAL_BATCH_SIZE_avg} ))
+    LR_DECAY_SAMPLES=$(( ${TRAIN_TOKENS} /  ${SEQ_LEN} ))
+    megatron_options=" ${megatron_options} \
+        --lr-decay-samples ${LR_DECAY_SAMPLES} \
+        --lr-warmup-samples ${LR_WARMUP_SAMPLES} \
+        --train-samples ${TRAIN_SAMPLES} \
+        --rampup-batch-size 1920 960 54931640 "
+fi
 
 # Turn on PyTorchProfiler in DSW
 if [ $ENV = dsw ]; then
@@ -645,8 +660,8 @@ if [[ ${BENCHMARK_MFU:-true} = true ]] ; then
     new_options=" ${new_options} \
     --num-steps-average-throughput 5 \
     --benchmark-target-tflops 1200.00 \
-    --benchmark-check-begins 30 \
-    --benchmark-check-ends 50 \
+    --benchmark-check-begins 3000 \
+    --benchmark-check-ends 5000 \
     --benchmark-pass-action continue"
 fi                    
 
@@ -655,11 +670,16 @@ if [[ ${PRINT_MFU:-true} = true ]] ; then
     new_options=" ${new_options} --use-legacy-throughput "
 fi
 
+if [[ ${CHECK_NAN:-true} = false ]]; then
+    new_options=" ${new_options} --no-check-for-nan-in-loss-and-grad"
+fi
+
 run_cmd="torchrun $DISTRIBUTED_ARGS ${MEGATRON_PATH}/pretrain_gpt.py
  ${megatron_options} ${dataset_option} ${pr_options} ${load_options} ${te_options} ${activation_checkpoint_options} \
  ${do_options} ${fl_options} ${sp_options} ${moe_options} ${offload_option} ${sft_option} ${vp_options} \
  ${uneven_split_option} ${prof_options} ${seqwarm_options} ${new_options} ${fsdp_options} ${ckpt_options}"
 
 echo ${run_cmd}
-[[ $RANK = 0 ]] && mkdir -p ${OUTPUT_DIR}/logs/${NAME} && echo ${run_cmd} > ${OUTPUT_DIR}/logs/${NAME}/${MODEL_SIZE}-pp-${PP}-ep-${EP}-AC-${AC}-gbs-${GLOBAL_BATCH_SIZE}-cmd.sh
+[[ $RANK = 0 ]] && mkdir -p ${OUTPUT_DIR}/logs/${NAME_DLC_TIME} && echo ${run_cmd} > ${OUTPUT_DIR}/logs/${NAME_DLC_TIME}/${MODEL_SIZE}-pp-${PP}-ep-${EP}-AC-${AC}-gbs-${GLOBAL_BATCH_SIZE}-cmd.sh
 eval ${run_cmd}
+

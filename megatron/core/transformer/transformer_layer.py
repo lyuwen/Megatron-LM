@@ -3,7 +3,7 @@
 import warnings
 from abc import ABC
 from dataclasses import dataclass, field
-from typing import Dict, Optional, Union
+from typing import Any, Dict, Optional, Union
 
 import torch
 import torch.distributed
@@ -12,8 +12,8 @@ from torch import Tensor
 from megatron.core import parallel_state, tensor_parallel
 from megatron.core.dist_checkpointing.mapping import ShardedStateDict
 from megatron.core.dist_checkpointing.utils import apply_prefix_mapping
-from megatron.core.inference.contexts import BaseInferenceContext
 from megatron.core.packed_seq_params import PackedSeqParams
+from megatron.core.process_groups_config import ModelCommProcessGroups
 from megatron.core.transformer.cuda_graphs import CudaGraphManager
 from megatron.core.transformer.identity_op import IdentityFuncOp, IdentityOp
 from megatron.core.transformer.module import MegatronModule
@@ -247,7 +247,8 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
         config: TransformerConfig,
         submodules: TransformerLayerSubmodules,
         layer_number: int = 1,
-        hidden_dropout: float = None,
+        hidden_dropout: Optional[float] = None,
+        model_comm_pgs: ModelCommProcessGroups = None,
     ):
         super().__init__(config=config)
 
@@ -257,6 +258,11 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
                 config.enable_cuda_graph and config.external_cuda_graph
             ), "Cudagraphs and external cudagraphs cannot be enabled at the same time"
             if config.enable_cuda_graph:
+                if not self.training:
+                    # Cudagraphs for inference are only enabled with the flash decoding kernel
+                    assert (
+                        self.config.flash_decode
+                    ), "--flash-decode is required to use CUDA graphs during inference"
                 self.cudagraph_manager = CudaGraphManager(config)
             else:
                 # List to store CUDA graphs. A list of `N` CUDA graphs for this layer where N is
@@ -272,6 +278,9 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
                 # all-gather overlap with forward compute.
                 self.cuda_graph_manual_hooks = []
                 self.current_microbatch = -1
+
+        if model_comm_pgs is None:
+            model_comm_pgs = ModelCommProcessGroups.use_mpu_process_groups()
 
         self.submodules_config = submodules
         self.layer_number = layer_number + get_transformer_layer_offset(self.config)
@@ -292,6 +301,8 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
                 attention_optional_kwargs["cp_comm_type"] = config.cp_comm_type[self.layer_number]
             else:
                 attention_optional_kwargs["cp_comm_type"] = config.cp_comm_type
+
+        attention_optional_kwargs["model_comm_pgs"] = model_comm_pgs
 
         # [Module 2: SelfAttention]
         self.self_attention = build_module(
@@ -337,6 +348,21 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
 
         # [Module 9: BiasDropoutFusion]
         self.mlp_bda = build_module(submodules.mlp_bda)
+
+        self.recompute_input_layernorm = False
+        self.recompute_pre_mlp_layernorm = False
+        self.recompute_mlp = False
+        if self.config.recompute_granularity == 'selective':
+            if "layernorm" in self.config.recompute_modules:
+                if not isinstance(self.input_layernorm, IdentityOp):
+                    self.recompute_input_layernorm = True
+                if not isinstance(self.pre_mlp_layernorm, IdentityOp):
+                    self.recompute_pre_mlp_layernorm = True
+            if "mlp" in self.config.recompute_modules:
+                from megatron.core.transformer.moe.moe_layer import MoELayer
+
+                if not isinstance(self.mlp, MoELayer):
+                    self.recompute_mlp = True
 
         # @jcasper how should we handle nvfuser?
         # Set bias+dropout+add fusion grad_enable execution handler.
@@ -468,7 +494,9 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
         else:
             pre_mlp_layernorm_output, residual, context = self._forward_attention(*args, **kwargs)
 
-        output = self._forward_mlp(pre_mlp_layernorm_output, residual)
+        output = self._forward_mlp(
+            pre_mlp_layernorm_output, residual, kwargs.get("inference_context", None)
+        )
         return output, context
 
     def _forward_attention(
@@ -481,11 +509,11 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
         rotary_pos_cos: Optional[Tensor] = None,
         rotary_pos_sin: Optional[Tensor] = None,
         attention_bias: Optional[Tensor] = None,
-        inference_context: Optional[BaseInferenceContext] = None,
+        inference_context: Optional[Any] = None,
         packed_seq_params: Optional[PackedSeqParams] = None,
         sequence_len_offset: Optional[Tensor] = None,
         *,
-        inference_params: Optional[BaseInferenceContext] = None,
+        inference_params: Optional[Any] = None,
     ):
         """
         Perform a forward pass through the attention layer and the layernorms before and after
@@ -518,7 +546,13 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
         residual = hidden_states
 
         # Optional Input Layer norm
-        input_layernorm_output = self.input_layernorm(hidden_states)
+        if self.recompute_input_layernorm:
+            self.input_layernorm_checkpoint = tensor_parallel.CheckpointWithoutOutput()
+            input_layernorm_output = self.input_layernorm_checkpoint.checkpoint(
+                self.input_layernorm, hidden_states
+            )
+        else:
+            input_layernorm_output = self.input_layernorm(hidden_states)
 
         # Self attention.
         attention_output_with_bias = self.self_attention(
@@ -532,6 +566,13 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
             packed_seq_params=packed_seq_params,
             sequence_len_offset=sequence_len_offset,
         )
+
+        if self.recompute_input_layernorm:
+            # discard the output of the input layernorm and register the recompute
+            # as a gradient hook of attention_output_with_bias[0]
+            self.input_layernorm_checkpoint.discard_output_and_register_recompute(
+                attention_output_with_bias[0]
+            )
 
         # TODO: could we move `bias_dropout_add_exec_handler` itself
         # inside the module provided in the `bias_dropout_add_spec` module?
@@ -568,11 +609,17 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
         residual = hidden_states
 
         # Optional Layer norm post the cross-attention.
-        pre_mlp_layernorm_output = self.pre_mlp_layernorm(hidden_states)
+        if self.recompute_pre_mlp_layernorm:
+            self.pre_mlp_norm_checkpoint = tensor_parallel.CheckpointWithoutOutput()
+            pre_mlp_layernorm_output = self.pre_mlp_norm_checkpoint.checkpoint(
+                self.pre_mlp_layernorm, hidden_states
+            )
+        else:
+            pre_mlp_layernorm_output = self.pre_mlp_layernorm(hidden_states)
 
         return pre_mlp_layernorm_output, residual, context
 
-    def _forward_mlp(self, pre_mlp_layernorm_output, residual):
+    def _forward_mlp(self, pre_mlp_layernorm_output, residual, inference_context=None):
         """
         Perform a forward pass through the feed-forward layer.
 
@@ -584,8 +631,40 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
             output (Tensor): Transformed hidden states of shape [s, b, h].
         """
 
-        # MLP.
-        mlp_output_with_bias = self.mlp(pre_mlp_layernorm_output)
+        # Potentially chunk the MLP computation during prefill to minimize the peak activation size
+        should_chunk_mlp_for_prefill = (
+            self.config.mlp_chunks_for_prefill > 1
+            and inference_context is not None
+            and not inference_context.is_decode_only()
+        )
+
+        if self.recompute_mlp:
+            mlp_output_with_bias = tensor_parallel.checkpoint(
+                self.mlp, False, pre_mlp_layernorm_output
+            )
+        elif should_chunk_mlp_for_prefill:
+            # Chunk input along sequence dimension
+            num_chunks = min(self.config.mlp_chunks_for_prefill, pre_mlp_layernorm_output.shape[0])
+            chunks = pre_mlp_layernorm_output.chunk(num_chunks, dim=0)
+
+            # Compute outputs for each chunk
+            outputs = [self.mlp(chunk) for chunk in chunks]
+
+            # Aggregate chunk outputs
+            mlp_output = torch.cat([out for out, _ in outputs], dim=0)
+            bias_chunks = [bias for _, bias in outputs if bias is not None]
+            bias_output = torch.stack(bias_chunks, dim=0).sum(dim=0) if bias_chunks else None
+            mlp_output_with_bias = (mlp_output, bias_output)
+
+        else:
+            mlp_output_with_bias = self.mlp(pre_mlp_layernorm_output)
+
+        if self.recompute_pre_mlp_layernorm:
+            # discard the output of the pre-mlp layernorm and register the recompute
+            # as a gradient hook of mlp_output_with_bias[0]
+            self.pre_mlp_norm_checkpoint.discard_output_and_register_recompute(
+                mlp_output_with_bias[0]
+            )
 
         # TODO: could we move `bias_dropout_add_exec_handler` itself
         # inside the module provided in the `bias_dropout_add_spec` module?
@@ -811,10 +890,14 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
             hasattr(self, 'cudagraph_manager')
             and kwargs['attention_mask'] is None
             and (
-                kwargs.get('inference_context') is not None
-                and kwargs['inference_context'].is_decode_only()
-                or kwargs.get('inference_params') is not None
-                and kwargs['inference_params'].is_decode_only()
+                (
+                    kwargs.get('inference_context') is not None
+                    and kwargs['inference_context'].is_decode_only()
+                )
+                or (
+                    kwargs.get('inference_params') is not None
+                    and kwargs['inference_params'].is_decode_only()
+                )
             )
         ):
             assert (

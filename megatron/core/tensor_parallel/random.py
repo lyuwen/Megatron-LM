@@ -24,28 +24,14 @@ from .utils import gather_split_1d_tensor, split_tensor_into_1d_equal_chunks
 
 try:
     import transformer_engine  # pylint: disable=unused-import
+    from transformer_engine.pytorch.tensor.float8_tensor import Float8CurrentScalingQuantizer
+    from transformer_engine.pytorch.tensor._internal.float8_tensor_base import Float8TensorBase
+    import transformer_engine_torch as tex
 
     HAVE_TE = True
 except ModuleNotFoundError:
     HAVE_TE = False
 
-from transformer_engine.pytorch.tensor.float8_tensor import (
-    Float8Tensor,
-    Float8CurrentScalingQuantizer,
-)
-
-from transformer_engine.pytorch.tensor.quantized_tensor import (
-    QuantizedTensor,
-    Quantizer,
-    prepare_for_saving,
-    restore_from_saved,
-)
-
-from transformer_engine.pytorch.tensor._internal.float8_tensor_base import (
-    Float8TensorBase
-)
-
-import transformer_engine_torch as tex
 
 # Default name for the model parallel rng tracker.
 _MODEL_PARALLEL_RNG_TRACKER_NAME = 'model-parallel-rng'
@@ -278,7 +264,7 @@ def initialize_rng_tracker(
 
     if inference_rng_tracker:
 
-        class InferenceCudaRNGStatesTracker(base_tracker):
+        class InferenceCudaRNGStatesTracker(base_tracker):  # type: ignore[valid-type, misc]
             """RNG tracker for inference."""
 
             def add(self, name, seed):
@@ -311,7 +297,7 @@ def get_cuda_rng_tracker(
     return _CUDA_RNG_STATE_TRACKER
 
 
-def get_all_rng_states() -> bool:
+def get_all_rng_states():
     """Returns all generator states used by the current `CudaRNGStatesTracker`."""
 
     assert (
@@ -338,6 +324,9 @@ def model_parallel_cuda_manual_seed(
     te_rng_tracker: bool = False,
     inference_rng_tracker: bool = False,
     use_cudagraphable_rng: bool = False,
+    tp_rank: int = None,
+    ep_rank: int = None,
+    etp_rank: int = None,
 ):
     """Initialize model parallel cuda seed.
 
@@ -356,9 +345,15 @@ def model_parallel_cuda_manual_seed(
     It is different among expert-tensor and expert-model parallel GPUs, and the same
     across expert-data parallel groups.
     """
+    if tp_rank is None:
+        tp_rank = get_tensor_model_parallel_rank()
+    if ep_rank is None:
+        ep_rank = get_expert_model_parallel_rank()
+    if etp_rank is None:
+        etp_rank = get_expert_tensor_parallel_rank()
     # 2718 is just for fun and any POSITIVE value will work.
     offset = seed + 2718
-    tensor_model_parallel_seed = offset + get_tensor_model_parallel_rank()
+    tensor_model_parallel_seed = offset + tp_rank
     # Data parallel gets the original seed.
     data_parallel_seed = seed
 
@@ -371,9 +366,7 @@ def model_parallel_cuda_manual_seed(
     # and model parallel state.
     _CUDA_RNG_STATE_TRACKER.add(_MODEL_PARALLEL_RNG_TRACKER_NAME, tensor_model_parallel_seed)
 
-    expert_parallel_seed = (
-        seed + 1024 + 100 * get_expert_model_parallel_rank() + get_expert_tensor_parallel_rank()
-    )
+    expert_parallel_seed = seed + 1024 + 100 * ep_rank + etp_rank
     _CUDA_RNG_STATE_TRACKER.add(_EXPERT_PARALLEL_RNG_TRACKER_NAME, expert_parallel_seed)
 
 
@@ -391,6 +384,31 @@ class RecomputeContext:
         cls.is_recompute = True
         yield cls
         cls.is_recompute = False
+def _get_all_rng_states():
+    """Get all the rng states."""
+    cpu_rng_state = torch.get_rng_state()
+    cuda_rng_state = _get_cuda_rng_state()
+    cuda_rng_state_tracker = get_cuda_rng_tracker().get_states()
+    return cpu_rng_state, cuda_rng_state, cuda_rng_state_tracker
+
+
+def _set_all_rng_states(cpu_rng_state, cuda_rng_state, cuda_rng_state_tracker):
+    """Set all the rng states."""
+    torch.set_rng_state(cpu_rng_state)
+    _set_cuda_rng_state(cuda_rng_state)
+    get_cuda_rng_tracker().set_states(cuda_rng_state_tracker)
+
+
+@contextlib.contextmanager
+def _fork_rng():
+    """Fork the rng state."""
+    # Store the current states.
+    current_states = _get_all_rng_states()
+    try:
+        yield
+    finally:
+        # Set the states back to what it was at the start of this function.
+        _set_all_rng_states(*current_states)
 
 
 class CheckpointFunction(torch.autograd.Function):
@@ -403,15 +421,13 @@ class CheckpointFunction(torch.autograd.Function):
 
     # pylint: disable=missing-function-docstring
     @staticmethod
-    def forward(ctx, run_function, distribute_saved_activations, fp8_ckpt, *args):
+    def forward(ctx, run_function, distribute_saved_activations, *args):
         """Forward pass."""
         ctx.run_function = run_function
         ctx.distribute_saved_activations = distribute_saved_activations
 
         # Copy the rng states.
-        ctx.fwd_cpu_rng_state = torch.get_rng_state()
-        ctx.fwd_cuda_rng_state = _get_cuda_rng_state()
-        ctx.fwd_cuda_rng_state_tracker = get_cuda_rng_tracker().get_states()
+        ctx.rng_states = _get_all_rng_states()
 
         with torch.no_grad():
             outputs = run_function(*args)
@@ -425,30 +441,7 @@ class CheckpointFunction(torch.autograd.Function):
             )
 
         # Store everything.
-        # add fp8-ckpt flag
-        if fp8_ckpt and len(args) > 0:
-            inp = args[0]  # this is the first argument, shall be the activations, typed torch.Tensor
-            # define a quantizer
-            quantizer = Float8CurrentScalingQuantizer(
-                fp8_dtype = tex.DType.kFloat8E4M3,
-                device = "cuda",
-                rowwise = True,
-                columnwise = False,
-                force_pow_2_scales = True,
-                amax_epsilon = 0.0,
-            )
-            # returns a internal class
-            quantizer.internal = True
-            # perform quantization, returns an Float8TensorBase item
-            inp_fp8 = quantizer(inp)  # --> Float8TensorBase
-            # prepare for saving
-            fp8_data = inp_fp8._data   # --> torch.uint8 Tensor
-            fp8_scale = inp_fp8._scale_inv  # --> torch.float32 Tensor
-            tensors_to_save = (fp8_data,fp8_scale,) + args[1:]
-            ctx.save_for_backward(*tensors_to_save)
-        else:
-            ctx.save_for_backward(*args)
-        ctx.fp8_ckpt = fp8_ckpt
+        ctx.save_for_backward(*args)
 
         return outputs
 
@@ -461,51 +454,20 @@ class CheckpointFunction(torch.autograd.Function):
                 "Checkpointing is not compatible with .grad(), "
                 "please use .backward() if possible"
             )
-        # add fp8-ckpt flag
-        if ctx.fp8_ckpt:
-            fp8_data, fp8_scale = ctx.saved_tensors[0:2]
-            # create an empty Float8TensorBase
-            # print("===============creating fp8tensor base for quant==============")
-            inp_fp8 = Float8TensorBase(
-                data = fp8_data,
-                fp8_scale_inv = fp8_scale,
-                fp8_dtype = tex.DType.kFloat8E4M3,
-                requires_grad = False,
-                data_transpose = None,
-                quantizer = None,
-            )
-
-            inp = inp_fp8.dequantize(dtype=torch.bfloat16)  # --> BF16 tensor
-
-            inputs = (inp,) + ctx.saved_tensors[2:]
-            # print("=============type of dequanztized tensor is : ", type(inputs))
-        else:
-            inputs = ctx.saved_tensors
-
+        inputs = ctx.saved_tensors
         if ctx.distribute_saved_activations:
             safely_set_viewless_tensor_data(
                 inputs[0], gather_split_1d_tensor(inputs[0].data).view(ctx.input_0_shape)
             )
 
-        # Store the current states.
-        bwd_cpu_rng_state = torch.get_rng_state()
-        bwd_cuda_rng_state = _get_cuda_rng_state()
-        bwd_cuda_rng_state_tracker = get_cuda_rng_tracker().get_states()
+        with _fork_rng():
+            # Set the states to what it used to be before the forward pass.
+            _set_all_rng_states(*ctx.rng_states)
 
-        # Set the states to what it used to be before the forward pass.
-        torch.set_rng_state(ctx.fwd_cpu_rng_state)
-        _set_cuda_rng_state(ctx.fwd_cuda_rng_state)
-        get_cuda_rng_tracker().set_states(ctx.fwd_cuda_rng_state_tracker)
-
-        # Compute the forward pass.
-        detached_inputs = detach_variable(inputs)
-        with torch.enable_grad(), RecomputeContext.enable_recompute():
-            outputs = ctx.run_function(*detached_inputs)
-
-        # Set the states back to what it was at the start of this function.
-        torch.set_rng_state(bwd_cpu_rng_state)
-        _set_cuda_rng_state(bwd_cuda_rng_state)
-        get_cuda_rng_tracker().set_states(bwd_cuda_rng_state_tracker)
+            # Compute the forward pass.
+            detached_inputs = detach_variable(inputs)
+            with torch.enable_grad():
+                outputs = ctx.run_function(*detached_inputs)
 
         if isinstance(outputs, torch.Tensor):
             outputs = (outputs,)
@@ -516,9 +478,209 @@ class CheckpointFunction(torch.autograd.Function):
         )
         torch.autograd.backward(outputs, args)
         grads = tuple(inp.grad if isinstance(inp, torch.Tensor) else inp for inp in detached_inputs)
-        return (None, None, None) + grads
+        return (None, None) + grads
 
-def checkpoint(function, distribute_saved_activations, fp8_ckpt, *args):
+
+class FP8CheckpointFunction(torch.autograd.Function):
+    # pylint: disable=missing-function-docstring
+    @staticmethod
+    def forward(ctx, run_function, distribute_saved_activations, *args):
+        """Forward pass."""
+        ctx.run_function = run_function
+        ctx.distribute_saved_activations = distribute_saved_activations
+
+        # Copy the rng states.
+        ctx.rng_states = _get_all_rng_states()
+
+        # Transform activation as FP8
+        with torch.no_grad():
+            quantizer = Float8CurrentScalingQuantizer(
+                fp8_dtype=tex.DType.kFloat8E4M3,
+                device="cuda",
+                rowwise=True,
+                columnwise=False,
+                force_pow_2_scales=True,
+                amax_epsilon=0.0,
+            )
+            ctx.fp8_tensor = quantizer(args[0])
+            ctx.fp8_tensor.raw_dtype = args[0].dtype
+            inp_deq = ctx.fp8_tensor.dequantize(dtype=ctx.fp8_tensor.dtype)
+
+        with torch.no_grad():
+            outputs = run_function(inp_deq, *args[1:])
+
+        # Divide hidden states across model parallel group and only keep
+        # the chunk corresponding to the current rank.
+        if distribute_saved_activations:
+            ctx.input_0_shape = args[0].data.shape
+            safely_set_viewless_tensor_data(
+                args[0], split_tensor_into_1d_equal_chunks(args[0].data, new_buffer=True)
+            )
+
+        # Store everything.
+        ctx.save_for_backward(*args[1:])
+
+        return outputs
+
+    # pylint: disable=missing-function-docstring
+    @staticmethod
+    def backward(ctx, *args):
+        """Backward pass."""
+        if not torch.autograd._is_checkpoint_valid():
+            raise RuntimeError(
+                "Checkpointing is not compatible with .grad(), "
+                "please use .backward() if possible"
+            )
+        inputs = ctx.saved_tensors
+
+        # Transpose activation fo raw dtype from FP8
+        with torch.no_grad():
+            inputs = (ctx.fp8_tensor.dequantize(dtype=ctx.fp8_tensor.dtype), ) + inputs  # --> BF16 tensor
+            ctx.fp8_tensor = None
+
+        if ctx.distribute_saved_activations:
+            safely_set_viewless_tensor_data(
+                inputs[0], gather_split_1d_tensor(inputs[0].data).view(ctx.input_0_shape)
+            )
+
+        with _fork_rng():
+            # Set the states to what it used to be before the forward pass.
+            _set_all_rng_states(*ctx.rng_states)
+
+            # Compute the forward pass.
+            detached_inputs = detach_variable(inputs)
+            with torch.enable_grad():
+                outputs = ctx.run_function(*detached_inputs)
+
+        if isinstance(outputs, torch.Tensor):
+            outputs = (outputs,)
+
+        # filter out non tensor outputs for backward pass
+        outputs, args = zip(
+            *filter(lambda x: torch.is_tensor(x[0]) and x[0].requires_grad, zip(outputs, args))
+        )
+        torch.autograd.backward(outputs, args)
+        grads = tuple(inp.grad if isinstance(inp, torch.Tensor) else inp for inp in detached_inputs)
+        return (None, None) + grads
+
+
+def checkpoint(function, distribute_saved_activations, *args):
     """Checkpoint a model or part of the model.
     This has been directly copied from torch.utils.checkpoint."""
-    return CheckpointFunction.apply(function, distribute_saved_activations, fp8_ckpt, *args)
+    return CheckpointFunction.apply(function, distribute_saved_activations, *args)
+
+
+def fp8_checkpoint(function, distribute_saved_activations, *args):
+    return FP8CheckpointFunction.apply(function, distribute_saved_activations, *args)
+
+
+class CheckpointWithoutOutputFunction(torch.autograd.Function):
+    """
+    Checkpoint Function Helper for CheckpointWithouOutput.
+    Save context for recompute.
+    """
+
+    @staticmethod
+    def forward(ctx, run_function, checkpoint_without_output_obj, *args):
+        """Forward pass."""
+        with torch.no_grad():
+            outputs = run_function(*args)
+        ctx.save_for_backward(*detach_variable(args))
+        # the CheckpointWithoutOutput object is passed in, then it can access the saved input
+        # tensors later for recomputation
+        checkpoint_without_output_obj.ctx = ctx
+        return outputs
+
+    @staticmethod
+    def backward(ctx, *args):
+        """Backward pass."""
+        inputs = ctx.saved_tensors
+        outputs = ctx.outputs
+        torch.autograd.backward(outputs, args)
+        ctx.outputs = None
+        grads = tuple(inp.grad if isinstance(inp, torch.Tensor) else inp for inp in inputs)
+        return (None, None) + grads
+
+
+class CheckpointWithoutOutput(object):
+    """
+    Checkpoint a model or part of the model and release the output.
+
+    For the normal 'checkpoint` function, the outputs of it may be cached by the following
+    operations for its backward computation. However, the output of the checkpointed function is
+    re-generated at recomputation, so the output store is not technically needed. This method can
+    manually discard the output in the forward pass and restore it by recomputation in the
+    backward pass to reduce the memory usage.
+    """
+
+    def __init__(self):
+        self.run_function = None
+        self.fwd_cpu_rng_state = None
+        self.fwd_cuda_rng_state = None
+        self.fwd_cuda_rng_state_tracker = None
+        self.ctx = None
+        self.outputs = None
+
+    def checkpoint(self, run_function, *args):
+        """Checkpoint function."""
+        self.run_function = run_function
+
+        self.rng_states = _get_all_rng_states()
+
+        outputs = CheckpointWithoutOutputFunction.apply(run_function, self, *args)
+        self.outputs = outputs
+        if isinstance(self.outputs, torch.Tensor):
+            self.outputs = (self.outputs,)
+        return outputs
+
+    def _recompute(self, _):
+        """Used as a hook to recompute the output."""
+        if not torch.autograd._is_checkpoint_valid():
+            raise RuntimeError(
+                "Checkpointing is not compatible with .grad(), "
+                "please use .backward() if possible"
+            )
+
+        with _fork_rng():
+            _set_all_rng_states(*self.rng_states)
+
+            with torch.enable_grad():
+                outputs = self.run_function(*self.ctx.saved_tensors)
+
+        self.run_function = None
+        self.rng_states = None
+
+        if isinstance(outputs, torch.Tensor):
+            outputs = (outputs,)
+
+        # restore the recomputed memory without changing the metadata
+        with torch.no_grad():
+            for output, recomputation_output in zip(self.outputs, outputs):
+                output_size = recomputation_output.untyped_storage().size()
+                output.untyped_storage().resize_(output_size)
+                output.untyped_storage().copy_(recomputation_output.untyped_storage())
+
+        self.ctx.outputs = outputs
+        self.outputs = None
+        self.ctx = None
+
+    def discard_output_and_register_recompute(self, hook_tensor):
+        """
+        Release the output tensor storages and register the recompute function as a grad hook of
+        the hook_tensor.
+
+        Note: the caller should make sure that the output tensors are no longer used
+        in the forward pass and the gradient of the hook_tensor is computed before the recomputed
+        tensors are used.
+        """
+        # use resize to release the output tensor memory and still keep the metadata in the tensors.
+        # the metadata is still needed for backward
+        for output in self.outputs:
+            output.untyped_storage().resize_(0)
+
+        # register the recomputation as a backward hook, when the the gradient of the hook_tensor
+        # is computed, the recomputation will be triggered. The hook_tensor should be selected
+        # carefully to ensure that the tensors are recomputed before it is used by other backward
+        # computations.
+        if hook_tensor.requires_grad:
+            hook_tensor.register_hook(self._recompute)
