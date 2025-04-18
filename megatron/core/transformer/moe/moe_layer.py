@@ -24,6 +24,7 @@ from megatron.core.transformer.moe.token_dispatcher import (
 from megatron.core.transformer.spec_utils import ModuleSpec, build_module
 from megatron.core.transformer.transformer_config import TransformerConfig
 
+FP8_CTX_MOE = os.getenv('FP8_CTX_MOE', '0') == '1'
 
 @dataclass
 class MoESubmodules:
@@ -192,7 +193,7 @@ class MoELayer(BaseMoELayer):
             (dispatched_input, tokens_per_expert) = self.token_dispatcher.token_permutation(
                 hidden_states, probs, routing_map
             )
-            if os.getenv('FP8_CHECKPOINT', '0') == '1':
+            if FP8_CTX_MOE:
                 expert_output, mlp_bias = tensor_parallel.fp8_checkpoint(self.experts, False, dispatched_input, tokens_per_expert)
             else:
                 expert_output, mlp_bias = tensor_parallel.checkpoint(self.experts, False, dispatched_input, tokens_per_expert)
@@ -200,7 +201,7 @@ class MoELayer(BaseMoELayer):
             if self.use_shared_expert and not self.shared_expert_overlap:
                 # if shared_expert_overlap is True, the expert calculation happens in
                 # the token_dispatcher to overlap communications and computations
-                if os.getenv('FP8_CHECKPOINT', '0') == '1':
+                if FP8_CTX_MOE:
                     output = output + tensor_parallel.fp8_checkpoint(self.shared_experts, False, hidden_states)
                 else:
                     output = output + tensor_parallel.checkpoint(self.shared_experts, False, hidden_states)
@@ -210,7 +211,10 @@ class MoELayer(BaseMoELayer):
             if self.moe_perm_checkpoint == 'full' or (self.moe_perm_checkpoint == 'half' and (self.layer_number > 24 or self.layer_number % 2 == 0)):
                 output, mlp_bias = custom_forward_perm_checkpoint(hidden_states)
             else:
-                output, mlp_bias = tensor_parallel.checkpoint(custom_forward, False, hidden_states)
+                if FP8_CTX_MOE:
+                    output, mlp_bias = tensor_parallel.fp8_checkpoint(custom_forward, False, hidden_states)
+                else:
+                    output, mlp_bias = tensor_parallel.checkpoint(custom_forward, False, hidden_states)
         else:
             output, mlp_bias = custom_forward(hidden_states)
 

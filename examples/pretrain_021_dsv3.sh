@@ -367,13 +367,16 @@ if [ $AC = full ]; then
 		    --recompute-granularity full"
 elif [ $AC = sel ]; then
     activation_checkpoint_options=" \
-        --recompute-activations"
+        --recompute-granularity selective \
+        --recompute-modules ${RECOMPUTE_MODULES:-"core_attn moe_act layernorm mla_up_proj mlp moe"} \
+    "
+    if [[ ${MOE_PERMUTE_CHECKPOINT:-none} != none ]]; then
+        activation_checkpoint_options=" ${activation_checkpoint_options} \
+             --moe-perm-checkpoint ${MOE_PERMUTE_CHECKPOINT} 
+        "
+    fi
 elif [ $AC = none ]; then
     activation_checkpoint_options=" \
-    "
-elif [ $AC = moe ]; then
-    activation_checkpoint_options=" \
-        --moe-layer-recompute \
     "
 elif [ $AC = offload ]; then
     activation_checkpoint_options=" \
@@ -387,13 +390,6 @@ elif [ $AC = offload ]; then
         echo "Disable --overlap-grad-reduce and --overlap-param-gather when cpu offloading is on..."
         comm_overlap_option=""
     fi
-elif [ $AC = custom ]; then
-    #TODO: fill in custom AC options
-    activation_checkpoint_options=" \
-        --recompute-beside-moe \
-        --moe-layer-recompute \
-        --moe-perm-checkpoint ${MOE_PERMUTE_CHECKPOINT:-half} \
-    "
 fi
 
 if [ $PR = fp16 ]; then
@@ -408,6 +404,8 @@ elif [ $PR = fp8 ]; then
     pr_options=" \
         --bf16 \
         --fp8-format hybrid \
+        --fp8-recipe delayed \
+        --fp8-param-gather \
         --fp8-amax-compute-algo max \
         --fp8-amax-history-len 1024"
 fi
@@ -670,6 +668,10 @@ fi
 # 开启12LHSD的atten计算方法,打印MFU
 if [[ ${PRINT_MFU:-true} = true ]] ; then
     new_options=" ${new_options} --use-legacy-throughput "
+fi
+
+if [[ ${CHECK_NAN:-true} = false ]]; then
+    new_options=" ${new_options} --no-check-for-nan-in-loss-and-grad"
 fi
 
 run_cmd="torchrun $DISTRIBUTED_ARGS ${MEGATRON_PATH}/pretrain_gpt.py

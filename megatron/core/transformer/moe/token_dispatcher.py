@@ -883,7 +883,7 @@ class _DeepepManager(_DispatchManager):
         return hidden_states
 
     def get_permuted_hidden_states_by_experts(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        if ENABLE_EXPERIMENTAL and self.permute_fusion:
+        if self.permute_fusion:
             self.dispatched_routing_map, self.dispatched_probs = fused_indices_to_multihot(
                 self.dispatched_indices, self.dispatched_probs, self.num_local_experts
             )
