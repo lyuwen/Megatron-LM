@@ -372,9 +372,20 @@ elif [ $AC = sel ]; then
     "
     if [[ ${MOE_PERMUTE_CHECKPOINT:-none} != none ]]; then
         activation_checkpoint_options=" ${activation_checkpoint_options} \
-             --moe-perm-checkpoint ${MOE_PERMUTE_CHECKPOINT} 
+            --moe-perm-checkpoint ${MOE_PERMUTE_CHECKPOINT} 
         "
     fi
+elif [ $AC = permckpt ]; then
+    activation_checkpoint_options=" \
+        --recompute-granularity selective \
+        --recompute-beside-moe \
+        --recompute-modules moe \
+        --moe-perm-checkpoint ${MOE_PERMUTE_CHECKPOINT:-full} \
+    "
+elif [ $AC = moeckpt ]; then
+    activation_checkpoint_options=" \
+        --recompute-beside-moe \
+    "
 elif [ $AC = none ]; then
     activation_checkpoint_options=" \
     "
