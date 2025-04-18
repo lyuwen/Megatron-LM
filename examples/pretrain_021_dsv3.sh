@@ -488,7 +488,7 @@ fi
 dataset_option=" \
     --data-path ${DATASET_PATH} \
     --data-cache-path ${OUTPUT_DIR}/data_cache \
-    --num-workers 4 \
+    --num-workers ${NUM_WORKERS:-4} \
     --split 100,0,0"
 
 DISTRIBUTED_ARGS="--nproc_per_node $GPUS_PER_NODE --nnodes $NNODES \
