@@ -236,6 +236,9 @@ class ModelParallelConfig:
     """
        Set the bootstrapping backend out of 'nccl', 'mpi', and 'gloo'
     """
+    
+    fp8_comm: bool = False
+    """If True, using fp8 stream in P2P comm and A2A comm."""
 
     ###################
     # Pipeline Parallel

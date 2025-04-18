@@ -1117,6 +1117,8 @@ def _add_transformer_engine_args(parser):
                             'Required for CUDA graphs support.')
     group.add_argument('--inference-rng-tracker', action='store_true', default=False,
                        help='Use a random number generator configured for inference.')
+    group.add_argument('--fp8-comm', action='store_true', default=False,
+                       help='Use fp8 stream in P2P comm and A2A comm.')
     return parser
 
 def _add_inference_args(parser):

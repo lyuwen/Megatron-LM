@@ -685,6 +685,10 @@ if [[ ${CHECK_NAN:-true} = false ]]; then
     new_options=" ${new_options} --no-check-for-nan-in-loss-and-grad"
 fi
 
+if [[ ${FP8_COMM:-false} = true ]]; then
+    new_options=" ${new_options} --fp8-comm "
+fi
+
 run_cmd="torchrun $DISTRIBUTED_ARGS ${MEGATRON_PATH}/pretrain_gpt.py
  ${megatron_options} ${dataset_option} ${pr_options} ${load_options} ${te_options} ${activation_checkpoint_options} \
  ${do_options} ${fl_options} ${sp_options} ${moe_options} ${offload_option} ${sft_option} ${vp_options} \
