@@ -28,7 +28,8 @@ def get_hidden_bytes(x: torch.Tensor) -> int:
     Returns:
         int: Number of hidden bytes
     """
-    return x.size(1) * max(x.element_size(), 2)
+    # return x.size(1) * max(x.element_size(), 2)
+    return x.size(1) * x.element_size()
 
 
 def get_buffer(group: torch.distributed.ProcessGroup, hidden_bytes: int):
