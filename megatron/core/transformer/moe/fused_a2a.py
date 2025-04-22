@@ -2,6 +2,7 @@
 # Portions of this code are from DeepSeek DeepEP project
 # Copyright (c) 2025 DeepSeek
 # Licensed under the MIT License - https://github.com/deepseek-ai/DeepEP/blob/main/LICENSE
+import os
 
 try:
     from deep_ep import Buffer
@@ -11,8 +12,11 @@ except ImportError:
     HAVE_DEEP_EP = False
 
 import torch
+from OpenMixOpl.triton import act_quant, act_dequant
 
 _buffer = None
+
+FP8_COMM_DEEPEP = os.getenv('FP8_COMM_DEEPEP', '0') == '1' or os.getenv('FP8_COMM_DEEPEP', 'false') == 'true'
 
 
 def get_hidden_bytes(x: torch.Tensor) -> int:
@@ -85,6 +89,10 @@ class FusedDispatch(torch.autograd.Function):
             allocate_on_comm_stream=False,
         )
 
+        # Do Fp8 quantize
+        if FP8_COMM_DEEPEP:
+            x = act_quant(x, 128)
+
         # Do MoE dispatch
         # NOTES: the CPU will wait for GPU's signal to arrive,
         # so this is not compatible with CUDA graph
@@ -107,6 +115,11 @@ class FusedDispatch(torch.autograd.Function):
             async_finish=False,
             allocate_on_comm_stream=False,
         )
+
+        # Do Fp8 dequantize
+        if FP8_COMM_DEEPEP:
+            recv_x_fp8_tensor, recv_x_fp8_scale = recv_x
+            recv_x = act_dequant(recv_x_fp8_tensor, recv_x_fp8_scale, 128)
 
         ctx.group = group
         ctx.handle = handle
@@ -153,13 +166,24 @@ class FusedCombine(torch.autograd.Function):
     def backward(ctx, grad_output, previous_event=None):
         """Backward pass of fused combine."""
         buffer = get_buffer(ctx.group, get_hidden_bytes(grad_output))
+
+        # Do Fp8 quantize
+        if FP8_COMM_DEEPEP:
+            grad_output = act_quant(grad_output, 128)
+
         grad_x, _, _, _, _, event = buffer.dispatch(
-            grad_output.contiguous(),
+            grad_output.contiguous() if isinstance(grad_output, torch.Tensor) else grad_output,
             handle=ctx.handle,
             previous_event=previous_event,
             async_finish=False,
             allocate_on_comm_stream=False,
         )
+
+        # Do Fp8 dequantize
+        if FP8_COMM_DEEPEP:
+            grad_x_fp8_tensor, grad_x_fp8_scale = grad_x
+            grad_x = act_dequant(grad_x_fp8_tensor, grad_x_fp8_scale, 128)
+
         return grad_x, None, None, None
 
 
