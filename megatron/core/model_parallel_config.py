@@ -1,7 +1,7 @@
 # Copyright (c) 2023, NVIDIA CORPORATION. All rights reserved.
 
 from dataclasses import dataclass
-from typing import Callable, ContextManager, Optional
+from typing import Callable, ContextManager, Optional, List
 
 import torch
 
@@ -33,6 +33,11 @@ class ModelParallelConfig:
        The number of virtual blocks per pipeline model parallel rank is the virtual model parallel
        size.  See Efficient Large-Scale Language Model Training on GPU Clusters Using Megatron-LM:
        arxiv.org/pdf/2104.04473.pdf for more details.
+    """
+
+    custom_pipeline: List[int] = None
+    """Custom pipeline schedule for pipeline parallel.
+    The list contains the number of stages for each pipeline parallel rank.
     """
 
     sequence_parallel: bool = False
