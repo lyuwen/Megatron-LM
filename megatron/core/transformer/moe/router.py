@@ -397,7 +397,13 @@ class TopKRouter(Router):
             else:
                 logits = MoEAuxLossAutoScaler.apply(logits, z_loss)
             save_to_aux_losses_tracker(
-                "z_loss", z_loss / moe_z_loss_coeff, self.layer_number, self.config.num_layers
+                    "z_loss",
+                    z_loss / moe_z_loss_coeff,
+                    self.layer_number,
+                    self.config.num_layers,
+                    layer_pattern=self.config.moe_layer_pattern,
+                    reduce_group=sequence_partition_group,
+                    avg_group=mpu.get_data_parallel_group()
             )
         return logits
 
