@@ -145,7 +145,7 @@ def get_transformer_layer_offset(config: TransformerConfig):
 
             num_layers_per_pipeline_rank = num_layers // config.pipeline_model_parallel_size
             if config.custom_pipeline is not None:
-                num_layers_per_pipeline_rank = config.custom_partition[pipeline_rank]
+                num_layers_per_pipeline_rank = config.custom_pipeline[pipeline_rank]
     
             if parallel_state.get_virtual_pipeline_model_parallel_world_size() is not None:
                 vp_rank = parallel_state.get_virtual_pipeline_model_parallel_rank()
@@ -157,7 +157,7 @@ def get_transformer_layer_offset(config: TransformerConfig):
                     pipeline_rank * num_layers_per_virtual_rank
                 )
                 if config.custom_pipeline is not None:
-                    offset = sum(config.custom_partition[:vp_rank * pp_size + pipeline_rank])
+                    offset = sum(config.custom_pipeline[:vp_rank * pp_size + pipeline_rank])
 
                 # Reduce the offset of embedding layer from the total layer number
                 if (
@@ -168,7 +168,7 @@ def get_transformer_layer_offset(config: TransformerConfig):
             else:
                 offset = pipeline_rank * num_layers_per_pipeline_rank
                 if config.custom_pipeline is not None:
-                    offset = sum(config.custom_partition[:pipeline_rank])
+                    offset = sum(config.custom_pipeline[:pipeline_rank])
     
                 # Reduce the offset of embedding layer from the total layer number
                 if (

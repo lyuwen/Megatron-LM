@@ -610,11 +610,8 @@ seqwarm_options=" --warmup-seq-length 0:2048,100:4096 "
 fi
 
 # new_options=" --checkpoint-kv-up-proj --recompute-inputlayer-rmsnorm --recompute-pre-mlp-rmsnorm "
-if [[ ${CUSTOM_PIPE:-off} = on ]]; then
-    if [[ $NUM_LAYERS -eq 60 && $PP -eq 16 ]]; then
-        #new_options=" ${new_options} --custom-pipeline 1 1 1 1 1 2 3 3 4 4 5 6 7 7 7 7"
-        new_options=" ${new_options} --custom-pipeline 2 4 4 4 4 4 4 4 4 4 4 4 4 4 4 2"
-    fi
+if [[ ${CUSTOM_PIPE:-none} != none ]]; then
+    new_options=" ${new_options} --custom-pipeline $CUSTOM_PIPE"
 fi
 
 # Use TP-PP-DP mapping
