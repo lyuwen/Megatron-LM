@@ -74,8 +74,12 @@ class FusedDispatch(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x, token_indices, token_probs, num_experts, group, previous_event=None):
         """Forward pass of fused dispatch."""
+        # Do Fp8 quantize
+        if FP8_COMM_DEEPEP:
+            x = act_quant(x, 128)
+
         # Calculate layout before actual dispatch
-        buffer = get_buffer(group, get_hidden_bytes(x))
+        buffer = get_buffer(group, get_hidden_bytes(x) if not FP8_COMM_DEEPEP else get_hidden_bytes(x[0]))
         (
             num_tokens_per_rank,
             num_tokens_per_rdma_rank,
@@ -89,10 +93,6 @@ class FusedDispatch(torch.autograd.Function):
             async_finish=False,
             allocate_on_comm_stream=False,
         )
-
-        # Do Fp8 quantize
-        if FP8_COMM_DEEPEP:
-            x = act_quant(x, 128)
 
         # Do MoE dispatch
         # NOTES: the CPU will wait for GPU's signal to arrive,
@@ -166,11 +166,11 @@ class FusedCombine(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_output, previous_event=None):
         """Backward pass of fused combine."""
-        buffer = get_buffer(ctx.group, get_hidden_bytes(grad_output))
-
         # Do Fp8 quantize
         if FP8_COMM_DEEPEP:
             grad_output = act_quant(grad_output, 128)
+
+        buffer = get_buffer(ctx.group, get_hidden_bytes(grad_output) if not FP8_COMM_DEEPEP else get_hidden_bytes(grad_output[0]))
 
         grad_x, _, _, _, _, event = buffer.dispatch(
             grad_output.contiguous() if isinstance(grad_output, torch.Tensor) else grad_output,
