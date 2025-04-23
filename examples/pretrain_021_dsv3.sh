@@ -420,12 +420,16 @@ elif [ $PR = bf16 ]; then
         --bf16"
 elif [ $PR = fp8 ]; then
     pr_options=" \
-        --bf16 \
-        --fp8-format hybrid \
-        --fp8-recipe delayed \
-        --fp8-param-gather \
-        --fp8-amax-compute-algo max \
-        --fp8-amax-history-len 1024"
+        --bf16"
+    export USE_BLOCK_FP8=true
+    export SAVE_MEMORY=true 
+#    pr_options=" \
+#        --bf16 \
+#        --fp8-format hybrid \
+#        --fp8-recipe delayed \
+#        --fp8-param-gather \
+#        --fp8-amax-compute-algo max \
+#        --fp8-amax-history-len 1024"
 fi
 
 if [ $DO = true ]; then
