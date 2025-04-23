@@ -41,6 +41,9 @@ fi
 DATASET_PATH="$(cat ${DATASET_FILE})"
 #VALID_DATASET_PATH="$(cat ${VALID_DATASET_FILE})"
 VALID_DATASET_PATH=${DATASET_PATH}
+DEFUALT_DATASET_CACHE_PATH=${OUTPUT_DIR}/data_cache
+DATASET_CACHE_PATH=${DATASET_CACHE_PATH:-$DEFUALT_DATASET_CACHE_PATH}
+
 OUTPUT_DIR=${OUTPUT_DIR:-$PWD}
 if [[ -z $TOKENIZER_PATH ]] ; then
     echo "Missing environment variable TOKENIZER_PATH."
@@ -59,8 +62,8 @@ fi
 
 
 # training configuraitons
-TRAIN_TOKENS=${TRAIN_TOKENS:-200000000000}
-WARMUP_TOKENS=${WARMUP_TOKENS:-4194304000}
+TRAIN_TOKENS=${TRAIN_TOKENS:-11692571197196}
+WARMUP_TOKENS=${WARMUP_TOKENS:-19660800000}
 TOTAL_TRAIN_ITERS=$(( ${TRAIN_TOKENS} / ${GLOBAL_BATCH_SIZE} / ${SEQ_LEN} ))
 TRAIN_ITERS=${TRAIN_ITERS:-${TOTAL_TRAIN_ITERS}}
 
@@ -122,12 +125,12 @@ fi
 
 if [ $MODEL_SIZE = 2B ]; then
 
-HIDDEN_SIZE=1280
+HIDDEN_SIZE=${HIDDEN_SIZE:-1280}
 NUM_ATTN_HEADS=10
 NUM_LAYERS=${NUM_LAYERS:-9}
 INTERMEDIATE_SIZE=8192
 MOE_INTERMEDIATE_SIZE=1024
-MAX_POSITION_EMBEDDINGS=${SEQ_LEN}
+MAX_POSITION_EMBEDDINGS=${MAX_POSITION_EMBEDDINGS:-${SEQ_LEN}}
 EXTRA_VOCAB_SIZE=256
 # Q_LORA_RANK=1536 # 后训练组删除
 KV_LORA_RANK=512
@@ -161,12 +164,12 @@ moe_options=" \
 
 elif [ $MODEL_SIZE = 16B ]; then
 
-HIDDEN_SIZE=2048
+HIDDEN_SIZE=${HIDDEN_SIZE:-2048}
 NUM_ATTN_HEADS=16
 NUM_LAYERS=${NUM_LAYERS:-28}
 INTERMEDIATE_SIZE=10944
 MOE_INTERMEDIATE_SIZE=1408
-MAX_POSITION_EMBEDDINGS=${SEQ_LEN}
+MAX_POSITION_EMBEDDINGS=${MAX_POSITION_EMBEDDINGS:-${SEQ_LEN}}
 EXTRA_VOCAB_SIZE=256
 # Q_LORA_RANK=1536 # 后训练组删除
 KV_LORA_RANK=512
@@ -204,7 +207,8 @@ NUM_ATTN_HEADS=128
 NUM_LAYERS=${NUM_LAYERS:-60} 
 INTERMEDIATE_SIZE=${INTERMEDIATE_SIZE:-12288}
 MOE_INTERMEDIATE_SIZE=${MOE_INTERMEDIATE_SIZE:-1536}
-MAX_POSITION_EMBEDDINGS=${MAX_POSITION_EMBEDDINGS:-163840}
+MAX_POSITION_EMBEDDINGS=${MAX_POSITION_EMBEDDINGS:-${SEQ_LEN}}
+#MAX_POSITION_EMBEDDINGS=163840
 EXTRA_VOCAB_SIZE=2400
 Q_LORA_RANK=1536
 KV_LORA_RANK=512
@@ -212,7 +216,7 @@ QK_NOPE_HEAD_DIM=${QK_NOPE_HEAD_DIM:-128}
 QK_ROPE_HEAD_DIM=64
 V_HEAD_DIM=128
 ROPE_THETA=10000
-SCALE_FACTOR=40
+SCALE_FACTOR=${SCALE_FACTOR:-40}
 NUM_EXPERTS=${NUM_EXPERTS:-160}
 ROUTER_TOPK=${ROUTER_TOPK:-6}
 NUM_SHARED_EXPERTS=${NUM_SHARED_EXPERTS:-2}
@@ -243,7 +247,7 @@ NUM_ATTENTION_HEADS=128
 NUM_LAYERS=${NUM_LAYERS:-61}
 INTERMEDIATE_SIZE=18432
 MOE_INTERMEDIATE_SIZE=2048
-MAX_POSITION_EMBEDDINGS=${SEQ_LEN}
+MAX_POSITION_EMBEDDINGS=${MAX_POSITION_EMBEDDINGS:-${SEQ_LEN}}
 EXTRA_VOCAB_SIZE=467
 Q_LORA_RANK=1536
 KV_LORA_RANK=512
@@ -285,7 +289,7 @@ LOAD_BALANCE_TYPE=${LOAD_BALANCE_TYPE:-aux_loss}
 if [ ${LOAD_BALANCE_TYPE} = aux_loss ] ; then
     moe_options=" ${moe_options} --moe-router-load-balancing-type ${LOAD_BALANCE_TYPE} "
 elif [ ${LOAD_BALANCE_TYPE} = seq_aux_loss ] ; then
-    moe_options=" ${moe_options}  --moe-router-load-balancing-type ${LOAD_BALANCE_TYPE} "
+    moe_options=" ${moe_options} --moe-router-load-balancing-type ${LOAD_BALANCE_TYPE} "
 else
 echo "Unsupported moe-router-load-balancing-type: ${LOAD_BALANCE_TYPE}"
 exit 1
@@ -457,17 +461,25 @@ if [[ ${MP_PPN_LAYERS:-0} -gt 0 ]]; then
     "
 fi
 
+if [ -z ${DLC_JOB_ID} ]; then
+    DLC_JOB_ID=${HOSTNAME:0:19}
+fi
+
 LR_DECAY_ITERS=$(( ${TRAIN_TOKENS} /  ${GLOBAL_BATCH_SIZE} / ${SEQ_LEN} ))
-PREFIX="pretrain-zjmcore-dsv3-${MODEL_SIZE}-bs-${BATCH_SIZE}-gbs-${GLOBAL_BATCH_SIZE}"
-NAME="${PREFIX}-pr-${PR}-pp-${PP}-ep-${EP}-ac-${AC}"
+PREFIX="pretrain-dsv3-${MODEL_SIZE}-bs-${BATCH_SIZE}-gbs-${GLOBAL_BATCH_SIZE}"
+NAME="${PREFIX}-pp-${PP}-ep-${EP}-ac-${AC}_${DLC_JOB_ID}"
 TIMESTAMP=$(date "+%Y%m%d-%H%M")
-NAME_DLC_TIME="${PREFIX}-pr-${PR}-pp-${PP}-ep-${EP}-ac-${AC}_${DLC_JOB_ID:-${TIMESTAMP}}"
+# NAME_JOBID_TIME="${PREFIX}-pp-${PP}-ep-${EP}-ac-${AC}_${DLC_JOB_ID}_${TIMESTAMP}"
 
 PRETRAIN_CHECKPOINT_PATH_DEFAULT="${OUTPUT_BASEPATH}/checkpoints/${NAME}"
 PRETRAIN_CHECKPOINT_PATH=${PRETRAIN_CHECKPOINT_PATH:-$PRETRAIN_CHECKPOINT_PATH_DEFAULT}
 
 SAVED_PRETRAIN_CHECKPOINT_PATH="${OUTPUT_BASEPATH}/checkpoints/${NAME}"
 mkdir -p ${SAVED_PRETRAIN_CHECKPOINT_PATH}
+# 重启时，如果保存目录中已存在ckpt,则断点续训将从该目录继续，不再从原ckpt目录加载重新训练 0417 lzd
+if [[ -f ${SAVED_PRETRAIN_CHECKPOINT_PATH}/latest_checkpointed_iteration.txt ]]; then
+    PRETRAIN_CHECKPOINT_PATH=${SAVED_PRETRAIN_CHECKPOINT_PATH}
+fi
 # find -L ${PRETRAIN_CHECKPOINT_PATH} -maxdepth 1 -type f -name "*.json" -print0 | xargs -0 cp -t ${SAVED_PRETRAIN_CHECKPOINT_PATH}
 #find -L ${PRETRAIN_CHECKPOINT_PATH} -maxdepth 1 -type f -name "merges.txt" -print0 | xargs -0 cp -t ${SAVED_PRETRAIN_CHECKPOINT_PATH}
 
@@ -488,15 +500,36 @@ if [ $PRETRAIN_CHECKPOINT_PATH != none ]; then
             --load $PRETRAIN_CHECKPOINT_PATH "
 fi
 
+NUM_WORKERS=${NUM_WORKERS:-1}
 dataset_option=" \
     --data-path ${DATASET_PATH} \
-    --data-cache-path ${OUTPUT_DIR}/data_cache \
-    --num-workers ${NUM_WORKERS:-4} \
+    --data-cache-path ${DATASET_CACHE_PATH} \
+    --num-workers ${NUM_WORKERS} \
+    --distributed-timeout-minutes 60 \
     --split 100,0,0"
 
+if [[ ${MOCK_DATASET:-false} = true ]]; then
+    dataset_option=" \
+        --mock-data \
+    "
+fi
+
+if [[ ${NO_MMAP_BIN_FILES:-false} = true ]]; then
+    dataset_option=" ${dataset_option} --no-mmap-bin-files "
+fi
+
+# 日志目录中加入worker_id,快速定位相关日志 0417 lzd
+if [[-z ${RANK} ]]; then
+    WORKER_ID="UNKNOW_RANK"
+else
+    WORKER_ID=worker_${RANK}
+    # WORK_ID=${ATLAS_POD_NAME}+${RANK}
+fi
+
+mkdir -p ${OUTPUT_DIR}/logs/${NAME}
 DISTRIBUTED_ARGS="--nproc_per_node $GPUS_PER_NODE --nnodes $NNODES \
     --node_rank $NODE_RANK --master_addr $MASTER_ADDR --master_port $MASTER_PORT \
-    --tee 3 --log_dir ${OUTPUT_DIR}/logs/${NAME_DLC_TIME}"
+    --tee 3 --log_dir ${OUTPUT_DIR}/logs/${NAME}/${WORKER_ID}"
 
 ##### Prepare logdirs #######
 
@@ -505,8 +538,8 @@ mkdir -p "${OUTPUT_BASEPATH}/data_cache/"
 mkdir -p "${OUTPUT_BASEPATH}/tensorboard/"
 mkdir -p "${OUTPUT_BASEPATH}/checkpoints/"
 mkdir -p "${OUTPUT_BASEPATH}/logs/"
-DEFAULT_TENSORBOARD_DIR="${OUTPUT_BASEPATH}/tensorboard/${NAME_DLC_TIME}"
-# 宁波集群：同任务可视化中的日志存储路径，便于开启查看Tensorboard
+DEFAULT_TENSORBOARD_DIR="${OUTPUT_BASEPATH}/tensorboard/${NAME}"
+# 宁波集群：同任务可视化中的日志存储路径，便于开启查看Tensorboard 0411 lzd 
 TENSORBOARD_DIR=${TENSORBOARD_DIR:-${DEFAULT_TENSORBOARD_DIR}}
 mkdir -p ${TENSORBOARD_DIR}
 
@@ -532,7 +565,7 @@ megatron_options="  \
         --max-position-embeddings ${MAX_POSITION_EMBEDDINGS} \
         --log-interval 1 \
         --log-throughput \
-        --eval-interval 10000 \
+        --eval-interval 10000000 \
         --eval-iters 10 \
         --save-interval ${SAVE_INTERVAL} \
         --tensorboard-queue-size 1 \
@@ -589,7 +622,7 @@ else
         --lr-decay-samples ${LR_DECAY_SAMPLES} \
         --lr-warmup-samples ${LR_WARMUP_SAMPLES} \
         --train-samples ${TRAIN_SAMPLES} \
-        --rampup-batch-size 1920 960 54931640 "
+        --rampup-batch-size 1920 1920 54931640 "
 fi
 
 # Turn on PyTorchProfiler in DSW
@@ -699,6 +732,6 @@ run_cmd="torchrun $DISTRIBUTED_ARGS ${MEGATRON_PATH}/pretrain_gpt.py
  ${uneven_split_option} ${prof_options} ${seqwarm_options} ${new_options} ${fsdp_options} ${ckpt_options}"
 
 echo ${run_cmd}
-[[ $RANK = 0 ]] && mkdir -p ${OUTPUT_DIR}/logs/${NAME_DLC_TIME} && echo ${run_cmd} > ${OUTPUT_DIR}/logs/${NAME_DLC_TIME}/${MODEL_SIZE}-pp-${PP}-ep-${EP}-AC-${AC}-gbs-${GLOBAL_BATCH_SIZE}-cmd.sh
+[[ $RANK = 0 ]] && mkdir -p ${OUTPUT_DIR}/logs/${NAME} && echo ${run_cmd} > ${OUTPUT_DIR}/logs/${NAME}/cmd-${MODEL_SIZE}-pp-${PP}-ep-${EP}-AC-${AC}-gbs-${GLOBAL_BATCH_SIZE}-${TIMESTAMP}.sh
 eval ${run_cmd}
 
