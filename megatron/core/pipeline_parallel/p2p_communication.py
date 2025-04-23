@@ -245,35 +245,26 @@ def _communicate_fp8(
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """Communicate tensors between stages. Used as helper method in other
     communication methods that are used in megatron/schedules.py.
-
     Args:
         tensor_send_next (torch.Tensor, optional):
             Tensor to send to next rank (no tensor sent if None)
-
         tensor_send_prev (torch.Tensor, optional):
             Tensor to send to prev rank (no tensor sent if None)
-
         recv_prev (boolean, required):
             whether tensor should be received from previous rank.
-
         recv_next (boolean, required):
             whether tensor should be received from next rank.
-
         tensor_shape (List[int] or torch.Size, required):
             shape of tensor to receive (this method assumes that all
             tensors sent and received in a single function call are
             the same shape).
-
         wait_on_reqs (boolean, optional, default=False):
             For non-batched p2p communication, wait on each request
             before returning.
-
     Returns:
         tuple containing
-
         - tensor_recv_prev: torch.Tensor if recv_prev is True, None otherwise.
         - tensor_recv_next: torch.Tensor if recv_next is True, None otherwise.
-
     """
     # wait_on_reqs = True
     tensor_recv_prev_func = None
@@ -541,6 +532,7 @@ def _communicate(
         - tensor_recv_next: torch.Tensor if recv_next is True, None otherwise.
 
     """
+    
     # Interim solution: Directly invoke the FP8 approach
     if config.fp8_comm:
         return _communicate_fp8(

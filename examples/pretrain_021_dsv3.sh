@@ -101,7 +101,12 @@ elif [ $ENV = dlc ]; then
 fi
 
 if [ -z ${MP_VP} ]; then
-    vp_options=""
+    if [[ ${MP_VP_RANK:-none} != none ]]; then
+        vp_options=" \
+            --num-virtual-stages-per-pipeline-rank ${MP_VP_RANK}"
+    else
+        vp_options=""
+    fi
 else
     vp_options=" \
         --num-layers-per-virtual-pipeline-stage ${MP_VP}"
@@ -194,13 +199,12 @@ moe_options=" \
 
 elif [ $MODEL_SIZE = 200B ]; then
 
-HIDDEN_SIZE=5120
+HIDDEN_SIZE=${HIDDEN_SIZE:-5120}
 NUM_ATTN_HEADS=128
 NUM_LAYERS=${NUM_LAYERS:-60} 
-INTERMEDIATE_SIZE=12288
-MOE_INTERMEDIATE_SIZE=1536
-# MAX_POSITION_EMBEDDINGS=${SEQ_LEN} 
-MAX_POSITION_EMBEDDINGS=163840
+INTERMEDIATE_SIZE=${INTERMEDIATE_SIZE:-12288}
+MOE_INTERMEDIATE_SIZE=${MOE_INTERMEDIATE_SIZE:-1536}
+MAX_POSITION_EMBEDDINGS=${MAX_POSITION_EMBEDDINGS:-163840}
 EXTRA_VOCAB_SIZE=2400
 Q_LORA_RANK=1536
 KV_LORA_RANK=512
@@ -209,12 +213,11 @@ QK_ROPE_HEAD_DIM=64
 V_HEAD_DIM=128
 ROPE_THETA=10000
 SCALE_FACTOR=40
-NUM_EXPERTS=160
-# NUM_EXPERTS=120
-ROUTER_TOPK=6
-NUM_SHARED_EXPERTS=2
+NUM_EXPERTS=${NUM_EXPERTS:-160}
+ROUTER_TOPK=${ROUTER_TOPK:-6}
+NUM_SHARED_EXPERTS=${NUM_SHARED_EXPERTS:-2}
 MOE_LAYER_FREQ=1
-MOE_FIRST_K_DENSE_REPLACE=1
+MOE_FIRST_K_DENSE_REPLACE=${MOE_FIRST_K_DENSE_REPLACE:-1}
 RMS_NORM_EPS=1e-6
 
 moe_options=" \
@@ -321,7 +324,7 @@ echo "Unsupported dispatcher type: ${DISPATCHER_TYPE}"
 exit 1
 fi
 
-ROUTER_SCORE_FUNC=${ROUTER_SCORE_FUNC:-sigmod}
+ROUTER_SCORE_FUNC=${ROUTER_SCORE_FUNC:-pre_softmax}
 if [ $ROUTER_SCORE_FUNC = sigmod ]; then
     moe_options=" ${moe_options}  --moe-router-score-function sigmoid  "
 elif [ $ROUTER_SCORE_FUNC = softmax ]; then
@@ -372,9 +375,20 @@ elif [ $AC = sel ]; then
     "
     if [[ ${MOE_PERMUTE_CHECKPOINT:-none} != none ]]; then
         activation_checkpoint_options=" ${activation_checkpoint_options} \
-             --moe-perm-checkpoint ${MOE_PERMUTE_CHECKPOINT} 
+            --moe-perm-checkpoint ${MOE_PERMUTE_CHECKPOINT} 
         "
     fi
+elif [ $AC = permckpt ]; then
+    activation_checkpoint_options=" \
+        --recompute-granularity selective \
+        --recompute-beside-moe \
+        --recompute-modules moe \
+        --moe-perm-checkpoint ${MOE_PERMUTE_CHECKPOINT:-full} \
+    "
+elif [ $AC = moeckpt ]; then
+    activation_checkpoint_options=" \
+        --recompute-beside-moe \
+    "
 elif [ $AC = none ]; then
     activation_checkpoint_options=" \
     "
@@ -477,7 +491,7 @@ fi
 dataset_option=" \
     --data-path ${DATASET_PATH} \
     --data-cache-path ${OUTPUT_DIR}/data_cache \
-    --num-workers 4 \
+    --num-workers ${NUM_WORKERS:-4} \
     --split 100,0,0"
 
 DISTRIBUTED_ARGS="--nproc_per_node $GPUS_PER_NODE --nnodes $NNODES \
@@ -596,8 +610,8 @@ seqwarm_options=" --warmup-seq-length 0:2048,100:4096 "
 fi
 
 # new_options=" --checkpoint-kv-up-proj --recompute-inputlayer-rmsnorm --recompute-pre-mlp-rmsnorm "
-if [[ ${CUSTOM_PIPE:-on} = off ]]; then
-    new_options=" ${new_options} --no-custom-partition-with-smooth-weight "
+if [[ ${CUSTOM_PIPE:-none} != none ]]; then
+    new_options=" ${new_options} --custom-pipeline $CUSTOM_PIPE"
 fi
 
 # Use TP-PP-DP mapping
@@ -617,18 +631,13 @@ if [[ ${USE_FSDP:-false} = true ]] ; then
     unset CUDA_DEVICE_MAX_CONNECTIONS
 fi
 
-# User Optimizer CPU Offloading
-if [[ ${OFFLOAD_OPTIMIZER:-false} = true ]] ; then
-    new_options=" ${new_options} --optimizer-cpu-offload --use-precision-aware-optimizer \
-        --main-grads-dtype bf16 "
-        # --main-params-dtype fp16 \
-fi
-
 # Precision Aware Optimizer
+OFFLOAD_OPTIMIZER=${OFFLOAD_OPTIMIZER:-false}
 PAO_LEVEL=${PAO:-none}
 if [[ $PAO_LEVEL = none ]]; then
     new_options=" ${new_options} \
     "
+    OFFLOAD_OPTIMIZER=false
 elif [[ $PAO_LEVEL = moments ]]; then
     new_options=" ${new_options} \
         --use-precision-aware-optimizer \
@@ -654,6 +663,11 @@ else
     echo "PAO_LEVEL=${PAO_LEVEL} is not a valid option. Valid options include: none, moments, grads, weights"
     exit 1
 fi
+if [[ $OFFLOAD_OPTIMIZER = true ]]; then
+    new_options=" ${new_options} \
+        --optimizer-cpu-offload \
+    "
+fi
 
 # 开启12LHSD的atten计算方法,打印MFU
 if [[ ${BENCHMARK_MFU:-true} = true ]] ; then
@@ -672,6 +686,10 @@ fi
 
 if [[ ${CHECK_NAN:-true} = false ]]; then
     new_options=" ${new_options} --no-check-for-nan-in-loss-and-grad"
+fi
+
+if [[ ${FP8_COMM:-false} = true ]]; then
+    new_options=" ${new_options} --fp8-comm "
 fi
 
 run_cmd="torchrun $DISTRIBUTED_ARGS ${MEGATRON_PATH}/pretrain_gpt.py

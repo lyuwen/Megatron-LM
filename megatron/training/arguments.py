@@ -444,6 +444,8 @@ def validate_args(args, defaults={}):
         '--num-layers-per-virtual-pipeline-stage and --num-virtual-stages-per-pipeline-rank cannot be set at the same time'
 
     if args.num_layers_per_virtual_pipeline_stage is not None or args.num_virtual_stages_per_pipeline_rank is not None:
+        assert args.custom_pipeline is None, \
+            'Does not support custom pipeline with uneven virtual pipeline parallelism'
         if args.overlap_p2p_comm:
             assert args.pipeline_model_parallel_size > 1, \
                 'When interleaved schedule is used, pipeline-model-parallel size '\
@@ -489,7 +491,7 @@ def validate_args(args, defaults={}):
                   'since non-interleaved schedule does not support overlapping p2p communication '
                   'and aligned param AG')
 
-        if args.decoder_first_pipeline_num_layers is None and args.decoder_last_pipeline_num_layers is None:
+        if args.decoder_first_pipeline_num_layers is None and args.decoder_last_pipeline_num_layers is None and args.custom_pipeline is None:
             # Divisibility check not applicable for T5 models which specify encoder_num_layers
             # and decoder_num_layers.
             if args.num_layers is not None:
@@ -2117,6 +2119,10 @@ def _add_distributed_args(parser):
                        help='Number of layers per virtual pipeline stage')
     group.add_argument('--num-virtual-stages-per-pipeline-rank', type=int, default=None,
                        help='Number of virtual pipeline stages per pipeline parallelism rank')
+    group.add_argument('--custom-pipeline', nargs='+', type=int, default=None,
+                       help='Custom pipeline schedule for pipeline parallel. '
+                       'The list contains the number of stages for each pipeline parallel rank. '
+                       'For example, "--custom-pipeline 2 2" means two stages for the first rank and two stages for the second rank.')  
     group.add_argument('--microbatch-group-size-per-virtual-pipeline-stage', type=int, default=None,
                        help='Number of contiguous microbatches per virtual pipeline stage',
                        dest='microbatch_group_size_per_vp_stage')

@@ -59,6 +59,21 @@ def get_num_layers_to_build(config: TransformerConfig) -> int:
     Returns:
         int: The number of layers to be built for the current pipeline stage.
     """
+    if config.custom_pipeline is not None:
+        assert len(config.custom_pipeline) == parallel_state.get_pipeline_model_parallel_world_size(), \
+            f"The length of custom_pipeline {len(config.custom_pipeline)} must be equal to the number of pipeline stages {parallel_state.get_pipeline_model_parallel_world_size()}"
+        assert sum(config.custom_pipeline) == config.num_layers, \
+            f"The sum of custom_pipeline {sum(config.custom_pipeline)} must be equal to the number of layers {config.num_layers}"
+        assert config.custom_pipeline[parallel_state.get_pipeline_model_parallel_rank()] > 0, \
+            f"The number of layers for pipeline stage {parallel_state.get_pipeline_model_parallel_rank()} must be greater than 0"
+        assert config.num_layers_in_first_pipeline_stage is None and config.num_layers_in_last_pipeline_stage is None, \
+            "Does not support custom pipeline with num_layers_in_first_pipeline_stage or num_layers_in_last_pipeline_stage"
+        assert config.account_for_embedding_in_pipeline_split is False and config.account_for_loss_in_pipeline_split is False, \
+            "Does not support custom pipeline with account_for_embedding_in_pipeline_split or account_for_loss_in_pipeline_split"
+        assert parallel_state.get_virtual_pipeline_model_parallel_world_size() is None, \
+            "Does not support custom pipeline with virtual pipeline model parallel"
+        return config.custom_pipeline[parallel_state.get_pipeline_model_parallel_rank()]
+
     if (
         config.num_layers_in_first_pipeline_stage is not None
         or config.num_layers_in_last_pipeline_stage is not None

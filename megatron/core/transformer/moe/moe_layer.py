@@ -190,13 +190,13 @@ class MoELayer(BaseMoELayer):
 
         def custom_forward_perm_checkpoint(hidden_states):
             probs, routing_map = self.router(hidden_states)
-            (dispatched_input, tokens_per_expert) = self.token_dispatcher.token_permutation(
+            (dispatched_input, tokens_per_expert, permuted_probs) = self.token_dispatcher.token_permutation(
                 hidden_states, probs, routing_map
             )
             if FP8_CTX_MOE:
-                expert_output, mlp_bias = tensor_parallel.fp8_checkpoint(self.experts, False, dispatched_input, tokens_per_expert)
+                expert_output, mlp_bias = tensor_parallel.fp8_checkpoint(self.experts, False, dispatched_input, tokens_per_expert, permuted_probs)
             else:
-                expert_output, mlp_bias = tensor_parallel.checkpoint(self.experts, False, dispatched_input, tokens_per_expert)
+                expert_output, mlp_bias = tensor_parallel.checkpoint(self.experts, False, dispatched_input, tokens_per_expert, permuted_probs)
             output, mlp_bias = self.token_dispatcher.token_unpermutation(expert_output, mlp_bias)
             if self.use_shared_expert and not self.shared_expert_overlap:
                 # if shared_expert_overlap is True, the expert calculation happens in

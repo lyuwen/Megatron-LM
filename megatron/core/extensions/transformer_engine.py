@@ -1446,6 +1446,7 @@ except ImportError:
 
     te_parallel_cross_entropy = None  # type: ignore[assignment, misc]
 
+
 def Fp8Quantize(tensor: torch.Tensor) -> (torch.Tensor, torch.Tensor):
     quantizer = Float8CurrentScalingQuantizer(
         fp8_dtype = tex.DType.kFloat8E4M3,
