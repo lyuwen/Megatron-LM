@@ -690,6 +690,7 @@ fi
 
 if [[ ${FP8_COMM:-false} = true ]]; then
     new_options=" ${new_options} --fp8-comm "
+    export FP8_COMM_DEEPEP=true
 fi
 
 run_cmd="torchrun $DISTRIBUTED_ARGS ${MEGATRON_PATH}/pretrain_gpt.py
