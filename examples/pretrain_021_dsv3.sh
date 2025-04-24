@@ -387,7 +387,7 @@ elif [ $AC = permckpt ]; then
         --recompute-granularity selective \
         --recompute-beside-moe \
         --recompute-modules moe \
-        --moe-perm-checkpoint ${MOE_PERMUTE_CHECKPOINT:-full} \
+        --moe-perm-checkpoint ${MOE_PERMUTE_CHECKPOINT:-half} \
     "
 elif [ $AC = moeckpt ]; then
     activation_checkpoint_options=" \
