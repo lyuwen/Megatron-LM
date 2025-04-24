@@ -726,7 +726,7 @@ def validate_args(args, defaults={}):
     # LFu: convert moe_first_k_dense_replace into moe_layer_freq in validate_args
     if args.moe_first_k_dense_replace:
         if isinstance(args.moe_layer_freq, int):
-            moe_layer_pattern = [
+            moe_layer_freq = [
                 1 if (i % args.moe_layer_freq == 0) else 0 for i in range(args.num_layers)
             ]
         elif isinstance(args.moe_layer_freq, list):

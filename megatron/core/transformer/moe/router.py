@@ -402,7 +402,6 @@ class TopKRouter(Router):
                     self.layer_number,
                     self.config.num_layers,
                     layer_pattern=self.config.moe_layer_pattern,
-                    reduce_group=sequence_partition_group,
                     avg_group=mpu.get_data_parallel_group()
             )
         return logits
