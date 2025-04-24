@@ -71,6 +71,14 @@ class BlendedMegatronDatasetConfig:
 
     aggressive_memory_strat: bool = False
     """When using distributed dataset builder, use aggressive memory saving strategy."""
+    
+    mid_level_dataset_surplus: float = 0.005
+    """The sample surplus to build for the mid-level datasets(s). Defaults arbitrarily to 0.005.
+       This value is irrelevant for single source data blends. This value may need to be increased
+       if the top level dataset oversamples the mid level dataset(s). This value may be set to 0.0
+       in future if the top level dataset is constrained to not oversample the mid level
+       datasets(s).
+    """
 
     def __post_init__(self) -> None:
         """Do asserts and set fields post init"""

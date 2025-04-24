@@ -43,7 +43,7 @@ from megatron.core.utils import (
     get_data_parallel_group_if_dtensor,
     to_local_if_dtensor,
 )
-from megatron.legacy.model import Float16Module
+from megatron.core.transformer.module import Float16Module
 from megatron.legacy.model.module import param_is_not_shared
 from megatron.core.sequence_length_scheduler import (
     get_sequence_length,
@@ -162,13 +162,6 @@ def calc_params_l2_norm(model, force_create_fp32_copy=False):
                                      op=torch.distributed.ReduceOp.SUM,
                                      group=mpu.get_data_parallel_group())
 
-    # Sum across all model-parallel GPUs (tensor + pipeline).
-    torch.distributed.all_reduce(
-        norm_2,
-        op=torch.distributed.ReduceOp.SUM,
-        group=mpu.get_model_parallel_group()
-    )
-
     # Add norm contribution from expert layers in MoEs.
     if len(moe_params_data) > 0:
         moe_norm, _ = multi_tensor_applier(
@@ -183,12 +176,39 @@ def calc_params_l2_norm(model, force_create_fp32_copy=False):
             torch.distributed.all_reduce(moe_norm_2,
                                         op=torch.distributed.ReduceOp.SUM,
                                         group=mpu.get_expert_data_parallel_group())
+    # Account for MoE norm even if current rank doesn't have any expert params to prevent
+    # hang in models with un-even numbers of MoE layers.
+    # See details in https://gitlab-master.nvidia.com/ADLR/megatron-lm/-/issues/409
+    else:
+        moe_norm_2 = torch.zeros_like(norm_2)
 
-        # Sum across expert tensor, model and pipeline parallel GPUs.
+    # Reduce norm across model parallel groups (dense and expert).
+    # Dense params should sum across all model-parallel GPUs (tensor + pipeline).
+    dense_reduce_group = mpu.get_model_parallel_group()
+    ranks_in_dense_reduce_group = torch.distributed.get_process_group_ranks(dense_reduce_group)
+    # Expert params should sum across all model-parallel GPUs (expert + tensor + pipeline).
+    expert_reduce_group = mpu.get_expert_tensor_model_pipeline_parallel_group()
+    ranks_in_expert_reduce_group = torch.distributed.get_process_group_ranks(expert_reduce_group)
+
+    # If dense and expert reduce groups are the same, sum then reduce.
+    if ranks_in_dense_reduce_group == ranks_in_expert_reduce_group:
+        norm_2 += moe_norm_2
+        torch.distributed.all_reduce(
+            norm_2,
+            op=torch.distributed.ReduceOp.SUM,
+            group=dense_reduce_group
+        )
+    # If dense and expert reduce groups are different, reduce then sum.
+    else:
+        torch.distributed.all_reduce(
+            norm_2,
+            op=torch.distributed.ReduceOp.SUM,
+            group=dense_reduce_group
+        )
         torch.distributed.all_reduce(
             moe_norm_2,
             op=torch.distributed.ReduceOp.SUM,
-            group=mpu.get_expert_tensor_model_pipeline_parallel_group()
+            group=expert_reduce_group
         )
         norm_2 += moe_norm_2
 
@@ -615,8 +635,11 @@ def get_batch_on_this_tp_rank_sft(data_iterator, per_seq_average=False):
 
         tokens_ = data['input_ids'].long()
         labels_ = data['labels'].long()
-        tokens = tokens_[:, :-1].contiguous()
-        labels = labels_[:, 1:].contiguous()
+        # tokens = tokens_[:, :-1].contiguous() 
+        # labels = labels_[:, 1:].contiguous() 
+        tokens = tokens_.contiguous() 
+        labels = labels_.roll(-1,-1).contiguous()
+        labels[:,-1]=-100
         # core/tensor_parallel/cross_entropy.py, target_mask = (target < vocab_start_index) | (target >= vocab_end_index)
         # labels[labels == tokenizer.eos_token_id] = -100
         # NOTE: if eos == pad, we map <eos> to  - 1 - eos_id, map these tokens back
@@ -631,6 +654,11 @@ def get_batch_on_this_tp_rank_sft(data_iterator, per_seq_average=False):
             args.reset_position_ids,
             args.reset_attention_mask,
             args.eod_mask_loss)
+
+        for label_id, label in enumerate(labels):
+            for idx, item in enumerate(label):
+                if item == -100:
+                    loss_mask[label_id][idx] = 0.
 
         num_seqs = None
         if per_seq_average:
@@ -661,12 +689,13 @@ def get_batch_on_this_tp_rank_sft(data_iterator, per_seq_average=False):
             _broadcast(batch['position_ids'])
 
         elif mpu.is_pipeline_last_stage():
-            if args.use_multi_token_prediction:
-                _broadcast(batch['tokens'])
+            # if args.use_multi_token_prediction:
+            #     _broadcast(batch['tokens'])
             _broadcast(batch['labels'])
             _broadcast(batch['loss_mask'])
             _broadcast(batch['attention_mask'])
             _broadcast(batch['num_seqs'])
+            _broadcast(batch['position_ids'])
 
     else:
 
@@ -705,10 +734,10 @@ def get_batch_on_this_tp_rank_sft(data_iterator, per_seq_average=False):
             _broadcast(position_ids)
 
         elif mpu.is_pipeline_last_stage():
-            if args.use_multi_token_prediction:
-                _broadcast(tokens)
-            else:
-                tokens = None
+            # if args.use_multi_token_prediction:
+            #     _broadcast(tokens)
+            # else:
+            tokens = None
             position_ids = None
 
             _broadcast(labels)

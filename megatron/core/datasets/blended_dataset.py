@@ -143,7 +143,6 @@ class BlendedDataset(torch.utils.data.Dataset):
             log_single_rank(
                 logger, logging.INFO, f"Build and save the {type(self).__name__} indices"
             )
-            self.built_anew_on_cache_miss = True
 
             # Build the dataset and dataset sample indexes
             log_single_rank(
@@ -198,6 +197,19 @@ class BlendedDataset(torch.utils.data.Dataset):
                 self.async_shuffle.join()
                 dataset_shuffle_index = self.async_shuffle.get_result()
                 self.async_shuffle.shutdown()
+                
+            dataset_indices, dataset_sizes = numpy.unique(dataset_index, return_counts=True)
+            for i, (_index, _size) in enumerate(zip(dataset_indices, dataset_sizes)):
+                if len(self.datasets[_index]) < _size:
+                    raise IndexError(
+                        f"The {self.split.name} blend oversamples the contributing datasets and, "
+                        f"for example, requests {_size} samples from "
+                        f"{type(self.datasets[_index]).__name__} number {i} in excess of its size "
+                        f"{len(self.datasets[_index])}. The current value of the config attribute "
+                        f"mid_level_dataset_surplus may be increased, e.g. two- or ten-fold, from "
+                        f"its current value ({self.config.mid_level_dataset_surplus}) to ensure a "
+                        f"sufficient mid-level dataset sample margin from which to draw."
+                    )
 
             if path_to_cache:
                 os.makedirs(path_to_cache, exist_ok=True)

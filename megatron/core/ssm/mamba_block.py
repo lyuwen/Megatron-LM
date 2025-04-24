@@ -30,7 +30,7 @@ from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.spec_utils import ModuleSpec, build_module
 from megatron.core.transformer.transformer_layer import TransformerLayer
 from megatron.core.transformer.utils import sharded_state_dict_default
-from megatron.core.utils import deprecate_inference_params, make_viewless_tensor
+from megatron.core.utils import WrappedTensor, deprecate_inference_params, make_viewless_tensor
 
 
 # https://github.com/huggingface/transformers/blob/c28d04e9e252a1a099944e325685f14d242ecdcd/src/transformers/models/gpt2/modeling_gpt2.py#L454
@@ -155,23 +155,27 @@ class MambaStack(MegatronModule):
 
         self.layers = nn.ModuleList()
         for i, layer_type in enumerate(layer_type_list):
-            if layer_type == LayerSymbols.MAMBA:
-                layer = build_module(
-                    submodules.mamba_layer,
-                    config=self.config,
-                    residual_in_fp32=residual_in_fp32,
-                    layer_number=i + 1 + pp_layer_offset,
-                )
-            elif layer_type == LayerSymbols.ATTENTION:
-                # Transformer layers apply their own pp_layer_offset
-                layer = build_module(
-                    submodules.attention_layer, config=self.config, layer_number=i + 1
-                )
-            elif layer_type == LayerSymbols.MLP:
-                # Transformer layers apply their own pp_layer_offset
-                layer = build_module(submodules.mlp_layer, config=self.config, layer_number=i + 1)
-            else:
-                assert False, "unexpected layer_type"
+            fp8_init_context = get_fp8_context(self.config, i + pp_layer_offset, is_init=True)
+            with fp8_init_context:
+                if layer_type == LayerSymbols.MAMBA:
+                    layer = build_module(
+                        submodules.mamba_layer,
+                        config=self.config,
+                        residual_in_fp32=residual_in_fp32,
+                        layer_number=i + 1 + pp_layer_offset,
+                    )
+                elif layer_type == LayerSymbols.ATTENTION:
+                    # Transformer layers apply their own pp_layer_offset
+                    layer = build_module(
+                        submodules.attention_layer, config=self.config, layer_number=i + 1
+                    )
+                elif layer_type == LayerSymbols.MLP:
+                    # Transformer layers apply their own pp_layer_offset
+                    layer = build_module(
+                        submodules.mlp_layer, config=self.config, layer_number=i + 1
+                    )
+                else:
+                    assert False, "unexpected layer_type"
             self.layers.append(layer)
 
         # Required for activation recomputation
@@ -237,7 +241,7 @@ class MambaStack(MegatronModule):
 
     def forward(
         self,
-        hidden_states: Tensor,
+        hidden_states: Union[Tensor, WrappedTensor],
         attention_mask: Tensor,
         inference_context: Optional[BaseInferenceContext] = None,
         rotary_pos_emb: Optional[Tensor] = None,
@@ -251,7 +255,9 @@ class MambaStack(MegatronModule):
             final hidden units
 
         Args:
-            hidden_states (Tensor): the input tensor.
+            hidden_states (Union[Tensor, WrappedTensor]): the input tensor.
+                Can be passed as a WrappedTensor during inference to avoid an obsolete
+                reference in the calling function.
             attention_mask (Tensor): the attention mask.
             inference_context (BaseInferenceContext): the inference parameters.
             rotary_pos_emb (Tensor, optional): the rotary positional embeddings.
@@ -265,6 +271,14 @@ class MambaStack(MegatronModule):
         if not self.pre_process:
             # See set_input_tensor()
             hidden_states = self.input_tensor
+
+        # Delete the obsolete reference to the initial input tensor if necessary
+        if isinstance(hidden_states, WrappedTensor):
+            hidden_states = hidden_states.unwrap()
+
+        # Update the inference parameters with the current batch size in case it is variable
+        if inference_context and not self.training:
+            inference_context.current_batch_size = hidden_states.size(1)
 
         if inference_context:
             assert (

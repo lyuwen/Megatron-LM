@@ -2,14 +2,14 @@
 
 from abc import ABC, abstractmethod
 from functools import partial
-from typing import Callable
+from typing import Callable, Optional
 
 import torch
 
-from megatron.core import parallel_state
 from megatron.core.tensor_parallel import gather_from_sequence_parallel_region
 from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.moe.moe_utils import (
+    ModelCommProcessGroups,
     MoEAuxLossAutoScaler,
     save_to_aux_losses_tracker,
     save_to_tokens_experts_info_tracker,
@@ -29,18 +29,24 @@ from megatron.core.sequence_length_scheduler import get_iteration
 class Router(ABC, MegatronModule):
     """Base Router class"""
 
-    def __init__(self, config: TransformerConfig) -> None:
+    def __init__(
+        self, config: TransformerConfig, model_comm_pgs: Optional[ModelCommProcessGroups] = None
+    ) -> None:
         """
         Initialize the Router module.
 
         Args:
             config (TransformerConfig): Configuration object for the Transformer model.
+            model_comm_pgs (ModelCommProcessGroups, optional): Process groups for MoE operations.
         """
         super().__init__(config)
         self.config = config
         self.num_experts = self.config.num_moe_experts
         self.moe_aux_loss_func = None
         self.layer_number = None
+        self.tp_group = model_comm_pgs.tp_group
+        self.cp_group = model_comm_pgs.cp_group
+        self.tp_cp_group = model_comm_pgs.tp_cp_group
 
         # Initialize the gate weights.
         # TODO: Add support for GPU initialization, which requires updating the golden values.
@@ -51,6 +57,9 @@ class Router(ABC, MegatronModule):
             config.init_method(self.weight)
         self.weight.data = self.weight.data.to(dtype=config.params_dtype)
         setattr(self.weight, 'sequence_parallel', config.sequence_parallel)
+        # If calculate per token loss, we need to scale up moe aux loss by the number of tokens.
+        # So we need to know if the model is configured to calculate per token loss.
+        self.calculate_per_token_loss = self.config.calculate_per_token_loss
 
     def gating(self, input: torch.Tensor):
         """Forward pass of the router gate.
@@ -104,13 +113,16 @@ class Router(ABC, MegatronModule):
 class TopKRouter(Router):
     """Route each token to the top-k experts."""
 
-    def __init__(self, config: TransformerConfig) -> None:
+    def __init__(
+        self, config: TransformerConfig, model_comm_pgs: Optional[ModelCommProcessGroups] = None
+    ) -> None:
         """Initialize the zero token dropping router.
 
         Args:
             config (TransformerConfig): The configuration for the transformer model.
+            model_comm_pgs (ModelCommProcessGroups, optional): Process groups for MoE operations.
         """
-        super().__init__(config=config)
+        super().__init__(config=config, model_comm_pgs=model_comm_pgs)
         self.topk = self.config.moe_router_topk
         self.routing_type = self.config.moe_router_load_balancing_type
         self.score_function = self.config.moe_router_score_function
@@ -139,6 +151,16 @@ class TopKRouter(Router):
         if self.config.moe_promote_router_dtype:
             self.recover_fp32()
         return self
+    def _maintain_float32_expert_bias(self):
+        """
+        Maintain the expert bias in float32.
+
+        When using bf16/fp16, the expert bias gets converted to lower precision in Float16Module.
+        We keep it in float32 to avoid routing errors when updating the expert_bias.
+        """
+        if hasattr(self, 'expert_bias') and self.expert_bias is not None:
+            if self.expert_bias.dtype != torch.float32:
+                self.expert_bias.data = self.expert_bias.data.to(torch.float32)
 
     def sinkhorn_load_balancing(self, logits: torch.Tensor):
         """Apply sinkhorn routing to the logits tensor.
@@ -183,7 +205,7 @@ class TopKRouter(Router):
             torch.Tensor: The normalized routing scores.
         """
         if self.score_function == "softmax":
-            scores = torch.softmax(logits, dim=-1, dtype=torch.float32).type_as(logits)
+            scores = torch.softmax(logits, dim=-1, dtype=torch.float32)
         elif self.score_function == "sigmoid":
             scores = torch.sigmoid(logits)
             scores = (
@@ -285,27 +307,29 @@ class TopKRouter(Router):
         moe_aux_loss_coeff = self.config.moe_aux_loss_coeff
         if moe_aux_loss_coeff == 0:
             return activation
+
         sequence_partition_group = None
         if self.config.moe_token_dispatcher_type == "alltoall_seq":
-            sequence_partition_group = parallel_state.get_context_parallel_group()
-            moe_aux_loss_coeff /= parallel_state.get_tensor_model_parallel_world_size()
-        elif parallel_state.get_tensor_and_context_parallel_world_size() > 1:
-            sequence_partition_group = parallel_state.get_tensor_and_context_parallel_group()
+            sequence_partition_group = self.cp_group
+            moe_aux_loss_coeff /= self.tp_group.size()
+        elif self.tp_cp_group.size() > 1:
+            sequence_partition_group = self.tp_cp_group
 
         aux_loss = load_balancing_loss_func(
             moe_aux_loss_coeff=moe_aux_loss_coeff, sequence_partition_group=sequence_partition_group
         )
         # LFu: disable loss aggregationg during the recompute forward pass
-        if not RecomputeContext.is_recompute:
-            save_to_aux_losses_tracker(
-                "load_balancing_loss",
-                aux_loss / moe_aux_loss_coeff,
-                self.layer_number,
-                self.config.num_layers,
-                layer_pattern = self.config.moe_layer_pattern,
-                reduce_group=sequence_partition_group,
-                avg_group=mpu.get_data_parallel_group()
-            )
+        # if not RecomputeContext.is_recompute: # LZD: cannot record load_balancing_loss in log and tensorboard
+        save_to_aux_losses_tracker(
+            "load_balancing_loss",
+            aux_loss / moe_aux_loss_coeff,
+            self.layer_number,
+            self.config.num_layers,
+            layer_pattern = self.config.moe_layer_pattern,
+            reduce_group=sequence_partition_group,
+            avg_group=mpu.get_data_parallel_group()
+        )
+#<<<<<<< HEAD
 
         # LFu: Add device balancing loss
         if self.config.moe_device_balance_loss_coeff or self.config.moe_communication_balance_loss_coeff:
@@ -320,29 +344,42 @@ class TopKRouter(Router):
                 expert_model_parallel_size=self.config.expert_model_parallel_size,
                 moe_router_limited_devices=self.config.moe_router_topk_limited_devices
             )
-            if not RecomputeContext.is_recompute:
-                save_to_aux_losses_tracker(
-                    "device_balancing_loss",
-                    device_loss,
-                    self.layer_number,
-                    self.config.num_layers,
-                    layer_pattern = self.config.moe_layer_pattern,
-                    reduce_group=sequence_partition_group,
-                    avg_group=mpu.get_data_parallel_group()
-                )
-                save_to_aux_losses_tracker(
-                    "communication_balancing_loss",
-                    communication_loss,
-                    self.layer_number,
-                    self.config.num_layers,
-                    layer_pattern = self.config.moe_layer_pattern,
-                    reduce_group=sequence_partition_group,
-                    avg_group=mpu.get_data_parallel_group()
-                )
+            # if not RecomputeContext.is_recompute: # LZD: cannot record load_balancing_loss in log and tensorboard
+            save_to_aux_losses_tracker(
+                "device_balancing_loss",
+                device_loss,
+                self.layer_number,
+                self.config.num_layers,
+                layer_pattern = self.config.moe_layer_pattern,
+                reduce_group=sequence_partition_group,
+                avg_group=mpu.get_data_parallel_group()
+            )
+            save_to_aux_losses_tracker(
+                "communication_balancing_loss",
+                communication_loss,
+                self.layer_number,
+                self.config.num_layers,
+                layer_pattern = self.config.moe_layer_pattern,
+                reduce_group=sequence_partition_group,
+                avg_group=mpu.get_data_parallel_group()
+            )
             aux_loss += self.config.moe_device_balance_loss_coeff * device_loss
             aux_loss += self.config.moe_communication_balance_loss_coeff * communication_loss
         #
         activation = MoEAuxLossAutoScaler.apply(activation, aux_loss)
+#=======
+#        if self.calculate_per_token_loss:
+#            # Scale the aux_loss by the number of tokens.
+#            # The expected final scaling for aux_loss gradients is 1/(num_micro_batches * dp_size).
+#            # After commit 02648000, Megatron started using the number of total tokens to scale
+#            # gradients under the argument of calculate_per_token_loss,
+#            # which scales both the main_loss gradient and aux_loss gradient by
+#            # 1/(num_local_tokens * dp_size * num_micro_batches) in finalize_model_grads function.
+#            # To correct this scaling, we need to scale the aux_loss by num_local_tokens here.
+#            activation = MoEAuxLossAutoScaler.apply(activation, aux_loss * activation.shape[0])
+#        else:
+#            activation = MoEAuxLossAutoScaler.apply(activation, aux_loss)
+#>>>>>>> upstream/main
         return activation
 
     def apply_z_loss(self, logits):
@@ -357,12 +394,20 @@ class TopKRouter(Router):
         """
         if self.config.moe_z_loss_coeff is not None and self.training and torch.is_grad_enabled():
             # Skip Z loss calculations when using torch.no_grad() or checkpointing.
-            moe_z_loss_coeff = (
-                self.config.moe_z_loss_coeff
-                / parallel_state.get_tensor_and_context_parallel_world_size()
-            )
+            moe_z_loss_coeff = self.config.moe_z_loss_coeff / self.tp_cp_group.size()
             z_loss = z_loss_func(logits, moe_z_loss_coeff)
-            logits = MoEAuxLossAutoScaler.apply(logits, z_loss)
+            scale_up = 1.0
+            if self.calculate_per_token_loss:
+                # The expected final scaling for z_loss gradients is
+                # 1/(num_micro_batches * dp_size).
+                # After commit 02648000, Megatron started using the number of total tokens
+                # to scale gradients under the argument of calculate_per_token_loss,
+                # which scales both the main_loss gradient and z_loss gradient by
+                # 1/(num_local_tokens * dp_size * num_micro_batches) in finalize_model_grads().
+                # To correct this scaling, we need to scale the z_loss by num_local_tokens here.
+                logits = MoEAuxLossAutoScaler.apply(logits, z_loss * logits.shape[0])
+            else:
+                logits = MoEAuxLossAutoScaler.apply(logits, z_loss)
             save_to_aux_losses_tracker(
                 "z_loss", z_loss / moe_z_loss_coeff, self.layer_number, self.config.num_layers
             )
@@ -408,7 +453,7 @@ class TopKRouter(Router):
 
         if self.config.moe_token_dispatcher_type == "alltoall_seq":
             # Gather the logits from the TP region
-            logits = gather_from_sequence_parallel_region(logits)
+            logits = gather_from_sequence_parallel_region(logits, self.tp_group)
 
         if self.routing_type == "sinkhorn":
             scores, routing_map = self.sinkhorn_load_balancing(logits)
@@ -448,6 +493,7 @@ class TopKRouter(Router):
         Args:
             input (torch.Tensor): Input tensor.
         """
+        self._maintain_float32_expert_bias()
 
         # Apply input jitter
         input = self.apply_input_jitter(input)
