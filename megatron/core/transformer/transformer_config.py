@@ -325,12 +325,6 @@ class TransformerConfig(ModelParallelConfig):
     v3_fp8_grouped_linear: bool = False
     """When set to True, use the FP8 computation of Grouped Linear."""
 
-    v3_fp8_grouped_linear_save_mem: bool = False
-    """When set to True, use the save-gpu-memory mode in FP8 computation of Grouped Linear."""
-
-    v3_fp8_linear_save_mem: bool = False
-    """When set to True, use the save-gpu-memory mode in FP8 computation of standard Linear."""
-
     ####################
     # MoE related
     ####################

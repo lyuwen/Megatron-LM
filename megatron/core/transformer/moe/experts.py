@@ -713,8 +713,8 @@ class TEGroupedMLP(MegatronModule):
 
         if self.config.fp8 or self.config.v3_fp8:
             assert HAVE_TE, "FP8 requires TE."
-            self.fp8_padding = Fp8Padding(self.num_local_experts)
-            self.fp8_unpadding = Fp8Unpadding(self.num_local_experts)
+            self.fp8_padding = Fp8Padding(self.num_local_experts, 128)
+            self.fp8_unpadding = Fp8Unpadding(self.num_local_experts, 128)
 
     def forward(
         self,

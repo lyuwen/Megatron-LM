@@ -512,9 +512,9 @@ class TransformerBlock(MegatronModule):
         # otherwise do nothing extra at the outer level
         # if we are using other fp8 recipes, then the context manager enter&exit are free
         # we can wrap fp8_context within the for loop over layers, so that we can fine-grained
-        # control which layer will be fp8 or bf16
-        use_outer_fp8_context = self.config.fp8 and self.config.fp8_recipe == Fp8Recipe.delayed and not self.config.v3_fp8
-        use_inner_fp8_context = self.config.fp8 and self.config.fp8_recipe != Fp8Recipe.delayed
+        # control which layer will be fp8 or bf16        
+        use_outer_fp8_context = (self.config.fp8 or self.config.v3_fp8) and (self.config.fp8_recipe == Fp8Recipe.delayed or self.config.fp8_recipe == Fp8Recipe.tensorwise)
+        use_inner_fp8_context = self.config.fp8 and self.config.fp8_recipe != Fp8Recipe.delayed and not self.config.v3_fp8
         outer_fp8_context = get_fp8_context(self.config) if use_outer_fp8_context else nullcontext()
 
         with rng_context, outer_fp8_context:
