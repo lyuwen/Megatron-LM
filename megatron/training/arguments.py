@@ -1131,6 +1131,11 @@ def _add_transformer_engine_args(parser):
                             'Required for CUDA graphs support.')
     group.add_argument('--inference-rng-tracker', action='store_true', default=False,
                        help='Use a random number generator configured for inference.')
+    
+    group.add_argument('--v3-fp8-linear', action='store_true', default=False,
+                       help="Using fp8 in TE Linear")
+    group.add_argument('--v3-fp8-grouped-linear', action='store_true', default=False,
+                       help="Using fp8 in TE Grouped Linear")
     group.add_argument('--fp8-comm', action='store_true', default=False,
                        help='Use fp8 stream in P2P comm and A2A comm.')
     return parser
@@ -2255,6 +2260,8 @@ def _add_distributed_args(parser):
                        "and must be consistent across all ranks.")
     group.add_argument('--replication-factor', default=2, type=int,
                        help="Number of machines storing the replica of a given rank's data.")
+    group.add_argument('--fp8-comm', action='store_true', default=False,
+                       help="Using fp8 stream in P2P and A2A comm")
     return parser
 
 

@@ -419,17 +419,15 @@ elif [ $PR = bf16 ]; then
     pr_options=" \
         --bf16"
 elif [ $PR = fp8 ]; then
-    pr_options=" \
-        --bf16"
-    export USE_BLOCK_FP8=true
-    export SAVE_MEMORY=true 
-#    pr_options=" \
-#        --bf16 \
-#        --fp8-format hybrid \
-#        --fp8-recipe delayed \
-#        --fp8-param-gather \
-#        --fp8-amax-compute-algo max \
-#        --fp8-amax-history-len 1024"
+    #镜像：te23-glfp8-baseline-0424
+    #   TE: 2.3_dev
+    #   OpenMixOpl: 0.1.15.2
+    #   OpenMixOpl_GroupGemm: 1.2.0
+   pr_options=" \
+        --bf16 \
+        --fp8-recipe blockwise \
+        --v3-fp8-grouped-linear \
+    "
 fi
 
 if [ $DO = true ]; then

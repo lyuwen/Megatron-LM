@@ -314,6 +314,17 @@ class TransformerConfig(ModelParallelConfig):
     """Number of layers at the end of the model to keep in BF16 precision when
     first_last_layers_bf16 is True."""
 
+    v3_fp8: bool = False
+    """When set to True, enable FP8 mixed-precision training.
+    When enabled, layer-specific switches (fp8_linear/fp8_grouped_linear) 
+    control FP8 activation per layer."""
+
+    v3_fp8_linear: bool = False
+    """When set to True, use the FP8 computation of standard Linear."""
+
+    v3_fp8_grouped_linear: bool = False
+    """When set to True, use the FP8 computation of Grouped Linear."""
+
     ####################
     # MoE related
     ####################
@@ -1104,6 +1115,9 @@ class TransformerConfig(ModelParallelConfig):
                 "Using a large number of experts (e.g. >=32) without fp32 routing. "
                 "Consider enabling moe_router_dtype for better numerical stability."
             )
+
+        if self.v3_fp8_linear or self.v3_fp8_grouped_linear:
+            self.v3_fp8 = True
 
 
 @dataclass

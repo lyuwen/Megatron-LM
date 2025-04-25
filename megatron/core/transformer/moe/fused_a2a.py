@@ -18,6 +18,16 @@ if FP8_COMM_DEEPEP:
     except ImportError:
         FP8_COMM_DEEPEP = False
 
+FP8_COMM_DEEPEP = os.getenv('FP8_COMM_DEEPEP', '0') == '1' or os.getenv('FP8_COMM_DEEPEP', 'false') == 'true'
+if FP8_COMM_DEEPEP:
+    try:
+        from OpenMixOpl.triton import (
+            act_quant_B_ptr as act_quant,
+            act_dequant_B_ptr as act_dequant
+        )
+    except ImportError:
+        FP8_COMM_DEEPEP = False
+
 import torch
 
 _buffer = None

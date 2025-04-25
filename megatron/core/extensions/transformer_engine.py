@@ -38,11 +38,6 @@ from megatron.core.tensor_parallel.utils import divide
 from megatron.core.transformer.enums import AttnMaskType
 from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core.transformer.utils import make_sharded_tensors_for_checkpoint
-from megatron.core.utils import (
-    get_te_version,
-    get_tensor_model_parallel_group_if_none,
-    is_te_min_version,
-)
 from transformer_engine.pytorch.tensor.float8_tensor import (
     Float8Tensor,
     Float8CurrentScalingQuantizer,
