@@ -725,6 +725,18 @@ def validate_args(args, defaults={}):
         assert args.fp16 or args.bf16, \
             'residual connection in fp32 only supported when using fp16 or bf16.'
 
+    # LFu: convert moe_first_k_dense_replace into moe_layer_freq in validate_args
+    if args.moe_first_k_dense_replace:
+        if isinstance(args.moe_layer_freq, int):
+            moe_layer_freq = [
+                1 if (i % args.moe_layer_freq == 0) else 0 for i in range(args.num_layers)
+            ]
+        elif isinstance(args.moe_layer_freq, list):
+            moe_layer_freq = args.moe_layer_freq
+        for i in range(args.moe_first_k_dense_replace):
+            moe_layer_freq[i] = 0
+        args.moe_layer_freq = moe_layer_freq
+
     if args.moe_grouped_gemm:
         assert args.bf16, 'Currently GroupedGEMM for MoE only supports bf16 dtype.'
         dc = torch.cuda.get_device_capability()
