@@ -1136,10 +1136,6 @@ def _add_transformer_engine_args(parser):
                        help="Using fp8 in TE Linear")
     group.add_argument('--v3-fp8-grouped-linear', action='store_true', default=False,
                        help="Using fp8 in TE Grouped Linear")
-    group.add_argument('--v3-fp8-linear-save-mem', action='store_true', default=False,
-                       help="Save gpu memory when using fp8 in TE Linear")
-    group.add_argument('--v3-fp8-grouped-linear-save-mem', action='store_true', default=False,
-                       help="Save gpu memory when using fp8 in TE Grouped Linear")   
     group.add_argument('--fp8-comm', action='store_true', default=False,
                        help='Use fp8 stream in P2P comm and A2A comm.')
     return parser
