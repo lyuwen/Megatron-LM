@@ -44,7 +44,11 @@ from transformer_engine.pytorch.tensor.float8_tensor import (
     Float8TensorBase,
 )
 import transformer_engine_torch as tex
-
+from megatron.core.utils import (
+    get_te_version,
+    get_tensor_model_parallel_group_if_none,
+    is_te_min_version,
+)
 
 def _get_extra_te_kwargs(config: TransformerConfig):
     extra_transformer_engine_kwargs = {"params_dtype": config.params_dtype}
