@@ -392,7 +392,7 @@ class TransformerBlock(MegatronModule):
                     attention_mask,
                     context,
                     context_mask,
-                    rotary_pos_emb,
+                    rotary_pos_emb
                 )
 
         if self.config.recompute_method == 'uniform':
@@ -401,6 +401,7 @@ class TransformerBlock(MegatronModule):
             # A method to further reduce memory usage reducing checkpoints.
             layer_idx = 0
             while layer_idx < self.num_layers_per_pipeline_rank:
+                # todo print recompute_num_layer
                 hidden_states, context = checkpoint_handler(
                     custom(layer_idx, layer_idx + self.config.recompute_num_layers)
                 )
