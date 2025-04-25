@@ -37,7 +37,7 @@ from .mappings import (
     scatter_to_tensor_model_parallel_region,
 )
 from .random import get_cuda_rng_tracker, get_expert_parallel_rng_tracker_name
-from .utils import VocabUtility, divide
+from .utils import VocabUtility
 from .normed_linear import normed_linear_with_grad_accumulation_and_async_allreduce
 
 _grad_accum_fusion_available = True
@@ -467,6 +467,7 @@ class LinearWithGradAccumulationAndAsyncCommunication(torch.autograd.Function):
         use_bias = ctx.use_bias
         grad_output_buffer = ctx.grad_output_buffer
         wgrad_deferral_limit = ctx.wgrad_deferral_limit
+        handle = None
         tp_group = ctx.tp_group
 
         wgrad_compute = True
@@ -995,7 +996,6 @@ class ColumnParallelLinear(torch.nn.Module):
 
         if gather_output:
             # All-gather across the partitions.
-            assert not self.sequence_parallel
             output = gather_from_tensor_model_parallel_region(output_parallel, group=self.tp_group)
         else:
             output = output_parallel

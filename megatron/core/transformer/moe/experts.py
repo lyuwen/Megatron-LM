@@ -38,6 +38,13 @@ from megatron.core.transformer.utils import (
     sharded_state_dict_default,
 )
 
+import os
+
+USE_BLOCK_FP8 = False
+if os.getenv("USE_BLOCK_FP8", "false") == "true":
+    USE_BLOCK_FP8 = True
+
+
 try:
 
     from megatron.core.extensions.transformer_engine import Fp8Padding, Fp8Unpadding

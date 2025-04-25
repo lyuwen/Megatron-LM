@@ -444,6 +444,8 @@ def validate_args(args, defaults={}):
         '--num-layers-per-virtual-pipeline-stage and --num-virtual-stages-per-pipeline-rank cannot be set at the same time'
 
     if args.num_layers_per_virtual_pipeline_stage is not None or args.num_virtual_stages_per_pipeline_rank is not None:
+        assert args.custom_pipeline is None, \
+            'Does not support custom pipeline with uneven virtual pipeline parallelism'
         if args.overlap_p2p_comm:
             assert args.pipeline_model_parallel_size > 1, \
                 'When interleaved schedule is used, pipeline-model-parallel size '\
@@ -489,7 +491,7 @@ def validate_args(args, defaults={}):
                   'since non-interleaved schedule does not support overlapping p2p communication '
                   'and aligned param AG')
 
-        if args.decoder_first_pipeline_num_layers is None and args.decoder_last_pipeline_num_layers is None:
+        if args.decoder_first_pipeline_num_layers is None and args.decoder_last_pipeline_num_layers is None and args.custom_pipeline is None:
             # Divisibility check not applicable for T5 models which specify encoder_num_layers
             # and decoder_num_layers.
             if args.num_layers is not None:
@@ -722,6 +724,18 @@ def validate_args(args, defaults={}):
     if args.fp32_residual_connection:
         assert args.fp16 or args.bf16, \
             'residual connection in fp32 only supported when using fp16 or bf16.'
+
+    # LFu: convert moe_first_k_dense_replace into moe_layer_freq in validate_args
+    if args.moe_first_k_dense_replace:
+        if isinstance(args.moe_layer_freq, int):
+            moe_layer_freq = [
+                1 if (i % args.moe_layer_freq == 0) else 0 for i in range(args.num_layers)
+            ]
+        elif isinstance(args.moe_layer_freq, list):
+            moe_layer_freq = args.moe_layer_freq
+        for i in range(args.moe_first_k_dense_replace):
+            moe_layer_freq[i] = 0
+        args.moe_layer_freq = moe_layer_freq
 
     if args.moe_grouped_gemm:
         assert args.bf16, 'Currently GroupedGEMM for MoE only supports bf16 dtype.'
@@ -1117,6 +1131,7 @@ def _add_transformer_engine_args(parser):
                             'Required for CUDA graphs support.')
     group.add_argument('--inference-rng-tracker', action='store_true', default=False,
                        help='Use a random number generator configured for inference.')
+    
     group.add_argument('--v3-fp8-linear', action='store_true', default=False,
                        help="Using fp8 in TE Linear")
     group.add_argument('--v3-fp8-grouped-linear', action='store_true', default=False,
@@ -1125,7 +1140,8 @@ def _add_transformer_engine_args(parser):
                        help="Save gpu memory when using fp8 in TE Linear")
     group.add_argument('--v3-fp8-grouped-linear-save-mem', action='store_true', default=False,
                        help="Save gpu memory when using fp8 in TE Grouped Linear")   
-
+    group.add_argument('--fp8-comm', action='store_true', default=False,
+                       help='Use fp8 stream in P2P comm and A2A comm.')
     return parser
 
 def _add_inference_args(parser):
@@ -1594,7 +1610,6 @@ def _add_training_args(parser):
                        help="Use activation checkpointing.")
     group.add_argument("--cpu-offloading-num-layers", type=int, default=0,
                        help="The num of layers to be moved to CPU")
-    #
     group.add_argument('--no-check-for-nan-in-loss-and-grad', action='store_false',
                        help='Check for NaNs in loss and grad',
                        dest='check_for_nan_in_loss_and_grad')
@@ -2124,6 +2139,10 @@ def _add_distributed_args(parser):
                        help='Number of layers per virtual pipeline stage')
     group.add_argument('--num-virtual-stages-per-pipeline-rank', type=int, default=None,
                        help='Number of virtual pipeline stages per pipeline parallelism rank')
+    group.add_argument('--custom-pipeline', nargs='+', type=int, default=None,
+                       help='Custom pipeline schedule for pipeline parallel. '
+                       'The list contains the number of stages for each pipeline parallel rank. '
+                       'For example, "--custom-pipeline 2 2" means two stages for the first rank and two stages for the second rank.')  
     group.add_argument('--microbatch-group-size-per-virtual-pipeline-stage', type=int, default=None,
                        help='Number of contiguous microbatches per virtual pipeline stage',
                        dest='microbatch_group_size_per_vp_stage')
@@ -2385,8 +2404,6 @@ def _add_data_args(parser):
                        help='Reset dataloader to start from 0.')
     group.add_argument('--reset-iterations', nargs="?", const=0, type=int,
                        help='Reset iterations to a given value.')
-    group.add_argument('--s3-cache-path', type=str, default=None,
-                       help='Path to cache index files when using s3 dataloader')
     group.add_argument('--object-storage-cache-path', type=str, default=None,
                        help='Path to cache index files when using s3 or msc dataloader')
     group.add_argument('--mid-level-dataset-surplus', type=float, default=0.005,
@@ -2568,8 +2585,6 @@ def _add_moe_args(parser):
                        'Only effective when moe-shared-expert-intermediate-size is set.')
     group.add_argument('--moe-grouped-gemm', action='store_true',
                        help='When there are multiple experts per rank, launch multiple local GEMM kernels in multiple streams to improve the utilization and performance with GroupedLinear in TransformerEngine.')
-    group.add_argument('--moe-use-legacy-grouped-gemm', action='store_true',
-                       help='Use legacy GroupedMLP rather than TEGroupedMLP. Note: The legacy one will be deprecated soon.')
     group.add_argument('--moe-layer-recompute', action='store_true',
                        help='Enable checkpointing for moe_layer, should be used when memory is not sufficient. '
                        'Deprecated. Use "--recompute-granularity selective --recompute-modules moe" instead.')
@@ -2578,6 +2593,8 @@ def _add_moe_args(parser):
     group.add_argument('--moe-use-upcycling', action='store_true',
                        help='Load a checkpoint of a dense model, convert it into an MoE model, and save the converted model to the path specified by --save. '
                        'Upcycling is implemented on the top of distributed checkpointing, so it supports parallel modes different from the dense model.')
+    group.add_argument('--moe-permute-fusion', action='store_true',
+                       help='Fuse token rearrangement ops during token dispatching.')
     # Router arguments
     group.add_argument('--moe-router-load-balancing-type', type=str,
                        choices=['aux_loss', 'seq_aux_loss', 'sinkhorn', 'none'],
@@ -2640,8 +2657,6 @@ def _add_moe_args(parser):
                        help="The type of token dispatcher to use. The default is 'allgather'. Options are 'allgather', 'alltoall' and 'alltoall_seq'. We recommend using 'alltoall' when applying expert parallelism. For more information, please refer to the documentation in core/moe/README.")
     group.add_argument('--moe-enable-deepep', action='store_true',
                        help='[Experimental] Enable DeepSeek/DeepEP for efficient token dispatching and combine in MoE models. Only works with flex token dispatcher by setting --moe-token-dispatcher-type=flex.')
-    group.add_argument('--moe-permute-fusion', action='store_true',
-                       help='Fuse token rearrangement ops during token dispatching.')
     # Token dropping arguments
     group.add_argument('--moe-expert-capacity-factor', type=float, default=None,
                        help='The capacity factor for each expert, None means no token will be dropped.')
