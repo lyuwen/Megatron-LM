@@ -472,6 +472,7 @@ def build_extra_valid_data_loaders(
         # Build dataloders.
         orig_dataloader_type = args.dataloader_type
         args.dataloader_type = "cyclic"
+        from megatron.legacy.data.data_samplers import build_pretraining_data_loader
         valid_dataloaders = [build_pretraining_data_loader(valid_ds, 0) for valid_ds in valid_ds_list]
         args.dataloader_type = orig_dataloader_type
 

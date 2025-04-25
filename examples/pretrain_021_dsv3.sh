@@ -1,5 +1,5 @@
 set -eo pipefail
-set -x  # 调试
+set -x  # 如果你要调试的话
 # export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 ENV=${ENV:-dsw}
 
@@ -104,7 +104,12 @@ elif [ $ENV = dlc ]; then
 fi
 
 if [ -z ${MP_VP} ]; then
-    vp_options=""
+    if [[ ${MP_VP_RANK:-none} != none ]]; then
+        vp_options=" \
+            --num-virtual-stages-per-pipeline-rank ${MP_VP_RANK}"
+    else
+        vp_options=""
+    fi
 else
     vp_options=" \
         --num-layers-per-virtual-pipeline-stage ${MP_VP}"
@@ -202,9 +207,8 @@ NUM_ATTN_HEADS=128
 NUM_LAYERS=${NUM_LAYERS:-60} 
 INTERMEDIATE_SIZE=${INTERMEDIATE_SIZE:-12288}
 MOE_INTERMEDIATE_SIZE=${MOE_INTERMEDIATE_SIZE:-1536}
-#MAX_POSITION_EMBEDDINGS=${SEQ_LEN} 
-# MAX_POSITION_EMBEDDINGS=${MAX_POSITION_EMBEDDINGS:-${SEQ_LEN}}
-MAX_POSITION_EMBEDDINGS=163840
+MAX_POSITION_EMBEDDINGS=${MAX_POSITION_EMBEDDINGS:-${SEQ_LEN}}
+#MAX_POSITION_EMBEDDINGS=163840
 EXTRA_VOCAB_SIZE=2400
 Q_LORA_RANK=1536
 KV_LORA_RANK=512
@@ -212,10 +216,8 @@ QK_NOPE_HEAD_DIM=${QK_NOPE_HEAD_DIM:-128}
 QK_ROPE_HEAD_DIM=64
 V_HEAD_DIM=128
 ROPE_THETA=10000
-# SCALE_FACTOR=40
 SCALE_FACTOR=${SCALE_FACTOR:-40}
 NUM_EXPERTS=${NUM_EXPERTS:-160}
-# NUM_EXPERTS=120
 ROUTER_TOPK=${ROUTER_TOPK:-6}
 NUM_SHARED_EXPERTS=${NUM_SHARED_EXPERTS:-2}
 MOE_LAYER_FREQ=1
@@ -326,7 +328,7 @@ echo "Unsupported dispatcher type: ${DISPATCHER_TYPE}"
 exit 1
 fi
 
-ROUTER_SCORE_FUNC=${ROUTER_SCORE_FUNC:-sigmod}
+ROUTER_SCORE_FUNC=${ROUTER_SCORE_FUNC:-pre_softmax}
 if [ $ROUTER_SCORE_FUNC = sigmod ]; then
     moe_options=" ${moe_options}  --moe-router-score-function sigmoid  "
 elif [ $ROUTER_SCORE_FUNC = softmax ]; then
@@ -372,13 +374,27 @@ if [ $AC = full ]; then
 		    --recompute-granularity full"
 elif [ $AC = sel ]; then
     activation_checkpoint_options=" \
-        --recompute-activations"
+        --recompute-granularity selective \
+        --recompute-modules ${RECOMPUTE_MODULES:-"core_attn moe_act layernorm mla_up_proj mlp moe"} \
+    "
+    if [[ ${MOE_PERMUTE_CHECKPOINT:-none} != none ]]; then
+        activation_checkpoint_options=" ${activation_checkpoint_options} \
+            --moe-perm-checkpoint ${MOE_PERMUTE_CHECKPOINT} 
+        "
+    fi
+elif [ $AC = permckpt ]; then
+    activation_checkpoint_options=" \
+        --recompute-granularity selective \
+        --recompute-beside-moe \
+        --recompute-modules moe \
+        --moe-perm-checkpoint ${MOE_PERMUTE_CHECKPOINT:-half} \
+    "
+elif [ $AC = moeckpt ]; then
+    activation_checkpoint_options=" \
+        --recompute-beside-moe \
+    "
 elif [ $AC = none ]; then
     activation_checkpoint_options=" \
-    "
-elif [ $AC = moe ]; then
-    activation_checkpoint_options=" \
-        --moe-layer-recompute \
     "
 elif [ $AC = offload ]; then
     activation_checkpoint_options=" \
@@ -392,13 +408,6 @@ elif [ $AC = offload ]; then
         echo "Disable --overlap-grad-reduce and --overlap-param-gather when cpu offloading is on..."
         comm_overlap_option=""
     fi
-elif [ $AC = custom ]; then
-    #TODO: fill in custom AC options
-    activation_checkpoint_options=" \
-        --recompute-beside-moe \
-        --moe-layer-recompute \
-        --moe-perm-checkpoint ${MOE_PERMUTE_CHECKPOINT:-half} \
-    "
 fi
 
 if [ $PR = fp16 ]; then
@@ -411,10 +420,16 @@ elif [ $PR = bf16 ]; then
         --bf16"
 elif [ $PR = fp8 ]; then
     pr_options=" \
-        --bf16 \
-        --fp8-format hybrid \
-        --fp8-amax-compute-algo max \
-        --fp8-amax-history-len 1024"
+        --bf16"
+    export USE_BLOCK_FP8=true
+    export SAVE_MEMORY=true 
+#    pr_options=" \
+#        --bf16 \
+#        --fp8-format hybrid \
+#        --fp8-recipe delayed \
+#        --fp8-param-gather \
+#        --fp8-amax-compute-algo max \
+#        --fp8-amax-history-len 1024"
 fi
 
 if [ $DO = true ]; then
@@ -632,8 +647,8 @@ seqwarm_options=" --warmup-seq-length 0:2048,100:4096 "
 fi
 
 # new_options=" --checkpoint-kv-up-proj --recompute-inputlayer-rmsnorm --recompute-pre-mlp-rmsnorm "
-if [[ ${CUSTOM_PIPE:-on} = off ]]; then
-    new_options=" ${new_options} --no-custom-partition-with-smooth-weight "
+if [[ ${CUSTOM_PIPE:-none} != none ]]; then
+    new_options=" ${new_options} --custom-pipeline $CUSTOM_PIPE"
 fi
 
 # Use TP-PP-DP mapping
@@ -653,18 +668,13 @@ if [[ ${USE_FSDP:-false} = true ]] ; then
     unset CUDA_DEVICE_MAX_CONNECTIONS
 fi
 
-# User Optimizer CPU Offloading
-if [[ ${OFFLOAD_OPTIMIZER:-false} = true ]] ; then
-    new_options=" ${new_options} --optimizer-cpu-offload --use-precision-aware-optimizer \
-        --main-grads-dtype bf16 "
-        # --main-params-dtype fp16 \
-fi
-
 # Precision Aware Optimizer
+OFFLOAD_OPTIMIZER=${OFFLOAD_OPTIMIZER:-false}
 PAO_LEVEL=${PAO:-none}
 if [[ $PAO_LEVEL = none ]]; then
     new_options=" ${new_options} \
     "
+    OFFLOAD_OPTIMIZER=false
 elif [[ $PAO_LEVEL = moments ]]; then
     new_options=" ${new_options} \
         --use-precision-aware-optimizer \
@@ -690,20 +700,34 @@ else
     echo "PAO_LEVEL=${PAO_LEVEL} is not a valid option. Valid options include: none, moments, grads, weights"
     exit 1
 fi
+if [[ $OFFLOAD_OPTIMIZER = true ]]; then
+    new_options=" ${new_options} \
+        --optimizer-cpu-offload \
+    "
+fi
 
 # 开启12LHSD的atten计算方法,打印MFU
 if [[ ${BENCHMARK_MFU:-true} = true ]] ; then
     new_options=" ${new_options} \
     --num-steps-average-throughput 5 \
     --benchmark-target-tflops 1200.00 \
-    --benchmark-check-begins 30 \
-    --benchmark-check-ends 50 \
+    --benchmark-check-begins 3000 \
+    --benchmark-check-ends 5000 \
     --benchmark-pass-action continue"
 fi                    
 
 # 开启12LHSD的atten计算方法,打印MFU
 if [[ ${PRINT_MFU:-true} = true ]] ; then
     new_options=" ${new_options} --use-legacy-throughput "
+fi
+
+if [[ ${CHECK_NAN:-true} = false ]]; then
+    new_options=" ${new_options} --no-check-for-nan-in-loss-and-grad"
+fi
+
+if [[ ${FP8_COMM:-false} = true ]]; then
+    new_options=" ${new_options} --fp8-comm "
+    export FP8_COMM_DEEPEP=true
 fi
 
 run_cmd="torchrun $DISTRIBUTED_ARGS ${MEGATRON_PATH}/pretrain_gpt.py

@@ -43,6 +43,12 @@ from megatron.core.utils import (
     get_tensor_model_parallel_group_if_none,
     is_te_min_version,
 )
+from transformer_engine.pytorch.tensor.float8_tensor import (
+    Float8Tensor,
+    Float8CurrentScalingQuantizer,
+    Float8TensorBase,
+)
+import transformer_engine_torch as tex
 
 
 def _get_extra_te_kwargs(config: TransformerConfig):
@@ -1444,3 +1450,33 @@ try:
 except ImportError:
 
     te_parallel_cross_entropy = None  # type: ignore[assignment, misc]
+
+
+def Fp8Quantize(tensor: torch.Tensor) -> (torch.Tensor, torch.Tensor):
+    quantizer = Float8CurrentScalingQuantizer(
+        fp8_dtype = tex.DType.kFloat8E4M3,
+        device = torch.cuda.current_device(),
+        rowwise = True,
+        columnwise = False,
+        force_pow_2_scales = True,
+        amax_epsilon = 0.0,
+    )
+    quantizer.internal = True
+    quantized_tensor = quantizer(tensor)
+    return quantized_tensor._data, quantized_tensor._scale_inv
+
+def Fp8Dequantize(tensor: torch.Tensor, scale: torch.Tensor, dtype=torch.bfloat16) -> torch.Tensor:
+
+    fp8_tensor = Float8TensorBase(
+        # shape = tensor.shape,
+        # dtype = dtype,
+        data = tensor,
+        fp8_scale_inv = scale,
+        fp8_dtype = tex.DType.kFloat8E4M3,
+        requires_grad = False,
+        data_transpose = None,
+        quantizer = None
+    )
+    dequantized_tensor = fp8_tensor.dequantize(dtype=dtype)
+    dequantized_tensor.requires_grad_(True)
+    return dequantized_tensor

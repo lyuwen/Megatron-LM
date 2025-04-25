@@ -95,7 +95,6 @@ class BlendedDataset(torch.utils.data.Dataset):
             self.unique_description.encode("utf-8")
         ).hexdigest()
 
-
         self.async_shuffle = async_shuffle or None
         self.dataset_index, self.dataset_sample_index, self.dataset_shuffle_index = self._build_indices()
 

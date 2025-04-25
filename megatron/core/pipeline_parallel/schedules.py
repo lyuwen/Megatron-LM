@@ -3,6 +3,7 @@
 import contextlib
 from typing import Callable, Iterator, List, Optional, Union
 
+import os
 import torch
 from torch.autograd.variable import Variable
 
@@ -1799,6 +1800,16 @@ def forward_backward_pipelining_without_interleaving(
         - parallel_state.get_pipeline_model_parallel_rank()
         - 1
     )
+
+    limit_warmup_microbatches = int(os.environ.get("LIMIT_WARMUP_MICROBATCHES", -1))
+    extra_warmup_microbatches = int(os.environ.get("EXTRA_WARMUP_MICROBATCHES", 0))
+
+    if limit_warmup_microbatches >= 0:
+        num_warmup_microbatches = min(limit_warmup_microbatches, num_warmup_microbatches)
+    elif extra_warmup_microbatches != 0:
+        num_warmup_microbatches = num_warmup_microbatches + extra_warmup_microbatches
+
+    num_warmup_microbatches = max(0, num_warmup_microbatches)
     num_warmup_microbatches = min(num_warmup_microbatches, num_microbatches)
     num_microbatches_remaining = num_microbatches - num_warmup_microbatches
 
