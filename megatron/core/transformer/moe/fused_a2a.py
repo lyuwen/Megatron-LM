@@ -10,13 +10,6 @@ try:
     HAVE_DEEP_EP = True
 except ImportError:
     HAVE_DEEP_EP = False
-    
-FP8_COMM_DEEPEP = os.getenv('FP8_COMM_DEEPEP', '0') == '1' or os.getenv('FP8_COMM_DEEPEP', 'false') == 'true'
-if FP8_COMM_DEEPEP:
-    try:
-        from OpenMixOpl.triton import act_quant, act_dequant
-    except ImportError:
-        FP8_COMM_DEEPEP = False
 
 FP8_COMM_DEEPEP = os.getenv('FP8_COMM_DEEPEP', '0') == '1' or os.getenv('FP8_COMM_DEEPEP', 'false') == 'true'
 if FP8_COMM_DEEPEP:
@@ -42,7 +35,17 @@ def get_hidden_bytes(x: torch.Tensor) -> int:
     Returns:
         int: Number of hidden bytes
     """
-    # return x.size(1) * max(x.element_size(), 2)
+    return x.size(1) * max(x.element_size(), 2)
+
+def get_hidden_bytes_fp8(x: torch.Tensor) -> int:
+    """Calculate the number of hidden bytes for a tensor.
+
+    Args:
+        x (torch.Tensor): Input tensor
+
+    Returns:
+        int: Number of hidden bytes
+    """
     return x.size(1) * x.element_size()
 
 
@@ -93,7 +96,7 @@ class FusedDispatch(torch.autograd.Function):
             x = act_quant(x, 128)
 
         # Calculate layout before actual dispatch
-        buffer = get_buffer(group, get_hidden_bytes(x) if not FP8_COMM_DEEPEP else get_hidden_bytes(x[0]))
+        buffer = get_buffer(group, get_hidden_bytes(x) if not FP8_COMM_DEEPEP else get_hidden_bytes_fp8(x[0]))
         (
             num_tokens_per_rank,
             num_tokens_per_rdma_rank,
@@ -184,7 +187,7 @@ class FusedCombine(torch.autograd.Function):
         if FP8_COMM_DEEPEP:
             grad_output = act_quant(grad_output, 128)
 
-        buffer = get_buffer(ctx.group, get_hidden_bytes(grad_output) if not FP8_COMM_DEEPEP else get_hidden_bytes(grad_output[0]))
+        buffer = get_buffer(ctx.group, get_hidden_bytes(grad_output) if not FP8_COMM_DEEPEP else get_hidden_bytes_fp8(grad_output[0]))
 
         grad_x, _, _, _, _, event = buffer.dispatch(
             grad_output.contiguous() if isinstance(grad_output, torch.Tensor) else grad_output,
