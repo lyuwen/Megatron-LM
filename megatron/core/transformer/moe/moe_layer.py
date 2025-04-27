@@ -23,6 +23,9 @@ from megatron.core.transformer.moe.token_dispatcher import (
 )
 from megatron.core.transformer.spec_utils import ModuleSpec, build_module
 from megatron.core.transformer.transformer_config import TransformerConfig
+from megatron.core.fp8_utils import get_fp8_context
+from megatron.core.enums import Fp8Recipe
+from contextlib import nullcontext
 
 FP8_CTX_MOE = os.getenv('FP8_CTX_MOE', '0') == '1'
 
@@ -178,9 +181,12 @@ class MoELayer(BaseMoELayer):
             (dispatched_input, tokens_per_expert, permuted_probs) = (
                 self.token_dispatcher.token_permutation(hidden_states, probs, routing_map)
             )
-            expert_output, mlp_bias = self.experts(
-                dispatched_input, tokens_per_expert, permuted_probs
-            )
+            use_experts_fp8_context = self.config.v3_fp8_grouped_linear and self.config.fp8_recipe == Fp8Recipe.blockwise
+            experts_fp8_context = get_fp8_context(self.config) if use_experts_fp8_context else nullcontext()
+            with experts_fp8_context:
+                expert_output, mlp_bias = self.experts(
+                    dispatched_input, tokens_per_expert, permuted_probs
+                )
             output, mlp_bias = self.token_dispatcher.token_unpermutation(expert_output, mlp_bias)
             if self.use_shared_expert and not self.shared_expert_overlap:
                 # if shared_expert_overlap is True, the expert calculation happens in

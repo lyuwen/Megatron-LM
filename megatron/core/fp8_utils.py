@@ -8,6 +8,7 @@ import torch
 
 from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core.utils import is_te_min_version
+import warnings
 
 # Check if Transformer Engine is installed
 HAVE_TE = False
@@ -353,9 +354,7 @@ if HAVE_TE:
         # we are in the first or last pipeline-parallel rank are not needed.
         is_first_layer = layer_no < num_bf16_layers_at_start
         is_last_layer = layer_no >= config.num_layers - num_bf16_layers_at_end
-
-        need_fp8_context = config.fp8 if not is_init else config.fp8_param
-
+        need_fp8_context = (config.fp8 or config.v3_fp8) if not is_init else config.fp8_param
         if not need_fp8_context:
             # bf16 training
             fp8_context = nullcontext()
@@ -371,7 +370,9 @@ if HAVE_TE:
             elif config.fp8 == "hybrid":
                 fp8_format = transformer_engine.common.recipe.Format.HYBRID
             else:
-                raise ValueError("E4M3 and HYBRID are the only supported FP8 formats.")
+                fp8_format = transformer_engine.common.recipe.Format.E4M3
+                warnings.warn("E4M3 and HYBRID are the only supported FP8 formats, force set to E4M3.")
+                # raise ValueError("E4M3 and HYBRID are the only supported FP8 formats.")
 
             # Select fp8 recipe (TE version >= 2.1.0).
             fp8_recipe = None

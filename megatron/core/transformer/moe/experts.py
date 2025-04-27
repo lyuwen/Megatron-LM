@@ -718,14 +718,10 @@ class TEGroupedMLP(MegatronModule):
             tp_group=parallel_state.get_expert_tensor_parallel_group(),
         )
 
-        #if self.config.fp8:
-        #    assert HAVE_TE, "FP8 requires TE."
-        #    self.fp8_padding = Fp8Padding(self.num_local_experts)
-        #    self.fp8_unpadding = Fp8Unpadding(self.num_local_experts)
-        if USE_BLOCK_FP8:
+        if self.config.fp8 or self.config.v3_fp8:
             assert HAVE_TE, "FP8 requires TE."
-            self.fp8_padding = Fp8Padding(self.num_local_experts, align_size=128)
-            self.fp8_unpadding = Fp8Unpadding(self.num_local_experts, align_size=128)
+            self.fp8_padding = Fp8Padding(self.num_local_experts, 128)
+            self.fp8_unpadding = Fp8Unpadding(self.num_local_experts, 128)
 
     def forward(
         self,
@@ -745,8 +741,7 @@ class TEGroupedMLP(MegatronModule):
             output (torch.Tensor): The output of the local experts.
         """
         tokens_per_expert = tokens_per_expert.tolist()
-        #if self.config.fp8:
-        if USE_BLOCK_FP8:
+        if self.config.fp8 or self.config.v3_fp8:
             actual_tokens_per_expert = tokens_per_expert
             permuted_local_hidden_states, tokens_per_expert = self.fp8_padding(
                 permuted_local_hidden_states, tokens_per_expert
@@ -815,8 +810,7 @@ class TEGroupedMLP(MegatronModule):
             output, output_bias = self.linear_fc2(intermediate_parallel, tokens_per_expert)
 
         # upad and concat the output
-        #if self.config.fp8:
-        if USE_BLOCK_FP8:
+        if self.config.fp8 or self.config.v3_fp8:
             output = self.fp8_unpadding(output, actual_tokens_per_expert)
 
         return output, output_bias
@@ -912,7 +906,7 @@ class SequentialMLP(MegatronModule):
     ):
         """Forward step of the SequentialMLP."""
         if self.num_local_experts == 1:
-            if self.config.fp8:
+            if self.config.fp8 or self.config.v3_fp8:
                 hidden, probs = self._pad_tensor_for_fp8(
                     permuted_local_hidden_states, permuted_probs
                 )
@@ -933,7 +927,7 @@ class SequentialMLP(MegatronModule):
             output_bias_list = []
 
             for expert, tokens, probs in zip(self.local_experts, tokens_list, probs_list):
-                if self.config.fp8:
+                if self.config.fp8 or self.config.v3_fp8:
                     hidden, probs = self._pad_tensor_for_fp8(tokens, probs)
                     output, output_bias = expert(hidden, probs)
                     output = output[: tokens.shape[0]]
