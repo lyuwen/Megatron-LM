@@ -24,13 +24,21 @@ from .utils import gather_split_1d_tensor, split_tensor_into_1d_equal_chunks
 
 try:
     import transformer_engine  # pylint: disable=unused-import
-    from transformer_engine.pytorch.tensor.float8_tensor import Float8CurrentScalingQuantizer
-    from transformer_engine.pytorch.tensor._internal.float8_tensor_base import Float8TensorBase
     import transformer_engine_torch as tex
 
     HAVE_TE = True
 except ModuleNotFoundError:
     HAVE_TE = False
+
+if HAVE_TE:
+    try:
+        from transformer_engine.pytorch.tensor.float8_tensor import Float8CurrentScalingQuantizer
+        from transformer_engine.pytorch.tensor._internal.float8_tensor_base import Float8TensorBase
+
+        HAVE_FP8 = True
+    except ImportError:
+        print("ZJ-Transformer-Engine not installed, skipping import")
+        HAVE_FP8 = False
 
 
 # Default name for the model parallel rng tracker.
@@ -236,6 +244,7 @@ def initialize_rng_tracker(
     use_te_rng_tracker: bool = False,
     inference_rng_tracker: bool = False,
     use_cudagraphable_rng: bool = False,
+    force_reset: bool = False,
 ):
     """Create the RNG tracker. 'use_te_rng_tracker' determines whether to use
     Megatron or TransformerEngine's implementation.
@@ -243,6 +252,10 @@ def initialize_rng_tracker(
     """
     global _CUDA_RNG_STATE_TRACKER
     global _CUDA_RNG_STATE_TRACKER_INITIALIZED
+    if force_reset:
+        _CUDA_RNG_STATE_TRACKER = None
+        _CUDA_RNG_STATE_TRACKER_INITIALIZED = False
+
     if _CUDA_RNG_STATE_TRACKER_INITIALIZED:
         return
 

@@ -12,6 +12,7 @@ from typing import List, Optional
 
 import click
 import jetclient
+import pandas as pd
 import requests
 import yaml
 from jetclient.facades.objects import log as jet_log
@@ -20,6 +21,11 @@ from jetclient.services.dtos.pipeline import PipelineStatus
 from tests.test_utils.python_scripts import common
 
 BASE_PATH = pathlib.Path(__file__).parent.resolve()
+DASHBOARD_ENDPOINT = os.getenv("DASHBOARD_ENDPOINT")
+
+logging.basicConfig()
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 logger = logging.getLogger(__name__)
 
@@ -184,6 +190,41 @@ def parse_finished_training(logs: List[str]) -> Optional[bool]:
         if match is not None:
             return True
     return False
+
+
+def telemetrics_and_exit(
+    success: bool, test_case: str, environment: str, pipeline_id: int, is_integration_test: bool
+):
+    payload = json.dumps(
+        [
+            {
+                "pipeline_id": pipeline_id,
+                "success": success,
+                "test_case": test_case,
+                "environment": environment,
+                "is_integration_test": is_integration_test,
+                "duration_seconds": (
+                    pd.Timestamp.now(tz='UTC')
+                    - pd.Timestamp(os.getenv("CI_JOB_STARTED_AT"), tz='UTC')
+                ).total_seconds(),
+                "is_merge_request": os.getenv("CI_MERGE_REQUEST_IID") is not None,
+                "ci_merge_request_iid": os.getenv("CI_MERGE_REQUEST_IID"),
+            }
+        ]
+    )
+    logger.info(payload)
+
+    res = requests.post(
+        DASHBOARD_ENDPOINT,
+        data=payload,
+        headers={'Content-Type': 'application/json', 'Accept-Charset': 'UTF-8'},
+    )
+
+    if not res.ok:
+        raise requests.exceptions.HTTPError(
+            f"Failed to make POST request. Received response: {res.status_code}"
+        )
+    sys.exit(int(not success))
 
 
 @click.command()
@@ -364,7 +405,13 @@ def main(
 
         if test_type != "release":
             if success:
-                sys.exit(int(not success))  # invert for exit 0
+                telemetrics_and_exit(
+                    success=True,
+                    test_case=test_case,
+                    environment=environment,
+                    pipeline_id=int(os.getenv("PARENT_PIPELINE_ID", 0)),
+                    is_integration_test=enable_lightweight_mode,
+                )
 
             if (
                 "The server socket has failed to listen on any local network address."
@@ -384,7 +431,13 @@ def main(
                 n_nondeterminism_attemps += 1
                 continue
 
-            sys.exit(1)
+            telemetrics_and_exit(
+                success=False,
+                test_case=test_case,
+                environment=environment,
+                pipeline_id=int(os.getenv("PARENT_PIPELINE_ID", 0)),
+                is_integration_test=enable_lightweight_mode,
+            )
 
         if parse_failed_job(logs=logs):
             n_attempts += 1
@@ -393,7 +446,14 @@ def main(
         if parse_finished_training(logs=logs):
             sys.exit(int(not success))  # invert for exit 0
         n_iteration += 1
-    sys.exit(1)
+
+    telemetrics_and_exit(
+        success=False,
+        test_case=test_case,
+        environment=environment,
+        pipeline_id=int(os.getenv("PARENT_PIPELINE_ID", 0)),
+        is_integration_test=enable_lightweight_mode,
+    )
 
 
 if __name__ == "__main__":
