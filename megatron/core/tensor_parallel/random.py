@@ -37,6 +37,7 @@ if HAVE_TE:
 
         HAVE_FP8 = True
     except ImportError:
+        print("ZJ-Transformer-Engine not installed, skipping import")
         HAVE_FP8 = False
 
 
