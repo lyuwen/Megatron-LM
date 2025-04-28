@@ -1571,6 +1571,8 @@ def training_log(loss_dict, total_loss_dict, learning_rate, decoupled_learning_r
             track_names.append("load_balancing_loss")
         if args.moe_z_loss_coeff is not None:
             track_names.append("z_loss")
+        if args.show_moe_experts_tokens:
+            track_names.append("tokens each experts")
         track_moe_metrics(
             loss_scale=moe_loss_scale,
             iteration=iteration,
