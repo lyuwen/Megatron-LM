@@ -43,11 +43,16 @@ from megatron.core.utils import (
     get_tensor_model_parallel_group_if_none,
     is_te_min_version,
 )
-from transformer_engine.pytorch.tensor.float8_tensor import (
-    Float8Tensor,
-    Float8CurrentScalingQuantizer,
-    Float8TensorBase,
-)
+try:
+    from transformer_engine.pytorch.tensor.float8_tensor import (
+        Float8Tensor,
+        Float8CurrentScalingQuantizer,
+        Float8TensorBase,
+    )
+except ImportError:
+    print("ZJ-Transformer-Engine not installed, skipping import")
+    pass
+
 import transformer_engine_torch as tex
 
 
