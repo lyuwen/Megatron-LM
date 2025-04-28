@@ -44,22 +44,26 @@ class Router(ABC, MegatronModule):
         self.num_experts = self.config.num_moe_experts
         self.moe_aux_loss_func = None
         self.layer_number = None
-        self.tp_group = model_comm_pgs.tp_group
-        self.cp_group = model_comm_pgs.cp_group
-        self.tp_cp_group = model_comm_pgs.tp_cp_group
+        self.tp_group = model_comm_pgs.tp
+        self.cp_group = model_comm_pgs.cp
+        self.tp_cp_group = model_comm_pgs.tp_cp
 
         # Initialize the gate weights.
         # TODO: Add support for GPU initialization, which requires updating the golden values.
         self.weight = torch.nn.Parameter(
             torch.empty((self.config.num_moe_experts, self.config.hidden_size), dtype=torch.float32)
         )
-        if config.perform_initialization:
-            config.init_method(self.weight)
-        self.weight.data = self.weight.data.to(dtype=config.params_dtype)
-        setattr(self.weight, 'sequence_parallel', config.sequence_parallel)
         # If calculate per token loss, we need to scale up moe aux loss by the number of tokens.
         # So we need to know if the model is configured to calculate per token loss.
         self.calculate_per_token_loss = self.config.calculate_per_token_loss
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        """Reset the router parameters."""
+        if self.config.perform_initialization:
+            self.config.init_method(self.weight)
+        self.weight.data = self.weight.data.to(dtype=self.config.params_dtype)
+        setattr(self.weight, 'sequence_parallel', self.config.sequence_parallel)
 
     def gating(self, input: torch.Tensor):
         """Forward pass of the router gate.

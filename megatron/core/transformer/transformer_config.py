@@ -133,7 +133,7 @@ class TransformerConfig(ModelParallelConfig):
     """Which norm to use for normalization layers, valid options are `LayerNorm` and `RMSNorm`."""
 
     qk_layernorm: bool = False
-    """Whether to apply LayerNorm to the query and key embeddings."""
+    """Whether to apply `normalization` type of normalization to the query and key embeddings."""
 
     test_mode: bool = False
     """Whether to run real-time tests."""
@@ -181,7 +181,7 @@ class TransformerConfig(ModelParallelConfig):
     apply_query_key_layer_scaling is True."""
 
     disable_bf16_reduced_precision_matmul: bool = False
-    """If True, sets torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction=False to 
+    """If True, sets torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction=False to
     prevent matmul from using reduced precision accumulation when using BF16."""
 
     ####################
@@ -246,7 +246,7 @@ class TransformerConfig(ModelParallelConfig):
     "moe_act": recompute the MoE MLP activation function.
     "layernorm": recompute the input_layernorm and pre_mlp_layernorm.
     "mla_up_proj": recompute the MLA up projection and RoPE applying parts.
-    "mlp": recompute the dense MLP submodule. 
+    "mlp": recompute the dense MLP submodule.
     "moe": recompute the MoE layer.
     "moe_act", "layernorm", and "mla_up_proj" use output-discarding checkpointing,
     "core_attn", "mlp", and "moe" uses normal checkpointing.
@@ -263,7 +263,8 @@ class TransformerConfig(ModelParallelConfig):
     fp8_recipe: Optional[str] = "delayed"
     """If set, enables the use of FP8 precision through Transformer Engine. There are 3 predefined
     choices (1) 'tensorwise' uses per tensor current scaling recipe, (2) 'delayed'
-    uses delayed scaling recipe, 3) 'mxfp8' for Blackwell architecture only"""
+    uses delayed scaling recipe, 3) 'mxfp8' for Blackwell architecture only,
+    4) 'blockwise' for blockwise scaling recipe."""
 
     fp8_param: bool = False
     """If set, keep the parameters in fp8 precision to save memory. This option must be used
@@ -377,7 +378,8 @@ class TransformerConfig(ModelParallelConfig):
     """Number of selected groups for group-limited routing."""
 
     moe_router_pre_softmax: bool = False
-    """Enable pre-softmax routing for MoE, which means softmax is before the top-k selection.
+    """Enable pre-softmax(pre-sigmoid) routing for MoE, which means softmax is before the 
+    top-k selection.
     By default, softmax is done after top-k."""
 
     moe_router_topk_scaling_factor: Optional[float] = None
@@ -484,6 +486,9 @@ class TransformerConfig(ModelParallelConfig):
     moe_apply_norm_head: bool = False
     """Apply lm_head L2 normalization to improve Moe stability."""
 
+    moe_apply_probs_on_input: bool = False
+    """Apply probs on input of experts instead of applying after activation and glu."""
+
     ##################
     # Context Parallel
     ##################
@@ -555,7 +560,7 @@ class TransformerConfig(ModelParallelConfig):
     """ Whether we should instantiate a separate RNG tracker for inference. """
 
     mrope_section: Optional[List[int]] = None
-    """ Multimodal rope section is for channel dimension of temporal, height and width 
+    """ Multimodal rope section is for channel dimension of temporal, height and width
     in rope calculation. """
 
     is_hybrid_model: bool = False
@@ -569,6 +574,13 @@ class TransformerConfig(ModelParallelConfig):
 
     mamba_num_groups: int = 8
     """The number of groups used in Mamba layers."""
+
+    mamba_num_heads: Optional[int] = None
+    """The number of heads used in Mamba layers. 
+    If None, the number of heads will be hidden_size * expand // mamba_head_dim."""
+
+    use_mamba_mem_eff_path: bool = True
+    """If True, use the memory efficient path for Mamba layers."""
 
     mlp_chunks_for_prefill: int = 1
     """The number of chunks along the sequence dimension to use for MLP computation
@@ -952,7 +964,11 @@ class TransformerConfig(ModelParallelConfig):
 
         if self.apply_rope_fusion:
             if self.rotary_interleaved:
-                raise ValueError("rotary_interleaved does not work with apply_rope_fusion.")
+                if not is_te_min_version("2.3.0.dev0"):
+                    raise ValueError(
+                        "rotary_interleaved does not work with apply_rope_fusion for "
+                        "TE < 2.3.0.dev0. Please install TE >= 2.3.0.dev0"
+                    )
 
             from megatron.core.models.common.embeddings.rope_utils import (
                 fused_apply_rotary_pos_emb,
