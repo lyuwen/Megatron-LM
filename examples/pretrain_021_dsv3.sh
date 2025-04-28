@@ -278,6 +278,45 @@ moe_options=" \
     --qk-pos-emb-head-dim ${QK_ROPE_HEAD_DIM} \
     --v-head-dim ${V_HEAD_DIM} \
     --moe-grouped-gemm"
+
+elif [ $MODEL_SIZE = 1000B ]; then
+
+HIDDEN_SIZE=${HIDDEN_SIZE:-8192}
+NUM_ATTN_HEADS=128
+NUM_LAYERS=${NUM_LAYERS:-59} 
+INTERMEDIATE_SIZE=${INTERMEDIATE_SIZE:-18432}
+MOE_INTERMEDIATE_SIZE=${MOE_INTERMEDIATE_SIZE:-2048}
+MAX_POSITION_EMBEDDINGS=${MAX_POSITION_EMBEDDINGS:-163840}
+EXTRA_VOCAB_SIZE=467
+Q_LORA_RANK=1536
+KV_LORA_RANK=512
+QK_NOPE_HEAD_DIM=${QK_NOPE_HEAD_DIM:-128} 
+QK_ROPE_HEAD_DIM=64
+V_HEAD_DIM=128
+ROPE_THETA=10000
+SCALE_FACTOR=${SCALE_FACTOR:-40}
+NUM_EXPERTS=${NUM_EXPERTS:-384}
+ROUTER_TOPK=${ROUTER_TOPK:-8}
+NUM_SHARED_EXPERTS=${NUM_SHARED_EXPERTS:-1}
+MOE_LAYER_FREQ=1
+MOE_FIRST_K_DENSE_REPLACE=${MOE_FIRST_K_DENSE_REPLACE:-3}
+RMS_NORM_EPS=1e-6
+
+moe_options=" \
+    --moe-ffn-hidden-size ${MOE_INTERMEDIATE_SIZE} \
+    --moe-router-topk ${ROUTER_TOPK} \
+    --num-experts ${NUM_EXPERTS} \
+    --moe-layer-freq ${MOE_LAYER_FREQ} \
+    --moe-first-k-dense-replace ${MOE_FIRST_K_DENSE_REPLACE} \
+    --moe-aux-loss-coeff 0.001 \
+    --moe-shared-expert-intermediate-size $((${MOE_INTERMEDIATE_SIZE} * ${NUM_SHARED_EXPERTS} )) \
+    --expert-model-parallel-size ${EP} \
+    --q-lora-rank ${Q_LORA_RANK} \
+    --kv-lora-rank ${KV_LORA_RANK} \
+    --qk-head-dim ${QK_NOPE_HEAD_DIM} \
+    --qk-pos-emb-head-dim ${QK_ROPE_HEAD_DIM} \
+    --v-head-dim ${V_HEAD_DIM} \
+    --moe-grouped-gemm"
 else
 
 echo "Unsupported model size: ${MODEL_SIZE}"
