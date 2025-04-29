@@ -767,6 +767,11 @@ if [[ ${FP8_COMM:-false} = true ]]; then
     export FP8_COMM_DEEPEP=true
 fi
 
+# 开启流水线并行调度plan和executer分离
+if [[ ${PLAN_EXEC_SPLIT:-false} = true ]]; then
+    new_options=" ${new_options} --plan-exec-split"
+fi
+
 run_cmd="torchrun $DISTRIBUTED_ARGS ${MEGATRON_PATH}/pretrain_gpt.py
  ${megatron_options} ${dataset_option} ${pr_options} ${load_options} ${te_options} ${activation_checkpoint_options} \
  ${do_options} ${fl_options} ${sp_options} ${moe_options} ${offload_option} ${sft_option} ${vp_options} \
