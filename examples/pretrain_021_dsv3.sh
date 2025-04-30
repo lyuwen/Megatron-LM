@@ -770,6 +770,18 @@ fi
 # 开启流水线并行调度plan和executer分离
 if [[ ${PLAN_EXEC_SPLIT:-false} = true ]]; then
     new_options=" ${new_options} --plan-exec-split"
+    SCHEDULE_TYPE=${SCHEDULE_TYPE:-1f1b}
+    new_options=" ${new_options} --schedule-type ${SCHEDULE_TYPE} "
+fi
+
+# 开启调度可视化--保存可视化数据
+if [[ ${SCHEDULE_VISUAL:-false} = true ]]; then
+    rm -rf ${TENSORBOARD_DIR}/Timecond
+    new_options=" ${new_options} --schedule-visualble-path ${TENSORBOARD_DIR}/Timecond --schedule-visual-iter-start ${SCHEDULE_VISUAL_ITER_START:-30}  --schedule-visual-iter-end ${SCHEDULE_VISUAL_ITER_END:-35}"
+    if [[ ${NODE_RANK} = 0 ]]; then
+        echo "Schedule visualization start !!!"
+        nohup bash schedule_visual.sh ${MEGATRON_PATH} ${TENSORBOARD_DIR} ${SCHEDULE_VISUAL_ITER_END:-35} &
+    fi
 fi
 
 run_cmd="torchrun $DISTRIBUTED_ARGS ${MEGATRON_PATH}/pretrain_gpt.py
