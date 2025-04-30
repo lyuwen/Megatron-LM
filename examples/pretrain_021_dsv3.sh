@@ -462,11 +462,21 @@ elif [ $PR = fp8 ]; then
     #   TE: 2.3_dev
     #   OpenMixOpl: 0.1.15.2
     #   OpenMixOpl_GroupGemm: 1.2.0
+
+    # for blockwise recipe
    pr_options=" \
         --bf16 \
+        --fp8-format e4m3  \
         --fp8-recipe blockwise \
         --v3-fp8-grouped-linear \
     "
+    # for delayed recipe
+#    pr_options=" \
+#         --bf16 \
+#         --fp8-format hybrid \
+#         --fp8-recipe delayed \
+#         --v3-fp8-grouped-linear \
+#     "
 fi
 
 if [ $DO = true ]; then
