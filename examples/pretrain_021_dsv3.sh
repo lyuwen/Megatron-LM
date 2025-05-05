@@ -470,13 +470,14 @@ elif [ $PR = fp8 ]; then
         --fp8-recipe blockwise \
         --v3-fp8-grouped-linear \
     "
+elif [ $PR = fp8_delayed ]; then
     # for delayed recipe
-#    pr_options=" \
-#         --bf16 \
-#         --fp8-format hybrid \
-#         --fp8-recipe delayed \
-#         --v3-fp8-grouped-linear \
-#     "
+    pr_options=" \
+         --bf16 \
+         --fp8-format hybrid \
+         --fp8-recipe delayed \
+         --v3-fp8-grouped-linear \
+     "
 fi
 
 if [ $DO = true ]; then
