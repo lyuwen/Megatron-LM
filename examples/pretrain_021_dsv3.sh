@@ -463,20 +463,23 @@ elif [ $PR = fp8 ]; then
     #   OpenMixOpl: 0.1.15.2
     #   OpenMixOpl_GroupGemm: 1.2.0
 
-    # for blockwise recipe
+    # use blockwise recipe in gl, delayed/tensorwise recipe in others
    pr_options=" \
         --bf16 \
-        --fp8-format e4m3  \
-        --fp8-recipe blockwise \
+        --fp8-format hybrid  \
+        --fp8-recipe delayed \
+        --fp8-amax-compute-algo max \
+        --fp8-amax-history-len 1024 \
         --v3-fp8-grouped-linear \
     "
 elif [ $PR = fp8_delayed ]; then
-    # for delayed recipe
+    # normal fp8, support delayed/tensorwise recipe in all
     pr_options=" \
          --bf16 \
          --fp8-format hybrid \
          --fp8-recipe delayed \
-         --v3-fp8-grouped-linear \
+         --fp8-amax-compute-algo max \
+         --fp8-amax-history-len 1024 \
      "
 fi
 

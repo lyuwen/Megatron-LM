@@ -335,7 +335,7 @@ if HAVE_TE:
     from megatron.core.enums import Fp8Recipe
     from megatron.core.extensions.transformer_engine import TEDelayedScaling
 
-    def get_fp8_context(config: TransformerConfig, layer_no: int = -1, is_init: bool = False):
+    def get_fp8_context(config: TransformerConfig, layer_no: int = -1, is_init: bool = False, is_gl: bool = False):
         """Return fp8 context manager.
 
         Arguments:
@@ -343,6 +343,7 @@ if HAVE_TE:
             layer_no (int): *Global* layer index (including layers on other
                 pipeline-parallel ranks).
             is_init (bool): Whether the context is fp8_model_init (True) or fp8_autocast (False).
+            is_gl (bool): Whether the context is used for transformer engine's group linear (True)
 
         Returns:
             FP8 context.
@@ -360,7 +361,7 @@ if HAVE_TE:
         # we are in the first or last pipeline-parallel rank are not needed.
         is_first_layer = layer_no < num_bf16_layers_at_start
         is_last_layer = layer_no >= config.num_layers - num_bf16_layers_at_end
-        need_fp8_context = (config.fp8 or config.v3_fp8) if not is_init else config.fp8_param
+        need_fp8_context = config.fp8 if not is_init else config.fp8_param
         if not need_fp8_context:
             # bf16 training
             fp8_context = nullcontext()
@@ -376,14 +377,17 @@ if HAVE_TE:
             elif config.fp8 == "hybrid":
                 fp8_format = transformer_engine.common.recipe.Format.HYBRID
             else:
-                fp8_format = transformer_engine.common.recipe.Format.E4M3
-                #warnings.warn("E4M3 and HYBRID are the only supported FP8 formats, force set to E4M3.")
-                # raise ValueError("E4M3 and HYBRID are the only supported FP8 formats.")
+                raise ValueError("E4M3 and HYBRID are the only supported FP8 formats.")
 
             # Select fp8 recipe (TE version >= 2.1.0).
             fp8_recipe = None
             if is_te_min_version("2.1.0"):
-                if config.fp8_recipe == Fp8Recipe.delayed:
+                if is_gl and is_te_min_version("2.3.0.dev0"):
+                    fp8_format = transformer_engine.common.recipe.Format.E4M3
+                    fp8_recipe = transformer_engine.common.recipe.Float8BlockScaling(
+                        fp8_format=fp8_format
+                    )
+                elif config.fp8_recipe == Fp8Recipe.delayed:
                     fp8_recipe = TEDelayedScaling(
                         config=config,
                         fp8_format=fp8_format,
