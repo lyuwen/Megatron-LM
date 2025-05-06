@@ -199,10 +199,13 @@ class MoELayer(BaseMoELayer):
             (dispatched_input, tokens_per_expert, permuted_probs) = self.token_dispatcher.token_permutation(
                 hidden_states, probs, routing_map
             )
-            if FP8_CTX_MOE:
-                expert_output, mlp_bias = tensor_parallel.fp8_checkpoint(self.experts, False, dispatched_input, tokens_per_expert, permuted_probs)
-            else:
-                expert_output, mlp_bias = tensor_parallel.checkpoint(self.experts, False, dispatched_input, tokens_per_expert, permuted_probs)
+            use_experts_fp8_context = self.config.v3_fp8_grouped_linear
+            experts_fp8_context = get_fp8_context(self.config) if use_experts_fp8_context else nullcontext()
+            with experts_fp8_context:
+                if FP8_CTX_MOE:
+                    expert_output, mlp_bias = tensor_parallel.fp8_checkpoint(self.experts, False, dispatched_input, tokens_per_expert, permuted_probs)
+                else:
+                    expert_output, mlp_bias = tensor_parallel.checkpoint(self.experts, False, dispatched_input, tokens_per_expert, permuted_probs)
             output, mlp_bias = self.token_dispatcher.token_unpermutation(expert_output, mlp_bias)
             if self.use_shared_expert and not self.shared_expert_overlap:
                 # if shared_expert_overlap is True, the expert calculation happens in
@@ -214,7 +217,7 @@ class MoELayer(BaseMoELayer):
             return output, mlp_bias
 
         if self.moe_layer_recompute:
-            if self.moe_perm_checkpoint == 'full' or (self.moe_perm_checkpoint == 'half' and (self.layer_number > 24 or self.layer_number % 2 == 0)):
+            if self.moe_perm_checkpoint == 'full' or (self.moe_perm_checkpoint == 'half' and self.layer_number > 24):
                 output, mlp_bias = custom_forward_perm_checkpoint(hidden_states)
             else:
                 if FP8_CTX_MOE:
@@ -222,6 +225,16 @@ class MoELayer(BaseMoELayer):
                 else:
                     output, mlp_bias = tensor_parallel.checkpoint(custom_forward, False, hidden_states)
         else:
-            output, mlp_bias = custom_forward(hidden_states)
+            MOE_CKPT_LEVEL = os.getenv('MOE_CKPT_LEVEL', 'full')
+            if MOE_CKPT_LEVEL == 'full' or self.layer_number > 24:
+                output, mlp_bias = custom_forward(hidden_states)
+            else:
+                if MOE_CKPT_LEVEL == 'half-perm':
+                    output, mlp_bias = custom_forward_perm_checkpoint(hidden_states)
+                else:
+                    if FP8_CTX_MOE:
+                        output, mlp_bias = tensor_parallel.fp8_checkpoint(custom_forward, False, hidden_states)
+                    else:
+                        output, mlp_bias = tensor_parallel.checkpoint(custom_forward, False, hidden_states)
 
         return output, mlp_bias

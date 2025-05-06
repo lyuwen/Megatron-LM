@@ -472,14 +472,15 @@ elif [ $PR = fp8 ]; then
         --fp8-amax-history-len 1024 \
         --v3-fp8-grouped-linear \
     "
+elif [ $PR = fp8_delayed ]; then
     # normal fp8, support delayed/tensorwise recipe in all
-#    pr_options=" \
-#         --bf16 \
-#         --fp8-format hybrid \
-#         --fp8-recipe delayed \
-#         --fp8-amax-compute-algo max \
-#         --fp8-amax-history-len 1024 \
-#     "
+    pr_options=" \
+         --bf16 \
+         --fp8-format hybrid \
+         --fp8-recipe delayed \
+         --fp8-amax-compute-algo max \
+         --fp8-amax-history-len 1024 \
+     "
 fi
 
 if [ $DO = true ]; then
