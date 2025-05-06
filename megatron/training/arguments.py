@@ -957,6 +957,7 @@ def validate_args(args, defaults={}):
 
     if args.inference_dynamic_batching:
         assert args.inference_dynamic_batching_buffer_size_gb is not None
+        assert args.inference_dynamic_batching_chunk_size % 256 == 0, "chunk size should be a multiple of 256"
         assert args.inference_dynamic_batching_buffer_guaranteed_fraction is not None
 
     # MoE upcycling check
@@ -1173,6 +1174,10 @@ def _add_inference_args(parser):
                        type=float, default=40.,
                        help='Total buffer size (GB) allocated for the chunked KV '
                        'memory.')
+    group.add_argument('--inference-dynamic-batching-chunk-size',
+                       type=int, default=256,
+                       help='KV cache chunk size. '
+                       'It should be a multiple of 256')
     group.add_argument('--inference-dynamic-batching-buffer-guaranteed-fraction',
                        type=float, default=0.2,
                        help='Space is reserved within the inference context '
@@ -2209,8 +2214,11 @@ def _add_distributed_args(parser):
     group.add_argument('--num-distributed-optimizer-instances', type=int, default=1,
                        help='Number of Distributed Optimizer copies across Data Parallel domain.')
     group.add_argument('--use-torch-fsdp2', action='store_true',
-                       help="Use the torch FSDP2 implementation. FSDP2 is not currently working with Pipeline Parallel."
-                       "It is still not in a stable release stage, and may therefore contain bugs or other potential issues.")
+                       help='Use the torch FSDP2 implementation. FSDP2 has not been tested with pipeline parallelism, '
+                       'and may contain bugs.')
+    group.add_argument('--torch-fsdp2-no-reshard-after-forward', action='store_false', dest='torch_fsdp2_reshard_after_forward',
+                       help='Whether to reshard weights after forward pass when using PyTorch FSDP2. '
+                       'Set to enable FSDP ZeRO-2.')
     group.add_argument('--context-parallel-size', type=int, default=1,
                        help='Degree of context parallelism.')
     group.add_argument('--cp-comm-type', nargs='+', type=str, default=["p2p"],
@@ -2756,8 +2764,14 @@ def _add_experimental_args(parser):
                        help='Head dimension for Mamba layers.')
     group.add_argument('--mamba-num-groups', type=int, default=8,
                        help='Number of groups for Mamba layers.')
+    group.add_argument('--mamba-num-heads', type=int, default=None,
+                       help='Number of heads for Mamba layers.'
+                       'If not set, then the number of heads will be '
+                       '--hidden-size * expand // --mamba-head-dim')
     group.add_argument('--is-hybrid-model', default=False, action="store_true",
                        help='Indicates whether the model is a hybrid model.')
+    group.add_argument('--disable-mamba-mem-eff-path', default=False, action="store_true",
+                       help='Disable Mamba efficient path.')
     group.add_argument('--yaml-cfg', type=str, default=None,
                        help = 'Config file to add additional arguments')
 

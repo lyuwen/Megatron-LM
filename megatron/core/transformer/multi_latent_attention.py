@@ -186,7 +186,7 @@ class MultiLatentAttention(Attention):
         # Adjust key, value for inference
         # ===================================================
         # rotary_pos_emb = None
-        query, key, value, _, attn_mask_type = self._adjust_key_value_for_inference(
+        query, key, value, _, attn_mask_type, _ = self._adjust_key_value_for_inference(
             inference_context, query, key, value, rotary_pos_emb=None
         )
 
@@ -224,7 +224,7 @@ class MultiLatentAttention(Attention):
             core_attn_out = core_attn_out[:, :, :, : self.config.v_head_dim]
             core_attn_out = core_attn_out.reshape((q_len, bsz, self.config.num_attention_heads * self.config.v_head_dim))
 
-        if packed_seq_params is not None:
+        if packed_seq_params is not None and packed_seq_params.qkv_format == 'thd':
             # reshape to same output shape as unpacked case
             # (t, np, hn) -> (t, b=1, h=np*hn)
             # t is the pack size = sum (sq_i)
@@ -282,6 +282,7 @@ class MLASelfAttention(MultiLatentAttention):
                 bias=False,
                 skip_bias_add=False,
                 is_expert=False,
+                tp_comm_buffer_name='q_proj',
             )
 
         else:
@@ -296,6 +297,7 @@ class MLASelfAttention(MultiLatentAttention):
                 skip_bias_add=False,
                 gather_output=False,
                 is_expert=False,
+                tp_comm_buffer_name='q_down_proj',
             )
 
             self.linear_q_up_proj = build_module(
@@ -308,6 +310,7 @@ class MLASelfAttention(MultiLatentAttention):
                 bias=False,
                 skip_bias_add=False,
                 is_expert=False,
+                tp_comm_buffer_name='q_up_proj',
             )
 
         self.linear_kv_down_proj = build_module(
@@ -320,6 +323,7 @@ class MLASelfAttention(MultiLatentAttention):
             skip_bias_add=False,
             gather_output=False,
             is_expert=False,
+            tp_comm_buffer_name='kv_down_proj',
         )
 
         self.linear_kv_up_proj = build_module(
@@ -332,6 +336,7 @@ class MLASelfAttention(MultiLatentAttention):
             bias=False,
             skip_bias_add=False,
             is_expert=False,
+            tp_comm_buffer_name='kv_up_proj',
         )
 
         if self.config.q_lora_rank is not None:
@@ -445,28 +450,35 @@ class MLASelfAttention(MultiLatentAttention):
         # QKV up projection and RoPE apply
         # =========================================
         def qkv_up_proj_and_rope_apply(q_compressed, kv_compressed, k_pos_emb, rotary_pos_emb):
+            """
+            Apply the up projection and RoPE to the query and key.
+            When sequence packing enabled, the input tensors adopt a packed shape of [t, ...];
+            otherwise, they maintain the unpacked shape [s, b, ...]. In subsequent code comments,
+            we uniformly use [num_tokens, ...] to denote [s, b, ...] or [t, ...] for two cases.
+            """
             if self.config.q_lora_rank is not None:
+                # q_compressed: [num_tokens, q_lora_rank]
+                # q: [num_tokens, n * (qk_head_dim + qk_pos_emb_head_dim)]
                 q, _ = self.linear_q_up_proj(q_compressed)
             else:
-                # hidden_states:[s, b, 2048], q: [s, b, n * 192]
+                # q_compressed: [num_tokens, hidden_size]
+                # q: [num_tokens, n * (qk_head_dim + qk_pos_emb_head_dim)]
                 q, _ = self.linear_q_proj(q_compressed)
 
-            q_len, bsz, _ = q.size()
+            # q: [num_tokens, n, q_head_dim]
+            q = q.view(*q.size()[:-1], self.num_attention_heads_per_partition, self.q_head_dim)
 
-            # q: [s, b, n, 192]
-            q = q.view(q_len, bsz, self.num_attention_heads_per_partition, self.q_head_dim)
-
-            # kv: [s, b, 2048]
+            # kv: [num_tokens, n * (qk_head_dim + v_head_dim)]
             kv, _ = self.linear_kv_up_proj(kv_compressed)
 
-            # kv: [s, b, n, 256]
+            # kv: [num_tokens, n, (qk_head_dim + v_head_dim)]
             kv = kv.view(
-                q_len,
-                bsz,
+                *kv.size()[:-1],
                 self.num_attention_heads_per_partition,
                 self.config.qk_head_dim + self.config.v_head_dim,
             )
 
+            q_len = q.size()[0]
             if inference_context is not None:
                 # add offset to the sequence start for inference
                 sequence_start = inference_context.sequence_len_offset
@@ -479,20 +491,22 @@ class MLASelfAttention(MultiLatentAttention):
                 # the full rotary_pos_emb length.
                 rotary_pos_emb = rotary_pos_emb[0:q_len]
 
-            # [s, b, 64] -> [s, b, 1, 64]
-            k_pos_emb = torch.unsqueeze(k_pos_emb, 2)
+            # [num_tokens, qk_pos_emb_head_dim] -> [num_tokens, 1, qk_pos_emb_head_dim]
+            k_pos_emb = torch.unsqueeze(k_pos_emb, -2)
 
-            # q: [s, b, n, 128], q_pos_emb: [s, b, n, 64]
+            # q_no_pe: [num_tokens, n, qk_head_dim]
+            # q_pos_emb: [num_tokens, n, qk_pos_emb_head_dim]
             q_no_pe, q_pos_emb = torch.split(
                 q, [self.config.qk_head_dim, self.config.qk_pos_emb_head_dim], dim=-1
             )
 
-            # k_no_pe: [s, b, n, 128], value: [s, b, n, 128]
+            # k_no_pe: [num_tokens, n, qk_head_dim]
+            # value: [num_tokens, n, v_head_dim]
             k_no_pe, value = torch.split(
                 kv, [self.config.qk_head_dim, self.config.v_head_dim], dim=-1
             )
 
-            # q_pos_emb: [s, b, n, 64], k_pos_emb:[s, b, 1, 64]
+            # q_pos_emb: [num_tokens, n, qk_pos_emb_head_dim]
             q_pos_emb = apply_rotary_pos_emb(
                 q_pos_emb,
                 rotary_pos_emb,
@@ -501,6 +515,7 @@ class MLASelfAttention(MultiLatentAttention):
                 mscale=mscale,
                 cp_group=self.model_comm_pgs.cp,
             )
+            # k_pos_emb:[num_tokens, 1, qk_pos_emb_head_dim]
             k_pos_emb = apply_rotary_pos_emb(
                 k_pos_emb,
                 rotary_pos_emb,
@@ -510,17 +525,29 @@ class MLASelfAttention(MultiLatentAttention):
                 cp_group=self.model_comm_pgs.cp,
             )
 
-            # query: [s, b, n, 192]
+            # query: [num_tokens, n, (qk_head_dim + v_head_dim)]
             query = torch.cat([q_no_pe, q_pos_emb], dim=-1)
 
-            # key: [s, b, n, 192]
-            k_pos_emb = k_pos_emb.expand(-1, -1, self.num_attention_heads_per_partition, -1)
+            # key: [num_tokens, n, (qk_head_dim + v_head_dim)]
+            if k_pos_emb.ndim == 4:
+                k_pos_emb = k_pos_emb.expand(-1, -1, self.num_attention_heads_per_partition, -1)
+            else:
+                assert k_pos_emb.ndim == 3
+                k_pos_emb = k_pos_emb.expand(-1, self.num_attention_heads_per_partition, -1)
             key = torch.cat([k_no_pe, k_pos_emb], dim=-1)
 
             query = query.contiguous()
             key = key.contiguous()
             value = value.contiguous()
             return query, key, value
+
+        if packed_seq_params is not None:
+            # If sequence packing, TE expect [t, h, d] shaped qkv input.
+            # In Megatron-Core, the qkv shape is [t, 1, h, d].
+            # So we need to reshape qkv from [t, 1, h, d] to [t, h, d].
+            q_compressed = q_compressed.squeeze(1)
+            kv_compressed = kv_compressed.squeeze(1)
+            k_pos_emb = k_pos_emb.squeeze(1)
 
         if self.recompute_up_proj:
             self.qkv_up_checkpoint = tensor_parallel.CheckpointWithoutOutput()

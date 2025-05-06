@@ -5,9 +5,10 @@ from contextlib import nullcontext
 from typing import List, Optional
 
 import torch
+from packaging.version import Version as PkgVersion
 
 from megatron.core.transformer.transformer_config import TransformerConfig
-from megatron.core.utils import is_te_min_version
+from megatron.core.utils import get_te_version, is_te_min_version
 
 # Check if Transformer Engine is installed
 HAVE_TE = False
@@ -87,13 +88,18 @@ if HAVE_TE and is_te_min_version("2.2"):
     ) -> None:
         if len(model_params) == 0:
             return
-        if fsdp_shard_model_params is not None:
-            # TODO: @jianbinc, @kunlunl to add support for using FSDP with --fp8-param-gather
-            raise NotImplementedError("FSDP with --fp8-param-gather is not supported in TE 2.2+")
 
         from transformer_engine.pytorch.tensor.utils import cast_master_weights_to_fp8
 
-        cast_master_weights_to_fp8(model_params, main_params, start_offsets, data_parallel_group)
+        args = [model_params, main_params, start_offsets, data_parallel_group]
+        if fsdp_shard_model_params is not None:
+            if get_te_version() == PkgVersion("2.3.0.dev0+5fdd7bb") or is_te_min_version("2.3.0"):
+                args.append(fsdp_shard_model_params)
+            else:
+                raise NotImplementedError(
+                    f"FSDP with --fp8-param-gather is not supported in TE v{get_te_version()}"
+                )
+        cast_master_weights_to_fp8(*args)
 
     def _correct_amax_history_if_needed_impl(model: List[torch.nn.Module]) -> None:
         pass
@@ -382,7 +388,7 @@ if HAVE_TE:
                         fp8_format=fp8_format,
                         override_linear_precision=(False, False, not config.fp8_wgrad),
                     )
-                elif config.fp8_recipe == Fp8Recipe.tensorwise and is_te_min_version("2.2.0"):
+                elif config.fp8_recipe == Fp8Recipe.tensorwise and is_te_min_version("2.2.0.dev0"):
                     fp8_recipe = transformer_engine.common.recipe.Float8CurrentScaling(
                         fp8_format=fp8_format
                     )
@@ -403,7 +409,7 @@ if HAVE_TE:
             else:
                 # Assert that the user is using delayed scaling.
                 assert config.fp8_recipe == Fp8Recipe.delayed, (
-                    "Please make sure to use TransformerEngine version >= 2.2.0 for "
+                    "Please make sure to use TransformerEngine version >= 2.2.0.dev0 for "
                     "Float8CurrentScaling, >= 2.1.0 for MXFP8BlockScaling, and >= 2.3.0.dev0 for "
                     "Float8BlockScaling."
                 )
