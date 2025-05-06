@@ -200,7 +200,7 @@ class MoELayer(BaseMoELayer):
                 hidden_states, probs, routing_map
             )
             use_experts_fp8_context = self.config.v3_fp8_grouped_linear
-            experts_fp8_context = get_fp8_context(self.config) if use_experts_fp8_context else nullcontext()
+            experts_fp8_context = get_fp8_context(self.config, is_gl=True) if use_experts_fp8_context else nullcontext()
             with experts_fp8_context:
                 if FP8_CTX_MOE:
                     expert_output, mlp_bias = tensor_parallel.fp8_checkpoint(self.experts, False, dispatched_input, tokens_per_expert, permuted_probs)
