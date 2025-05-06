@@ -182,7 +182,7 @@ class MoELayer(BaseMoELayer):
                 self.token_dispatcher.token_permutation(hidden_states, probs, routing_map)
             )
             use_experts_fp8_context = self.config.v3_fp8_grouped_linear
-            experts_fp8_context = get_fp8_context(self.config) if use_experts_fp8_context else nullcontext()
+            experts_fp8_context = get_fp8_context(self.config, is_gl=True) if use_experts_fp8_context else nullcontext()
             with experts_fp8_context:
                 expert_output, mlp_bias = self.experts(
                     dispatched_input, tokens_per_expert, permuted_probs
