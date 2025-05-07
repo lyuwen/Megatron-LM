@@ -117,9 +117,9 @@ def or_pipelining(
         id_forward = 0
         id_backward = 0
         
-        if global_rank == 0:
-            log_msg = f'iteration {iteration}'
-            log_msgs.append(log_msg)
+        # if global_rank == 0:
+        #     log_msg = f'iteration {iteration}'
+        #     log_msgs.append(log_msg)
     
     if isinstance(model, list):
         assert (
@@ -410,7 +410,7 @@ def or_pipelining(
             create_cudagraphs()
 
     if schedule_visualble:
-        if global_rank == (num_rank-args.expert_model_parallel_size):
+        if global_rank == 0:
             iteration += 1
             log_msg = f'iteration {iteration}'
             log_msgs.append(log_msg)
