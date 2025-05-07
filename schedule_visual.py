@@ -25,7 +25,7 @@ def main() -> None:
     
     args = parser.parse_args()
 
-    run_plot_timecond(args.input, args.iteration)
+    run_plot_timecond(args.input, args.iteration, args.output)
 
 
 def parse_timecond_file(file_path: str, iteration: int) -> Dict[int, List[Dict]]:
@@ -301,7 +301,7 @@ def create_timeline_figure(visualization_data: Dict[int, List[Dict]], max_time=N
     
     return fig
 
-def run_plot_timecond(input_file, iteration) -> None:
+def run_plot_timecond(input_file, iteration, output) -> None:
     """Run visualization directly from timecond file."""
     if not os.path.exists(input_file):
         raise FileNotFoundError("shecdule timecond file not found in current directory")
@@ -312,8 +312,8 @@ def run_plot_timecond(input_file, iteration) -> None:
     fig = create_timeline_figure(visualization_data)
 
     try:
-        pio.write_image(fig, 'timeline_visualization.jpg', format='jpeg', engine='kaleido')
-        print("图表已保存为 timelene_visualization.jpg")
+        pio.write_image(fig, output, format='jpeg', engine='kaleido')
+        print("图片已保存!!!!")
     except Exception as e:
         print(f"保存图片失败: {str(e)}")
 
