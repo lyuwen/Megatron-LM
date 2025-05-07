@@ -2,9 +2,9 @@ MEGATRON_PATH=${1}
 TENSORBOARD_DIR=${2}
 ITERATION=${3}
 SCHEDULE_VISUAL=true
+ITERATION=$((${ITERATION}+1))
 while [ ${SCHEDULE_VISUAL} = true ]
 do
-    ITERATION=$((${ITERATION}+1))
     prefix="iteration ${ITERATION}"
     if [ -f "${TENSORBOARD_DIR}/Timecond" ]; then
         if grep -q "${prefix}" "${TENSORBOARD_DIR}/Timecond" ; then
