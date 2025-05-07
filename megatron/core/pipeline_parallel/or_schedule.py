@@ -40,6 +40,7 @@ from megatron.core.pipeline_parallel.schedules import (
     send_backward,
 )
 from megatron.core.transformer.cuda_graphs import create_cudagraphs
+from megatron.core.sequence_length_scheduler import get_iteration
 from dataclasses import dataclass
 from megatron.training import get_args
 
@@ -59,8 +60,8 @@ def or_pipelining(
     forward_only: bool = False,
     collect_non_loss_data: bool = False,
     first_val_step: bool = None,
-    iteration: int = 0,
 ):
+    iteration = get_iteration()
     args = get_args()
     pipeline_params = OrPipelineParams(
         schedule_type=args.schedule_type

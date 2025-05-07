@@ -1390,7 +1390,7 @@ def dummy_train_step(data_iterator):
         batch = get_batch_on_this_cp_rank(batch)
 
 
-def train_step(forward_step_func, data_iterator, model, optimizer, opt_param_scheduler, config, iteration):
+def train_step(forward_step_func, data_iterator, model, optimizer, opt_param_scheduler, config):
     """Single training step."""
     args = get_args()
     timers = get_timers()
@@ -1434,7 +1434,7 @@ def train_step(forward_step_func, data_iterator, model, optimizer, opt_param_sch
             decoder_seq_length=args.decoder_seq_length,
             forward_only=False,
             adjust_tensor_shapes_fn=adjust_tensor_shapes_fn,
-            iteration=iteration)
+        )
     should_checkpoint, should_exit, exit_code = rerun_state_machine.should_checkpoint_and_exit()
     if should_exit:
         return {}, True, should_checkpoint, should_exit, exit_code, None, None
@@ -2296,7 +2296,7 @@ def train(
             grad_norm,
             num_zeros_in_grad,
         ) = train_step(
-            forward_step_func, train_data_iterator, model, optimizer, opt_param_scheduler, config, iteration
+            forward_step_func, train_data_iterator, model, optimizer, opt_param_scheduler, config
         )
 
         curr_sequence_length = get_sequence_length()

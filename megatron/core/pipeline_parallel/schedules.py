@@ -21,7 +21,6 @@ from megatron.core.utils import (
     get_model_type,
     get_model_xattn,
 )
-from megatron.training import get_args
 # Types
 Shape = Union[List[int], torch.Size]
 
@@ -110,12 +109,13 @@ def get_forward_backward_func():
         which have different shape handling.
 
     """
-    args = get_args()
     pipeline_model_parallel_size = parallel_state.get_pipeline_model_parallel_world_size()
     if pipeline_model_parallel_size > 1:
         if parallel_state.get_virtual_pipeline_model_parallel_world_size() is not None:
             forward_backward_func = forward_backward_pipelining_with_interleaving
         else:
+            from megatron.training import get_args
+            args = get_args()
             if args.plan_exec_split:
                 forward_backward_func = forward_backward_pipelining_without_interleaving_with_plan_exec_split
             else:
@@ -698,7 +698,6 @@ def forward_backward_pipelining_with_interleaving(
     collect_non_loss_data: bool = False,
     first_val_step: Optional[bool] = None,
     adjust_tensor_shapes_fn: Optional[Callable] = None,  # unused
-    iteration: int = 0, # unused
 ):
     """Run interleaved 1F1B schedule (model split into model chunks), with
     communication between pipeline stages as needed.
@@ -1754,24 +1753,6 @@ def forward_backward_pipelining_without_interleaving(
 ):
     """Run non-interleaved 1F1B schedule, with communication between pipeline
     stages. Returns dictionary with losses if the last stage, empty dict otherwise."""
-    
-    args = get_args()
-    schedule_visualble = args.schedule_visualble_path is not None and iteration >= args.schedule_visual_iter_start and iteration <= args.schedule_visual_iter_end
-    if schedule_visualble:
-        time_begin = time.perf_counter()
-        this_rank  = torch.distributed.get_rank()
-        num_rank  = parallel_state.get_pipeline_model_parallel_world_size()
-        pipeline_rank_offset = this_rank % args.expert_model_parallel_size
-        if pipeline_rank_offset == 0:
-            pipeline_rank = this_rank // args.expert_model_parallel_size
-    
-        log_msgs = []
-        id_forward = 0
-        id_backward = 0
-        
-        if this_rank == (num_rank-args.expert_model_parallel_size):
-            log_msg = f'iteration {iteration}'
-            log_msgs.append(log_msg)
 
     if isinstance(model, list):
         assert (
@@ -1899,14 +1880,6 @@ def forward_backward_pipelining_without_interleaving(
             checkpoint_activations_microbatch = None
 
         input_tensor = recv_forward(recv_tensor_shapes, config)
-        
-        # check info
-        if schedule_visualble:
-            if pipeline_rank_offset == 0:
-                time_current = time.perf_counter()
-                time_point   = time_current - time_begin
-                log_msg = f'S {pipeline_rank} F {id_forward} begin {time_point:.6f}'
-                log_msgs.append(log_msg)
             
         output_tensor, num_tokens = forward_step(
             forward_step_func,
@@ -1922,13 +1895,6 @@ def forward_backward_pipelining_without_interleaving(
             current_microbatch=i,
             encoder_decoder_xattn=encoder_decoder_xattn,
         )
-        if schedule_visualble:
-            if pipeline_rank_offset == 0:
-                time_current = time.perf_counter()
-                time_point   = time_current - time_begin
-                log_msg = f'S {pipeline_rank} F {id_forward} end {time_point:.6f}'
-                log_msgs.append(log_msg)
-                id_forward += 1
 
         send_forward(output_tensor, send_tensor_shapes, config)
         total_num_tokens += num_tokens
@@ -1955,14 +1921,6 @@ def forward_backward_pipelining_without_interleaving(
             ) >= config.num_microbatches_with_partial_activation_checkpoints
         else:
             checkpoint_activations_microbatch = None
-            
-        # check info
-        if schedule_visualble:
-            if pipeline_rank_offset == 0:
-                time_current = time.perf_counter()
-                time_point   = time_current - time_begin
-                log_msg = f'S {pipeline_rank} F {id_forward} begin {time_point:.6f}'
-                log_msgs.append(log_msg)
 
         output_tensor, num_tokens = forward_step(
             forward_step_func,
@@ -1980,15 +1938,6 @@ def forward_backward_pipelining_without_interleaving(
             current_microbatch=i + num_warmup_microbatches,
             encoder_decoder_xattn=encoder_decoder_xattn,
         )
-        
-        # check info
-        if schedule_visualble:
-            if pipeline_rank_offset == 0:
-                time_current = time.perf_counter()
-                time_point   = time_current - time_begin
-                log_msg = f'S {pipeline_rank} F {id_forward} end {time_point:.6f}'
-                log_msgs.append(log_msg)
-                id_forward += 1
             
         total_num_tokens += num_tokens
 
@@ -2018,27 +1967,10 @@ def forward_backward_pipelining_without_interleaving(
             if num_warmup_microbatches == 0 and last_iteration:
                 if config.grad_sync_func is None or rank == 0:
                     enable_grad_sync()
-                    
-            # check info   
-            if schedule_visualble:  
-                if pipeline_rank_offset == 0:
-                    time_current = time.perf_counter()
-                    time_point   = time_current - time_begin
-                    log_msg = f'S {pipeline_rank} B {id_backward} begin {time_point:.6f}'
-                    log_msgs.append(log_msg)
 
             input_tensor_grad = backward_step(
                 input_tensor, output_tensor, output_tensor_grad, model_type, config
             )
-            
-            # check info
-            if schedule_visualble:
-                if pipeline_rank_offset == 0:
-                    time_current = time.perf_counter()
-                    time_point   = time_current - time_begin
-                    log_msg = f'S {pipeline_rank} B {id_backward} end {time_point:.6f}'
-                    log_msgs.append(log_msg)
-                    id_backward += 1
 
             if last_iteration:
                 input_tensor = None
@@ -2065,27 +1997,10 @@ def forward_backward_pipelining_without_interleaving(
             output_tensor = output_tensors.pop(0)
 
             output_tensor_grad = recv_backward(send_tensor_shapes, config)
-            
-            # check info
-            if schedule_visualble:
-                if pipeline_rank_offset == 0:
-                    time_current = time.perf_counter()
-                    time_point   = time_current - time_begin
-                    log_msg = f'S {pipeline_rank} B {id_backward} begin {time_point:.6f}'
-                    log_msgs.append(log_msg)
 
             input_tensor_grad = backward_step(
                 input_tensor, output_tensor, output_tensor_grad, model_type, config
             )
-            
-            # check info
-            if schedule_visualble:
-                if pipeline_rank_offset == 0:
-                    time_current = time.perf_counter()
-                    time_point   = time_current - time_begin
-                    log_msg = f'S {pipeline_rank} B {id_backward} end {time_point:.6f}'
-                    log_msgs.append(log_msg)
-                    id_backward += 1
 
             send_backward(input_tensor_grad, recv_tensor_shapes, config)
 
@@ -2113,15 +2028,6 @@ def forward_backward_pipelining_without_interleaving(
 
     if hasattr(config, 'enable_cuda_graph') and config.enable_cuda_graph:
         create_cudagraphs()
-        
-    if schedule_visualble:
-        if this_rank == (num_rank-args.expert_model_parallel_size):
-            iteration += 1
-            log_msg = f'iteration {iteration}'
-            log_msgs.append(log_msg)
-        with open(args.schedule_visualble_path, 'a') as f:
-            for msg in log_msgs:
-                f.write(msg + '\n')
 
     return forward_data_store
 
@@ -2139,7 +2045,6 @@ def forward_backward_pipelining_without_interleaving_with_plan_exec_split(
     collect_non_loss_data: bool = False,
     first_val_step: Optional[bool] = None,
     adjust_tensor_shapes_fn: Optional[Callable] = None,
-    iteration: int = 0,
 ):
     """Run non-interleaved 1F1B schedule with plan and executer split, with communication between pipeline
     stages. Returns dictionary with losses if the last stage, empty dict otherwise."""
@@ -2156,6 +2061,5 @@ def forward_backward_pipelining_without_interleaving_with_plan_exec_split(
             decoder_seq_length=decoder_seq_length,
             forward_only=forward_only,
             collect_non_loss_data=collect_non_loss_data,
-            first_val_step=first_val_step,
-            iteration=iteration)
+            first_val_step=first_val_step)
     return or_pipelining_result
