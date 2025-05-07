@@ -1749,7 +1749,6 @@ def forward_backward_pipelining_without_interleaving(
     collect_non_loss_data: bool = False,
     first_val_step: Optional[bool] = None,
     adjust_tensor_shapes_fn: Optional[Callable] = None,
-    iteration: int = 0,
 ):
     """Run non-interleaved 1F1B schedule, with communication between pipeline
     stages. Returns dictionary with losses if the last stage, empty dict otherwise."""
@@ -1880,7 +1879,6 @@ def forward_backward_pipelining_without_interleaving(
             checkpoint_activations_microbatch = None
 
         input_tensor = recv_forward(recv_tensor_shapes, config)
-            
         output_tensor, num_tokens = forward_step(
             forward_step_func,
             data_iterator,
@@ -1895,7 +1893,6 @@ def forward_backward_pipelining_without_interleaving(
             current_microbatch=i,
             encoder_decoder_xattn=encoder_decoder_xattn,
         )
-
         send_forward(output_tensor, send_tensor_shapes, config)
         total_num_tokens += num_tokens
 
@@ -1938,7 +1935,6 @@ def forward_backward_pipelining_without_interleaving(
             current_microbatch=i + num_warmup_microbatches,
             encoder_decoder_xattn=encoder_decoder_xattn,
         )
-            
         total_num_tokens += num_tokens
 
         if forward_only:
