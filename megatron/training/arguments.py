@@ -2268,6 +2268,16 @@ def _add_distributed_args(parser):
                        "and must be consistent across all ranks.")
     group.add_argument('--replication-factor', default=2, type=int,
                        help="Number of machines storing the replica of a given rank's data.")
+    group.add_argument('--plan-exec-split', action='store_true', default=False,
+                       help="If set, plan and executer are splited in pipeline parallel schedule.")
+    group.add_argument('--schedule-type',type=str, default='1f1b', choices=['1f1b', 's16mb32_ori', 's16mb32_aa', 's16mb32_ab', 's6mb12_ori'],
+                       help="Schedule plan when --plan-exec-split=True")
+    group.add_argument('--schedule-visualble-path',type=str, default=None,
+                       help="Save path of schedule visualble")
+    group.add_argument('--schedule-visual-iter-start',type=int, default=30,
+                       help="Schedule visual iteration start")
+    group.add_argument('--schedule-visual-iter-end',type=int, default=35,
+                       help="Schedule visual iteration end")
     return parser
 
 
