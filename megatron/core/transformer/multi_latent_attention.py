@@ -26,6 +26,8 @@ from megatron.core.transformer.enums import AttnMaskType, AttnBackend
 from megatron.core.transformer.spec_utils import ModuleSpec, build_module
 from megatron.core.transformer.transformer_config import MLATransformerConfig
 from megatron.core.utils import deprecate_inference_params
+from megatron.core.fp8_utils import get_fp8_context
+from contextlib import nullcontext
 
 
 @dataclass
@@ -239,7 +241,10 @@ class MultiLatentAttention(Attention):
         # =================
         # Output. [sq, b, h]
         # =================
-        output, bias = self.linear_proj(core_attn_out)
+        use_linear_fp8_context = self.config.v3_fp8_linear
+        linear_fp8_context = get_fp8_context(self.config, is_gl=True) if use_linear_fp8_context else nullcontext()
+        with linear_fp8_context:
+            output, bias = self.linear_proj(core_attn_out)
 
         return output, bias
 
@@ -424,7 +429,10 @@ class MLASelfAttention(MultiLatentAttention):
         #     kv_combined: [s, b, (kv_lora_rank + qk_pos_emb_head_dim) / TP]
         # elif linear_kv_down_proj is Linear:
         #     kv_combined: [s / TP, b, (kv_lora_rank + qk_pos_emb_head_dim)]
-        kv_combined, _ = self.linear_kv_down_proj(hidden_states)
+        use_linear_fp8_context = self.config.v3_fp8_linear
+        linear_fp8_context = get_fp8_context(self.config, is_gl=True) if use_linear_fp8_context else nullcontext()
+        with linear_fp8_context:
+            kv_combined, _ = self.linear_kv_down_proj(hidden_states)
         if kv_combined.size(-1) != self.config.kv_lora_rank + self.config.qk_pos_emb_head_dim:
             # kv_combined: [s, b, (kv_lora_rank + qk_pos_emb_head_dim)]
             kv_combined = gather_from_tensor_model_parallel_region(kv_combined)
@@ -463,7 +471,10 @@ class MLASelfAttention(MultiLatentAttention):
             else:
                 # q_compressed: [num_tokens, hidden_size]
                 # q: [num_tokens, n * (qk_head_dim + qk_pos_emb_head_dim)]
-                q, _ = self.linear_q_proj(q_compressed)
+                use_linear_fp8_context = self.config.v3_fp8_linear
+                linear_fp8_context = get_fp8_context(self.config, is_gl=True) if use_linear_fp8_context else nullcontext()
+                with linear_fp8_context:
+                    q, _ = self.linear_q_proj(q_compressed)
 
             # q: [num_tokens, n, q_head_dim]
             q = q.view(*q.size()[:-1], self.num_attention_heads_per_partition, self.q_head_dim)

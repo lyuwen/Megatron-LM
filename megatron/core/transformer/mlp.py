@@ -21,6 +21,7 @@ from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.spec_utils import ModuleSpec, build_module
 from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core.utils import get_tensor_model_parallel_group_if_none
+from contextlib import nullcontext
 
 
 # pylint: disable=missing-class-docstring
@@ -162,7 +163,11 @@ class MLP(MegatronModule):
                 intermediate_parallel = intermediate_parallel.to(original_dtype)
 
         # [s, b, h]
-        output, output_bias = self.linear_fc2(intermediate_parallel)
+        from megatron.core.fp8_utils import get_fp8_context
+        use_linear_fp8_context = self.config.v3_fp8_linear
+        linear_fp8_context = get_fp8_context(self.config, is_gl=True) if use_linear_fp8_context else nullcontext()
+        with linear_fp8_context:
+            output, output_bias = self.linear_fc2(intermediate_parallel)
 
         if per_token_scale is not None:
             assert output_bias is None, "Bias is not supported with per_token_scale"

@@ -27,6 +27,7 @@ from megatron.core.utils import (
     log_single_rank,
     make_viewless_tensor,
 )
+from transformer_engine.pytorch.distributed import checkpoint as te_checkpoint
 
 logger = logging.getLogger(__name__)
 
@@ -424,6 +425,23 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
         )
         return get_transformer_layer_offset(config)
 
+    def _checkpoint_handler(self, forward_func, *args):
+        """Determines whether to use the `te_checkpoint` or `tensor_parallel.checkpoint`"""
+        if self.config.fp8 :
+            return te_checkpoint(
+                forward_func,
+                *args,
+                distribute_saved_activations=self.config.distribute_saved_activations,
+                get_rng_state_tracker=tensor_parallel.random.get_cuda_rng_tracker,
+                tp_group=parallel_state.get_tensor_model_parallel_group(),
+            )
+        else:
+            return tensor_parallel.checkpoint(
+                forward_func,
+                self.config.distribute_saved_activations,
+                *args
+            )
+
     def forward(self, *args, **kwargs):
         """
         Perform a forward pass through the transformer layer.
@@ -521,8 +539,8 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
                     )
             
             # 使用checkpoint，显式传递每个参数
-            pre_mlp_layernorm_output, residual, context = tensor_parallel.checkpoint(
-                explicit_forward_attention, False,
+            pre_mlp_layernorm_output, residual, context = self._checkpoint_handler(
+                explicit_forward_attention, 
                 hidden_states, attention_mask, context, context_mask,
                 rotary_pos_emb, rotary_pos_cos, rotary_pos_sin,
                 attention_bias, inference_context, packed_seq_params,
@@ -676,9 +694,7 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
         )
 
         if self.recompute_mlp:
-            mlp_output_with_bias = tensor_parallel.checkpoint(
-                self.mlp, False, pre_mlp_layernorm_output
-            )
+            self._checkpoint_handler(self.mlp, pre_mlp_layernorm_output)
         elif should_chunk_mlp_for_prefill:
             # Chunk input along sequence dimension
             num_chunks = min(self.config.mlp_chunks_for_prefill, pre_mlp_layernorm_output.shape[0])
