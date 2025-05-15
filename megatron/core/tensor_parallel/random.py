@@ -595,7 +595,7 @@ class FP8CheckpointFunction(torch.autograd.Function):
             detached_inputs = detach_variable(inputs)
             with torch.enable_grad():
                 outputs = ctx.run_function(*detached_inputs)
-        
+                
         # 处理输出和反向传播
         if isinstance(outputs, torch.Tensor):
             outputs = (outputs,)

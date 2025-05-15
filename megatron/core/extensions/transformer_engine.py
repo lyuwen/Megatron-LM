@@ -1311,14 +1311,10 @@ class TECudaRNGStatesTracker(te.pytorch.distributed.CudaRNGStatesTracker):
 
 def te_checkpoint(
     forward_func,
-    distribute_saved_activations,
-    get_rng_state_tracker,
-    tp_group,
-    hidden_states,
-    attention_mask,
-    context,
-    context_mask,
-    rotary_pos_emb,
+    *args,
+    distribute_saved_activations = False,
+    get_rng_state_tracker = None,
+    tp_group = None,
 ):
     """Checkpointing with Transformer-Engine."""
     from transformer_engine.pytorch.distributed import checkpoint
@@ -1326,11 +1322,7 @@ def te_checkpoint(
     if is_te_min_version("1.5.0"):
         return checkpoint(
             forward_func,
-            hidden_states,
-            attention_mask,
-            context,
-            context_mask,
-            rotary_pos_emb,
+            *args,
             distribute_saved_activations=distribute_saved_activations,
             get_rng_state_tracker=get_rng_state_tracker,
             tp_group=tp_group,
@@ -1341,11 +1333,7 @@ def te_checkpoint(
             distribute_saved_activations,
             get_rng_state_tracker,
             tp_group,
-            hidden_states,
-            attention_mask,
-            context,
-            context_mask,
-            rotary_pos_emb,
+            *args,
         )
 
 
