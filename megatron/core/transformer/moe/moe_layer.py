@@ -27,9 +27,13 @@ from megatron.core.fp8_utils import get_fp8_context
 from megatron.core.enums import Fp8Recipe
 from contextlib import nullcontext
 from megatron.core.extensions.transformer_engine import te_checkpoint
-from transformer_engine.pytorch.distributed import fp8_checkpoint
+try:
+    from transformer_engine.pytorch.distributed import te_checkpoint_fp8ctx
+    FP8_CTX_MOE = os.getenv('FP8_CTX_MOE', '0') == '1'
+except ImportError:
+    print("ZJ-Transformer-Engine not installed, skipping import")
+    FP8_CTX_MOE = False
 
-FP8_CTX_MOE = os.getenv('FP8_CTX_MOE', '0') == '1'
 
 @dataclass
 class MoESubmodules:
@@ -173,13 +177,22 @@ class MoELayer(BaseMoELayer):
     def _checkpoint_handler(self, forward_func, *args):
         """Determines whether to use the `te_checkpoint` or `tensor_parallel.checkpoint`"""
         if self.config.fp8 :
-            return te_checkpoint(
-                forward_func,
-                *args,
-                distribute_saved_activations=self.config.distribute_saved_activations,
-                get_rng_state_tracker=tensor_parallel.random.get_cuda_rng_tracker,
-                tp_group=parallel_state.get_tensor_model_parallel_group(),
-            )
+            if FP8_CTX_MOE:
+                return te_checkpoint_fp8ctx(
+                    forward_func,
+                    *args,
+                    distribute_saved_activations=self.config.distribute_saved_activations,
+                    get_rng_state_tracker=tensor_parallel.random.get_cuda_rng_tracker,
+                    tp_group=parallel_state.get_tensor_model_parallel_group(),
+                )
+            else:
+                return te_checkpoint(
+                    forward_func,
+                    *args,
+                    distribute_saved_activations=self.config.distribute_saved_activations,
+                    get_rng_state_tracker=tensor_parallel.random.get_cuda_rng_tracker,
+                    tp_group=parallel_state.get_tensor_model_parallel_group(),
+                )
         else:
             return tensor_parallel.checkpoint(
                 forward_func,
@@ -224,10 +237,7 @@ class MoELayer(BaseMoELayer):
             use_experts_fp8_context = self.config.v3_fp8_grouped_linear
             experts_fp8_context = get_fp8_context(self.config, is_gl=True) if use_experts_fp8_context else nullcontext()
             with experts_fp8_context:
-                if FP8_CTX_MOE:
-                    expert_output, mlp_bias = fp8_checkpoint(self.experts, dispatched_input, tokens_per_expert, permuted_probs, distribute_saved_activations=False, get_rng_state_tracker=tensor_parallel.random.get_cuda_rng_tracker, tp_group=parallel_state.get_tensor_model_parallel_group())
-                else:
-                    expert_output, mlp_bias = self._checkpoint_handler(self.experts, dispatched_input, tokens_per_expert, permuted_probs)
+                expert_output, mlp_bias = self._checkpoint_handler(self.experts, dispatched_input, tokens_per_expert, permuted_probs)
             use_linear_fp8_context = self.config.v3_fp8_linear
             linear_fp8_context = get_fp8_context(self.config, is_gl=True) if use_linear_fp8_context else nullcontext()
             with linear_fp8_context:
@@ -235,20 +245,14 @@ class MoELayer(BaseMoELayer):
                 if self.use_shared_expert and not self.shared_expert_overlap:
                     # if shared_expert_overlap is True, the expert calculation happens in
                     # the token_dispatcher to overlap communications and computations
-                    if FP8_CTX_MOE:
-                        output = output + fp8_checkpoint(self.shared_experts, hidden_states, distribute_saved_activations=False, get_rng_state_tracker=tensor_parallel.random.get_cuda_rng_tracker, tp_group=parallel_state.get_tensor_model_parallel_group())
-                    else:
-                        output = output + self._checkpoint_handler(self.shared_experts, hidden_states)
+                    output = output + self._checkpoint_handler(self.shared_experts, hidden_states)
             return output, mlp_bias
 
         if self.moe_layer_recompute:
             if self.moe_perm_checkpoint == 'full' or (self.moe_perm_checkpoint == 'half' and self.layer_number > 24):
                 output, mlp_bias = custom_forward_perm_checkpoint(hidden_states)
             else:
-                if FP8_CTX_MOE:
-                    output, mlp_bias = fp8_checkpoint(custom_forward,  hidden_states, distribute_saved_activations=False, get_rng_state_tracker=tensor_parallel.random.get_cuda_rng_tracker, tp_group=parallel_state.get_tensor_model_parallel_group())
-                else:
-                    output, mlp_bias = self._checkpoint_handler(custom_forward, hidden_states)
+                output, mlp_bias = self._checkpoint_handler(custom_forward, hidden_states)
         else:
             MOE_CKPT_LEVEL = os.getenv('MOE_CKPT_LEVEL', 'full')
             if MOE_CKPT_LEVEL == 'full' or self.layer_number > 24:
@@ -257,9 +261,6 @@ class MoELayer(BaseMoELayer):
                 if MOE_CKPT_LEVEL == 'half-perm':
                     output, mlp_bias = custom_forward_perm_checkpoint(hidden_states)
                 else:
-                    if FP8_CTX_MOE:
-                        output, mlp_bias = fp8_checkpoint(custom_forward,  hidden_states, distribute_saved_activations=False, get_rng_state_tracker=tensor_parallel.random.get_cuda_rng_tracker, tp_group=parallel_state.get_tensor_model_parallel_group())
-                    else:
-                        output, mlp_bias = self._checkpoint_handler(custom_forward, hidden_states)
+                    output, mlp_bias = self._checkpoint_handler(custom_forward, hidden_states)
 
         return output, mlp_bias
