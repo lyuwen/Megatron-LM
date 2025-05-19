@@ -104,7 +104,7 @@ def parse_log_file(file_path, show_lm_loss=False):
         return iterations, mfu_values
 
 
-def plot_mfu_curves(file_paths, title, show_lm_loss=False):
+def plot_mfu_curves(file_paths, title, show_lm_loss=False, show_mfu=True):
     """绘制多个文件的MFU曲线和lm loss曲线"""
     fig, ax1 = plt.subplots(figsize=(12, 8))
     
@@ -150,60 +150,50 @@ def plot_mfu_curves(file_paths, title, show_lm_loss=False):
             file_name = Path(file_path).name
             
             # 绘制MFU曲线（在第一个y轴）
-            line1 = ax1.plot(iterations, mfu_values, color=color, linewidth=2, label=f'MFU: {file_name}')
+            if show_mfu:
+                line1 = ax1.plot(iterations, mfu_values, color=color, linewidth=2, label=f'MFU: {file_name}')
+                
+                # 找出最高点并标注
+                if mfu_values:
+                    max_index = np.argmax(mfu_values)
+                    max_iteration = iterations[max_index]
+                    max_mfu = mfu_values[max_index]
+                    
+                    # 每隔50轮标注一次MFU值
+                    for idx, (iter_num, mfu_val) in enumerate(zip(iterations, mfu_values)):
+                        if iter_num % 300 == 0:
+                            mfu_percent = mfu_val * 100
+                            ax1.annotate(f'{mfu_percent:.1f}%', 
+                                        xy=(iter_num, mfu_val),
+                                        xytext=(0, 10),  # 文本偏移量（向上偏移）
+                                        textcoords='offset points',
+                                        color=color,
+                                        fontsize=8)
             
             # 绘制lm loss曲线（在第二个y轴，如果需要）
             if show_lm_loss and lm_loss_values and len(lm_loss_values) == len(iterations):
                 # 使用相同颜色但透明度更低
                 loss_color = to_rgba(base_color, alpha * 0.5)
                 line2 = ax2.plot(iterations, lm_loss_values, color=loss_color, linewidth=1.5, linestyle='--', label=f'Loss: {file_name}')
-            
-            # 找出最高点并标注
-            if mfu_values:
-                max_index = np.argmax(mfu_values)
-                max_iteration = iterations[max_index]
-                max_mfu = mfu_values[max_index]
-                
-                # 将MFU值转换为百分比并保留一位小数
-                max_mfu_percent = max_mfu * 100
-                
-                # 在最高点标注MFU值
-                #ax1.annotate(f'{max_mfu_percent:.1f}%', 
-                #            xy=(max_iteration, max_mfu),
-                #            xytext=(5, 5),  # 文本偏移量
-                #            textcoords='offset points',
-                #            color=color,
-                #            fontweight='bold')
-                
-                # 每隔50轮标注一次MFU值
-                for idx, (iter_num, mfu_val) in enumerate(zip(iterations, mfu_values)):
-                    if iter_num % 205 == 0:
-                        mfu_percent = mfu_val * 100
-                        ax1.annotate(f'{mfu_percent:.1f}%', 
-                                    xy=(iter_num, mfu_val),
-                                    xytext=(0, 10),  # 文本偏移量（向上偏移）
-                                    textcoords='offset points',
-                                    color=color,
-                                    fontsize=8)
                 
                 # 如果显示lm_loss，每隔50轮标注一次lm_loss值
-                if show_lm_loss and lm_loss_values and len(lm_loss_values) == len(iterations):
-                    for idx, (iter_num, lm_loss_val) in enumerate(zip(iterations, lm_loss_values)):
-                        if iter_num % 205 == 0:
-                            ax2.annotate(f'{lm_loss_val:.4f}', 
-                                        xy=(iter_num, lm_loss_val),
-                                        xytext=(0, -10),  # 文本偏移量（向下偏移）
-                                        textcoords='offset points',
-                                        color=loss_color,
-                                        fontsize=8)
+                for idx, (iter_num, lm_loss_val) in enumerate(zip(iterations, lm_loss_values)):
+                    if iter_num % 300 == 0:
+                        ax2.annotate(f'{lm_loss_val:.4f}', 
+                                    xy=(iter_num, lm_loss_val),
+                                    xytext=(0, -10),  # 文本偏移量（向下偏移）
+                                    textcoords='offset points',
+                                    color=loss_color,
+                                    fontsize=8)
         
         group_index += 1
     
     # 设置第一个y轴（MFU）
-    ax1.set_xlabel('Iteration')
-    ax1.set_ylabel('MFU')
-    ax1.set_ylim(0.0, 0.35)
-    ax1.grid(True, linestyle='--', alpha=0.7)
+    if show_mfu:
+        ax1.set_xlabel('Iteration')
+        ax1.set_ylabel('MFU')
+        ax1.set_ylim(0.0, 0.35)
+        ax1.grid(True, linestyle='--', alpha=0.7)
     
     # 设置第二个y轴（lm loss，如果需要）
     if show_lm_loss and ax2:
@@ -233,9 +223,11 @@ def main():
     parser.add_argument('files', nargs='+', help='日志文件路径')
     parser.add_argument('--show-lm-loss', action='store_true', default=False, 
                         help='是否显示lm_loss曲线（默认不显示）')
+    parser.add_argument('--no-show-mfu', action='store_true', default=False,
+                        help='是否隐藏MFU曲线（默认显示）')
     args = parser.parse_args()
     
-    plot_mfu_curves(args.files, args.title, show_lm_loss=args.show_lm_loss)
+    plot_mfu_curves(args.files, args.title, show_lm_loss=args.show_lm_loss, show_mfu=not args.no_show_mfu)
 
 
 if __name__ == "__main__":
