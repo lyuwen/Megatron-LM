@@ -8,9 +8,9 @@ DEFAULT_MODEL_SIZE=200B
 MODEL_SIZE=${MODEL_SIZE:-${DEFAULT_MODEL_SIZE}}
 BATCH_SIZE=${MICRO_BATCH_SIZE:-1}
 GLOBAL_BATCH_SIZE=${GLOBAL_BATCH_SIZE:-9600}
-DEFAULT_LR=4E-4
+DEFAULT_LR=2.4E-4
 LR=${LR:-${DEFAULT_LR}}
-DEFAULT_MIN_LR=4E-5
+DEFAULT_MIN_LR=2.4E-5
 MIN_LR=${MIN_LR:-${DEFAULT_MIN_LR}}
 INIT_METHOD_STD=${INIT_METHOD_STD:-0.006} # 0.006 
 
@@ -53,13 +53,21 @@ CKPT_FORMAT=${CKPT_FORMAT:-torch}
 if [ ${CKPT_FORMAT} = torch_dist_async ] ; then
     ckpt_options=" --ckpt-format torch_dist --async-save "
 elif [ ${CKPT_FORMAT} = torch_dist_no_optim ] ; then
-    ckpt_options=" --ckpt-format torch_dist --no-save-optim "
+    ckpt_options=" --ckpt-format torch_dist --no-save-optim --no-load-optim"
 elif [ ${CKPT_FORMAT} = torch_dist ] ; then
     ckpt_options=" --ckpt-format torch_dist "
 elif [ ${CKPT_FORMAT} = torch ] ; then
     ckpt_options=" --ckpt-format torch "
+elif [ ${CKPT_FORMAT} = torch_no_optim ] ; then
+    ckpt_options=" --ckpt-format torch --no-save-optim --no-load-optim"
 fi
-
+ckpt_options="${ckpt_options} \
+"
+            #--auto-detect-ckpt-format \
+            #--no-ckpt-fully-parallel-save \
+            #--ckpt-assume-constant-structure \
+            #--use-checkpoint-opt_param-scheduler"
+            #--exit-on-missing-checkpoint \
 
 # training configuraitons
 TRAIN_TOKENS=${TRAIN_TOKENS:-11692571197196}
@@ -392,14 +400,15 @@ fi
 TP_COMM_OVERLAP=$(( ($TP > 1) ? 1 : 0 ))
 comm_overlap_option="\
     --overlap-grad-reduce \
-    --overlap-param-gather"
- 
+    --overlap-param-gather \
+"
+#    --no-align-param-gather \
+#    --no-scatter-gather-tensors-in-pipeline \
 
 if [ $TP_COMM_OVERLAP -eq 1 ]; then
-    comm_overlap_option="\
+    comm_overlap_option=" ${comm_overlap_option} \
         --tp-comm-overlap \
-        --overlap-grad-reduce \
-        --overlap-param-gather"
+    "
 fi
 
 if [ $AC = full ]; then
@@ -670,7 +679,7 @@ if  [[ $ENABLE_RAMPUP_BS = false ]]; then
         --train-iters ${TRAIN_ITERS} "
 else
     warm_step=2000
-    GLOBAL_BATCH_SIZE_avg=5840
+    GLOBAL_BATCH_SIZE_avg=1920
     TRAIN_SAMPLES=$(( ${TRAIN_TOKENS} / ${SEQ_LEN} ))
     LR_WARMUP_SAMPLES=$((${warm_step} * ${GLOBAL_BATCH_SIZE_avg} ))
     LR_DECAY_SAMPLES=$(( ${TRAIN_TOKENS} /  ${SEQ_LEN} ))
@@ -678,7 +687,7 @@ else
         --lr-decay-samples ${LR_DECAY_SAMPLES} \
         --lr-warmup-samples ${LR_WARMUP_SAMPLES} \
         --train-samples ${TRAIN_SAMPLES} \
-        --rampup-batch-size 1920 1920 54931640 "
+        --rampup-batch-size 1920 960 54931640 "
 fi
 
 # Turn on PyTorchProfiler in DSW
@@ -721,12 +730,10 @@ if [[ ${USE_FSDP:-false} = true ]] ; then
 fi
 
 # Precision Aware Optimizer
-OFFLOAD_OPTIMIZER=${OFFLOAD_OPTIMIZER:-false}
 PAO_LEVEL=${PAO:-none}
 if [[ $PAO_LEVEL = none ]]; then
     new_options=" ${new_options} \
     "
-    OFFLOAD_OPTIMIZER=false
 elif [[ $PAO_LEVEL = moments ]]; then
     new_options=" ${new_options} \
         --use-precision-aware-optimizer \
@@ -752,10 +759,15 @@ else
     echo "PAO_LEVEL=${PAO_LEVEL} is not a valid option. Valid options include: none, moments, grads, weights"
     exit 1
 fi
+
+OFFLOAD_OPTIMIZER=${OFFLOAD_OPTIMIZER:-false}
 if [[ $OFFLOAD_OPTIMIZER = true ]]; then
     new_options=" ${new_options} \
+        --use-precision-aware-optimizer \
         --optimizer-cpu-offload \
+        --overlap-cpu-optimizer-d2h-h2d \
     "
+        #--use-torch-optimizer-for-cpu-offload \
 fi
 
 # 开启12LHSD的atten计算方法,打印MFU

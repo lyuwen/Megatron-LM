@@ -41,8 +41,21 @@ from megatron.core.utils import (
     is_te_min_version,
 )
 from megatron.core.fp8_utils import correct_amax_history_if_needed
-from megatron.training.checkpointing import load_checkpoint
-from megatron.training.checkpointing import save_checkpoint
+
+FLASH_CHECKPOINT = False
+if FLASH_CHECKPOINT:
+    try:
+        from dlrover.trainer.torch.flash_checkpoint.megatron_dist_ckpt import save_checkpoint
+        from dlrover.trainer.torch.flash_checkpoint.megatron_dist_ckpt import load_checkpoint
+        from dlrover.trainer.torch.flash_checkpoint.megatron import StorageType
+        print("Use Flash Checkpointing")
+    except ImportError:
+        FLASH_CHECKPOINT = False
+
+if not FLASH_CHECKPOINT:
+    from megatron.training.checkpointing import load_checkpoint
+    from megatron.training.checkpointing import save_checkpoint
+
 from megatron.training.checkpointing import checkpoint_exists
 from megatron.core.transformer.module import Float16Module
 from megatron.core.distributed import DistributedDataParallelConfig, TorchFullyShardedDataParallelConfig
