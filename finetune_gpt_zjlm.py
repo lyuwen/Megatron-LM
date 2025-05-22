@@ -441,6 +441,25 @@ def extra_valid_datasets_provider(extra_valid_num_samples):
 def add_extra_args(parser):
     parser = _add_extra_args(parser)
 
+    group = parser.add_argument_group(title='extra extra arguements')
+
+    group.add_argument('--extra-valid-datalist', type=str, default=None, action="append",
+                       help='A list of dataset lists containing additional validation datasets. '
+                       )
+    group.add_argument('--extra-valid-data-samples', type=int, default=None, action="append",
+                       help='Sample sizes of the list of dataset lists containing additional validation datasets. '
+                           'The last incomplete batch will be droped, but will always up-sample to at least 1 global batch.'
+                       )
+    group.add_argument('--extra-valid-data-names', type=str, default=None, action="append",
+                       help='Names of the dataset lists containing additional validation datasets. '
+                       )
+    group.add_argument('--use-gpt-dataset-mm', default=None, action="store_true",
+                       help='Use the efficiently memory mapped GPTDatasetMM implmentation. '
+                       )
+    group.add_argument('--use-legacy-throughput', default=None, action="store_true",
+                       help='Use the legacy method for calculating throughput.'
+                       )
+
     if has_nvidia_modelopt:
       return add_modelopt_args(parser)
     else:
