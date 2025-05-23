@@ -104,7 +104,18 @@ def parse_log_file(file_path, show_lm_loss=False):
         return iterations, mfu_values
 
 
-def plot_mfu_curves(file_paths, title, show_lm_loss=False, show_mfu=True):
+def calculate_ema(data, alpha=0.9):
+    """计算指数移动平均 (EMA)
+    alpha: 平滑系数，范围[0,1]，值越大表示对最近的数据权重越大
+    """
+    ema = np.zeros_like(data)
+    ema[0] = data[0]
+    for i in range(1, len(data)):
+        ema[i] = alpha * data[i] + (1 - alpha) * ema[i-1]
+    return ema
+
+
+def plot_mfu_curves(file_paths, title, show_lm_loss=False, show_mfu=True, lm_loss_ylim=None, show_loss_ema=False):
     """绘制多个文件的MFU曲线和lm loss曲线"""
     fig, ax1 = plt.subplots(figsize=(12, 8))
     
@@ -173,8 +184,18 @@ def plot_mfu_curves(file_paths, title, show_lm_loss=False, show_mfu=True):
             # 绘制lm loss曲线（在第二个y轴，如果需要）
             if show_lm_loss and lm_loss_values and len(lm_loss_values) == len(iterations):
                 # 使用相同颜色但透明度更低
-                loss_color = to_rgba(base_color, alpha * 0.5)
-                line2 = ax2.plot(iterations, lm_loss_values, color=loss_color, linewidth=1.5, linestyle='--', label=f'Loss: {file_name}')
+                loss_color = to_rgba(base_color, alpha * (0.3 if show_loss_ema else 0.5))
+                # 只在显示EMA时不显示原始loss的图例
+                line2 = ax2.plot(iterations, lm_loss_values, color=loss_color, linewidth=1.5, linestyle='--', 
+                               label=f'Loss: {file_name}' if not show_loss_ema else None)
+                
+                # 如果启用了loss EMA，绘制EMA曲线
+                if show_loss_ema:
+                    loss_ema_values = calculate_ema(lm_loss_values)
+                    # 使用相同颜色但更深的线条绘制EMA
+                    loss_ema_color = to_rgba(base_color, min(alpha * 0.5 + 0.3, 1.0))
+                    ax2.plot(iterations, loss_ema_values, color=loss_ema_color, linewidth=1.0, 
+                            label=f'Loss: {file_name}', linestyle='-')
                 
                 # 如果显示lm_loss，每隔50轮标注一次lm_loss值
                 for idx, (iter_num, lm_loss_val) in enumerate(zip(iterations, lm_loss_values)):
@@ -198,6 +219,8 @@ def plot_mfu_curves(file_paths, title, show_lm_loss=False, show_mfu=True):
     # 设置第二个y轴（lm loss，如果需要）
     if show_lm_loss and ax2:
         ax2.set_ylabel('LM Loss')
+        if lm_loss_ylim:
+            ax2.set_ylim(lm_loss_ylim)
     
     # 设置标题
     plt.title(title)
@@ -225,9 +248,17 @@ def main():
                         help='是否显示lm_loss曲线（默认不显示）')
     parser.add_argument('--no-show-mfu', action='store_true', default=False,
                         help='是否隐藏MFU曲线（默认显示）')
+    parser.add_argument('--lm-loss-ylim', type=float, nargs=2, metavar=('MIN', 'MAX'),
+                        help='设置lm-loss的y轴范围，例如：--lm-loss-ylim 0.5 2.0')
+    parser.add_argument('--show-loss-ema', action='store_true', default=False,
+                        help='是否显示loss的指数移动平均曲线（默认不显示）')
     args = parser.parse_args()
     
-    plot_mfu_curves(args.files, args.title, show_lm_loss=args.show_lm_loss, show_mfu=not args.no_show_mfu)
+    plot_mfu_curves(args.files, args.title, 
+                    show_lm_loss=args.show_lm_loss, 
+                    show_mfu=not args.no_show_mfu,
+                    lm_loss_ylim=args.lm_loss_ylim,
+                    show_loss_ema=args.show_loss_ema)
 
 
 if __name__ == "__main__":
