@@ -2687,6 +2687,8 @@ def _add_moe_args(parser):
                        help='Number of steps to apply router warmup randomness.')
     group.add_argument('--moe-apply-norm-head', action="store_true",
                        help='Apply lm_head L2 normalization to improve Moe stability.')
+    group.add_argument('--moe-topk-router-fusion', action="store_true",
+                    help='use trion fusion op in router')
 
     return parser
 

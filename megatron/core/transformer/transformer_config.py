@@ -495,6 +495,9 @@ class TransformerConfig(ModelParallelConfig):
     moe_apply_probs_on_input: bool = False
     """Apply probs on input of experts instead of applying after activation and glu."""
 
+    moe_topk_router_fusion: bool = False
+    """Fuse seq aux loss ops during topk router."""
+
     ##################
     # Context Parallel
     ##################
