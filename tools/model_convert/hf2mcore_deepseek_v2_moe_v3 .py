@@ -418,15 +418,6 @@ def load_megatron_model_with_vp(megatron_args):
 
 def load_megatron_model_latest(args):
     os.makedirs(args.save, exist_ok=True)
-    # os.system("cp -rf " + args.hf_ckpt_path + "/*config.json " + args.save)
-    # os.system("cp -rf " + args.hf_ckpt_path + "/tokenizer* " + args.save)
-    # os.system("cp -rf " + args.hf_ckpt_path + "/*.py " + args.save)
-    # os.system("cp -rf " + args.hf_ckpt_path + "/special_tokens_map.json " + args.save)
-
-    # os.system("cp -rf " + args.hf_ckpt_path + "/*config.json " + args.load)
-    # os.system("cp -rf " + args.hf_ckpt_path + "/tokenizer* " + args.load)
-    # os.system("cp -rf " + args.hf_ckpt_path + "/*.py " + args.load)
-    # os.system("cp -rf " + args.hf_ckpt_path + "/special_tokens_map.json " + args.load)
 
     # os.system(f"cp ./modeling_deepseek_align_version.py {args.save}/modeling_deepseek.py")  # replace the modeling file - no rescale for pretrain temp.
 
@@ -635,15 +626,11 @@ def load_megatron_model_latest(args):
 
 def load_megatron_model_latest_multi_thread(args):
     os.makedirs(args.save, exist_ok=True)
-    # os.system("cp -rf " + args.hf_ckpt_path + "/*config.json " + args.save)
-    # os.system("cp -rf " + args.hf_ckpt_path + "/tokenizer* " + args.save)
-    # os.system("cp -rf " + args.hf_ckpt_path + "/*.py " + args.save)
-    # os.system("cp -rf " + args.hf_ckpt_path + "/special_tokens_map.json " + args.save)
+    os.system("cp -rf " + args.hf_ckpt_path + "/*config.json " + args.save)
+    os.system("cp -rf " + args.hf_ckpt_path + "/tokenizer* " + args.save)
+    os.system("cp -rf " + args.hf_ckpt_path + "/*.py " + args.save)
+    os.system("cp -rf " + args.hf_ckpt_path + "/special_tokens_map.json " + args.save)
 
-    # os.system("cp -rf " + args.hf_ckpt_path + "/*config.json " + args.load)
-    # os.system("cp -rf " + args.hf_ckpt_path + "/tokenizer* " + args.load)
-    # os.system("cp -rf " + args.hf_ckpt_path + "/*.py " + args.load)
-    # os.system("cp -rf " + args.hf_ckpt_path + "/special_tokens_map.json " + args.load)
 
     # os.system(f"cp ./modeling_deepseek_align_version.py {args.save}/modeling_deepseek.py")  # replace the modeling file - no rescale for pretrain temp.
 
