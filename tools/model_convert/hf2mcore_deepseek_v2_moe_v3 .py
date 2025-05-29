@@ -20,6 +20,7 @@ from megatron.training import get_args
 from megatron.training.checkpointing import get_checkpoint_name, get_checkpoint_tracker_filename, read_metadata
 from megatron.training.utils import get_ltor_masks_and_position_ids
 from safetensors.torch import save_file
+from concurrent.futures import ThreadPoolExecutor,ProcessPoolExecutor
 
 # path_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__)))))
 # sys.path.append(os.path.join(path_dir, "examples"))
@@ -42,6 +43,7 @@ from collections.abc import Mapping, Sequence
 import pdb
 from megatron.core import InferenceParams
 
+
 @torch.inference_mode()
 def clone_state_dict(elem):
     """clone all tensors in the elem to cpu device.
@@ -63,8 +65,8 @@ def clone_state_dict(elem):
         elem = elem_type(elem)
     return elem
 
-def add_model_args(parser):
 
+def add_model_args(parser):
     parser.add_argument(
         "--target-tensor-model-parallel-size",
         type=int,
@@ -76,7 +78,7 @@ def add_model_args(parser):
         type=int,
         default=1
     )
-    
+
     parser.add_argument(
         "--target-decoder-first-pipeline-num-layers",
         type=int,
@@ -135,7 +137,7 @@ def add_model_args(parser):
     parser.add_argument(
         "--save-num-files",
         type=int,
-        default=1 
+        default=1
     )
 
     parser.add_argument(
@@ -144,8 +146,6 @@ def add_model_args(parser):
     )
 
     return parser
-
-
 
 
 def load_megatron_model_with_vp_support_unbalance(megatron_args):
@@ -178,7 +178,7 @@ def load_megatron_model_with_vp_support_unbalance(megatron_args):
         virtual_pipeline_stage_size = args.num_virtual_stages_per_pipeline_rank
     else:
         virtual_pipeline_stage_size = args.num_layers // (
-                    args.num_layers_per_virtual_pipeline_stage * args.pipeline_model_parallel_size)
+                args.num_layers_per_virtual_pipeline_stage * args.pipeline_model_parallel_size)
     print(pp_layers_per_stage)
     print(virtual_pipeline_stage_size)
     num_local_experts = args.num_experts // args.expert_model_parallel_size
@@ -203,9 +203,138 @@ def load_megatron_model_with_vp_support_unbalance(megatron_args):
                             # map to global layer_id
                             local_layer_id = int(re.search(r"decoder\.layers\.(\d+)\.", k).group(1))
                             # layer_id = (pp_rank * virtual_pipeline_stage_size + vp_rank) * args.num_layers_per_virtual_pipeline_stage + local_layer_id
-                            #layer_id = args.num_layers_per_virtual_pipeline_stage * (
+                            # layer_id = args.num_layers_per_virtual_pipeline_stage * (
                             #            vp_rank * args.pipeline_model_parallel_size + pp_rank) + local_layer_id  # ref https://github.com/NVIDIA/Megatron-LM/blob/e40f0f9abc96e5237906b5c668baf36bed7563fd/megatron/core/parallel_state.py#L467
-                            layer_id = sum(pp_layers_per_stage[:pp_rank])+ vp_rank * pp_layers_per_stage[pp_rank] // virtual_pipeline_stage_size  + local_layer_id
+                            layer_id = sum(pp_layers_per_stage[:pp_rank]) + vp_rank * pp_layers_per_stage[
+                                pp_rank] // virtual_pipeline_stage_size + local_layer_id
+                            new_k = re.sub(r"decoder.layers.\d+", "decoder.layers.{}".format(layer_id), k)
+
+                            # map to global expert_id
+                            if "local_experts" in k:
+                                local_expert_rank = int(re.search(r"local_experts\.(\d+)\.", k).group(1))
+                                expert_rank = ep_rank * num_local_experts + local_expert_rank
+                                new_k = re.sub(r"local_experts\.\d+", "local_experts.{}".format(expert_rank), new_k)
+                                mid_state[new_k].append(v)
+                            elif "mlp.experts" in k:  # group gemm
+                                local_expert_rank = int(
+                                    re.search(r"mlp\.experts\.linear_fc[12]\.weight(\d+)", k).group(1))
+                                expert_rank = ep_rank * num_local_experts + local_expert_rank
+                                new_k = re.sub(r"weight\d+", "weight{}".format(expert_rank), new_k)
+                                mid_state[new_k].append(v)
+                            else:
+                                if ep_rank == 0:
+                                    mid_state[new_k].append(v)
+                        else:
+                            if "word_embeddings" in k:
+                                if ep_rank == 0 and pp_rank == 0:
+                                    mid_state[k].append(v)
+                            elif "output_layer" in k or "final_layernorm" in k:
+                                if ep_rank == 0 and pp_rank == args.pipeline_model_parallel_size - 1 and vp_rank == virtual_pipeline_stage_size - 1:
+                                    mid_state[k].append(v)
+                            else:
+                                raise ValueError(f"{k} is missing")
+
+    print("> Combining dist-checkpoint...")
+    del model_state_dict
+    combined_state_dict = {}
+    group_per_split = args.num_attention_heads // args.tensor_model_parallel_size
+    q_head_dim = args.qk_head_dim + args.qk_pos_emb_head_dim
+    for k, v in mid_state.items():
+        if not isinstance(v[0], torch.Tensor) or 'router' in k or 'gate' in k:
+            target_v = v[0]
+        elif 'word_embeddings' in k or 'output_layer' in k or 'final_layernorm' in k:
+            target_v = torch.cat(v, dim=0)
+        elif 'linear_proj' in k:
+            target_v = torch.cat(v, dim=1)
+        elif 'linear_q_proj' in k:
+            viewed = [x.view(group_per_split, -1, q_head_dim, args.hidden_size) for x in v]
+            target_v = torch.cat(viewed, dim=0).view(-1, args.hidden_size)
+        elif 'linear_kv_b_proj' in k or 'linear_kv_up_proj.weight' in k:
+            viewed = [
+                x.view(group_per_split, -1, q_head_dim - args.qk_pos_emb_head_dim + args.v_head_dim, args.kv_lora_rank)
+                for x in v]
+            target_v = torch.cat(viewed, dim=0).view(-1, args.kv_lora_rank)
+        elif 'linear_kv_up_proj.layer_norm_weight' in k:
+            target_v = v[0]
+        elif 'linear_q_b_proj' in k or 'linear_q_up_proj' in k:  #
+            target_v = v[0]
+        elif 'linear_q_a_proj' in k or 'linear_q_down_proj' in k:  #
+            target_v = v[0]
+        elif 'linear_kv_a_proj' in k or 'linear_kv_down_proj' in k:
+            target_v = v[0]
+        elif 'linear_fc1.weight' in k:
+            viewed = [x.view(2, -1, args.hidden_size) for x in v]
+            target_v = torch.cat(viewed, dim=1).view(-1, args.hidden_size)
+        elif 'linear_fc1.layer_norm_weight' in k:
+            target_v = v[0]
+        elif 'linear_fc2' in k:
+            target_v = torch.cat(v, dim=1)
+        elif 'input_layernorm' in k:
+            target_v = v[0]
+        elif 'q_a_layernorm' in k or 'q_layernorm' in k:  #
+            target_v = v[0]
+        elif 'kv_a_layernorm' in k or 'kv_layernorm' in k:
+            target_v = v[0]
+        elif 'pre_mlp_layernorm' in k:
+            target_v = v[0]
+        else:
+            raise ValueError(f"{k} is missing!")
+        combined_state_dict[k] = target_v
+
+    print("> Loading checkpoint into model...")
+    del mid_state
+    # model = model_provider()
+    # model.load_state_dict(combined_state_dict, strict=False)
+    return combined_state_dict
+
+
+# def name_to_expert_rank(key):
+#     # pattern = r'local_experts\.(\d+)\.'
+#     pattern = r'mlp.experts.linear_fc[12].weight(\d+)'
+#     expert_rank = int(re.findall(pattern, key)[0])
+#     return expert_rank
+
+
+def load_megatron_model_with_vp(megatron_args):
+    MG_PATH = megatron_args.load
+    all_ckpts = sorted(os.listdir(MG_PATH))
+    mg_state_dict_path = OrderedDict()
+    for ckpts in all_ckpts:
+        ckpt_path = os.path.join(MG_PATH, ckpts, "model_optim_rng.pt")
+        mg_state_dict_path[ckpts] = ckpt_path
+
+    print("> Loading Megatron checkpoint...")
+    # DIR_NAME = "mp_rank_{tp:02}_{pp:03}_{ep:03}" if args.expert_model_parallel_size > 1 else "mp_rank_{tp:02}_{pp:03}}"
+    args = torch.load(mg_state_dict_path[list(mg_state_dict_path.keys())[0]], map_location="cpu")["args"]
+    DIR_NAME = "mp_rank_{tp:02}_{pp:03}_{ep:03}" if args.expert_model_parallel_size > 1 else "mp_rank_{tp:02}_{pp:03}"
+    print(args)
+    virtual_pipeline_stage_size = args.num_layers // (
+                args.num_layers_per_virtual_pipeline_stage * args.pipeline_model_parallel_size)
+    num_local_experts = args.num_experts // args.expert_model_parallel_size
+    mid_state = defaultdict(list)
+    for tp_rank in range(args.tensor_model_parallel_size):
+        for ep_rank in range(args.expert_model_parallel_size):
+            for pp_rank in range(args.pipeline_model_parallel_size):
+                for vp_rank in range(virtual_pipeline_stage_size):
+                    print(DIR_NAME)
+                    curr_ckpt = DIR_NAME.format(tp=tp_rank, pp=pp_rank,
+                                                ep=ep_rank) if args.expert_model_parallel_size > 1 else DIR_NAME.format(
+                        tp=tp_rank, pp=pp_rank)
+                    vp_model = "model{}".format(vp_rank)
+                    # model_state_dict = mg_state_dict[curr_ckpt][vp_model]
+                    model_state_dict = torch.load(mg_state_dict_path[curr_ckpt], map_location="cpu")[vp_model]
+
+                    # combine mg model first
+                    for k, v in model_state_dict.items():
+                        if "_extra_state" in k:
+                            continue
+
+                        if "decoder.layers." in k:
+                            # map to global layer_id
+                            local_layer_id = int(re.search(r"decoder\.layers\.(\d+)\.", k).group(1))
+                            # layer_id = (pp_rank * virtual_pipeline_stage_size + vp_rank) * args.num_layers_per_virtual_pipeline_stage + local_layer_id
+                            layer_id = args.num_layers_per_virtual_pipeline_stage * (
+                                        vp_rank * args.pipeline_model_parallel_size + pp_rank) + local_layer_id  # ref https://github.com/NVIDIA/Megatron-LM/blob/e40f0f9abc96e5237906b5c668baf36bed7563fd/megatron/core/parallel_state.py#L467
                             new_k = re.sub(r"decoder.layers.\d+", "decoder.layers.{}".format(layer_id), k)
 
                             # map to global expert_id
@@ -286,138 +415,9 @@ def load_megatron_model_with_vp_support_unbalance(megatron_args):
     model.load_state_dict(combined_state_dict, strict=False)
     return model
 
-# def name_to_expert_rank(key):
-#     # pattern = r'local_experts\.(\d+)\.'
-#     pattern = r'mlp.experts.linear_fc[12].weight(\d+)'
-#     expert_rank = int(re.findall(pattern, key)[0])
-#     return expert_rank
-
-
-def load_megatron_model_with_vp(megatron_args):
-    MG_PATH = megatron_args.load
-    all_ckpts = sorted(os.listdir(MG_PATH))
-    mg_state_dict_path = OrderedDict()
-    for ckpts in all_ckpts:
-        ckpt_path = os.path.join(MG_PATH, ckpts, "model_optim_rng.pt")
-        mg_state_dict_path[ckpts] = ckpt_path
-    
-    print("> Loading Megatron checkpoint...")
-    #DIR_NAME = "mp_rank_{tp:02}_{pp:03}_{ep:03}" if args.expert_model_parallel_size > 1 else "mp_rank_{tp:02}_{pp:03}}"
-    args = torch.load(mg_state_dict_path[list(mg_state_dict_path.keys())[0]], map_location="cpu")["args"]
-    DIR_NAME = "mp_rank_{tp:02}_{pp:03}_{ep:03}" if args.expert_model_parallel_size > 1 else "mp_rank_{tp:02}_{pp:03}"
-    print(args)
-    virtual_pipeline_stage_size = args.num_layers // (args.num_layers_per_virtual_pipeline_stage * args.pipeline_model_parallel_size)
-    num_local_experts = args.num_experts // args.expert_model_parallel_size
-    mid_state = defaultdict(list)
-    for tp_rank in range(args.tensor_model_parallel_size):
-        for ep_rank in range(args.expert_model_parallel_size):
-            for pp_rank in range(args.pipeline_model_parallel_size):
-                for vp_rank in range(virtual_pipeline_stage_size):
-                    print(DIR_NAME)
-                    curr_ckpt = DIR_NAME.format(tp=tp_rank, pp=pp_rank, ep=ep_rank) if args.expert_model_parallel_size > 1 else DIR_NAME.format(tp=tp_rank, pp=pp_rank)
-                    vp_model = "model{}".format(vp_rank)
-                    # model_state_dict = mg_state_dict[curr_ckpt][vp_model]
-                    model_state_dict = torch.load(mg_state_dict_path[curr_ckpt], map_location="cpu")[vp_model]
-
-                    # combine mg model first
-                    for k, v in model_state_dict.items():
-                        if "_extra_state" in k:
-                            continue
-
-                        if "decoder.layers." in k:
-                            # map to global layer_id
-                            local_layer_id = int(re.search(r"decoder\.layers\.(\d+)\.", k).group(1))
-                            # layer_id = (pp_rank * virtual_pipeline_stage_size + vp_rank) * args.num_layers_per_virtual_pipeline_stage + local_layer_id
-                            layer_id = args.num_layers_per_virtual_pipeline_stage * (vp_rank * args.pipeline_model_parallel_size + pp_rank) + local_layer_id # ref https://github.com/NVIDIA/Megatron-LM/blob/e40f0f9abc96e5237906b5c668baf36bed7563fd/megatron/core/parallel_state.py#L467
-                            new_k = re.sub(r"decoder.layers.\d+", "decoder.layers.{}".format(layer_id), k)
-
-                            # map to global expert_id
-                            if "local_experts" in k:
-                                local_expert_rank = int(re.search(r"local_experts\.(\d+)\.", k).group(1))
-                                expert_rank = ep_rank * num_local_experts + local_expert_rank
-                                new_k = re.sub(r"local_experts\.\d+", "local_experts.{}".format(expert_rank), new_k)
-                                mid_state[new_k].append(v)
-                            elif "mlp.experts" in k: # group gemm
-                                local_expert_rank = int(re.search(r"mlp\.experts\.linear_fc[12]\.weight(\d+)", k).group(1))
-                                expert_rank = ep_rank * num_local_experts + local_expert_rank
-                                new_k = re.sub(r"weight\d+", "weight{}".format(expert_rank), new_k)
-                                mid_state[new_k].append(v)
-                            else:
-                                if ep_rank == 0:
-                                    mid_state[new_k].append(v)
-                        else:
-                            if "word_embeddings" in k:
-                                if ep_rank == 0 and pp_rank == 0:
-                                    mid_state[k].append(v)
-                            elif "output_layer" in k or "final_layernorm" in k:
-                                if ep_rank == 0 and pp_rank == args.pipeline_model_parallel_size - 1 and vp_rank == virtual_pipeline_stage_size - 1:
-                                    mid_state[k].append(v)
-                            else:
-                                raise ValueError(f"{k} is missing")
-    
-    print("> Combining dist-checkpoint...")
-    del model_state_dict
-    combined_state_dict = {}
-    group_per_split = args.num_attention_heads // args.tensor_model_parallel_size
-    q_head_dim = args.qk_head_dim + args.qk_pos_emb_head_dim
-    for k, v in mid_state.items():
-        if not isinstance(v[0], torch.Tensor) or 'router' in k or 'gate' in k:
-            target_v = v[0]
-        elif 'word_embeddings' in k or 'output_layer' in k or 'final_layernorm' in k:
-            target_v = torch.cat(v, dim=0)
-        elif 'linear_proj' in k:
-            target_v = torch.cat(v, dim=1)
-        elif 'linear_q_proj' in k:
-            viewed = [x.view(group_per_split, -1, q_head_dim, args.hidden_size) for x in v]
-            target_v = torch.cat(viewed, dim=0).view(-1, args.hidden_size)
-        elif 'linear_kv_b_proj' in k or 'linear_kv_up_proj.weight' in k:
-            viewed = [x.view(group_per_split, -1, q_head_dim - args.qk_pos_emb_head_dim + args.v_head_dim, args.kv_lora_rank) for x in v]
-            target_v = torch.cat(viewed, dim=0).view(-1, args.kv_lora_rank)
-        elif 'linear_kv_up_proj.layer_norm_weight' in k:
-            target_v = v[0]
-        elif 'linear_q_b_proj' in k or 'linear_q_up_proj' in k: #
-            target_v = v[0]
-        elif 'linear_q_a_proj' in k or 'linear_q_down_proj' in k: #
-            target_v = v[0]
-        elif 'linear_kv_a_proj' in k or 'linear_kv_down_proj' in k:
-            target_v = v[0]
-        elif 'linear_fc1.weight' in k:
-            viewed = [x.view(2, -1, args.hidden_size) for x in v]
-            target_v = torch.cat(viewed, dim=1).view(-1, args.hidden_size)
-        elif 'linear_fc1.layer_norm_weight' in k:
-            target_v = v[0]
-        elif 'linear_fc2' in k:
-            target_v = torch.cat(v, dim=1)
-        elif 'input_layernorm' in k:
-            target_v = v[0]
-        elif 'q_a_layernorm' in k or 'q_layernorm' in k: #
-            target_v = v[0]
-        elif 'kv_a_layernorm' in k or 'kv_layernorm' in k:
-            target_v = v[0]
-        elif 'pre_mlp_layernorm' in k:
-            target_v = v[0]
-        else:
-            raise ValueError(f"{k} is missing!")
-        combined_state_dict[k] = target_v
-
-    print("> Loading checkpoint into model...")
-    del mid_state
-    model = model_provider()
-    model.load_state_dict(combined_state_dict, strict=False)
-    return model
-
 
 def load_megatron_model_latest(args):
-    #os.makedirs(args.save, exist_ok=True)
-    #os.system("cp -rf " + args.hf_ckpt_path + "/*config.json " + args.save)
-    #os.system("cp -rf " + args.hf_ckpt_path + "/tokenizer* " + args.save)
-    #os.system("cp -rf " + args.hf_ckpt_path + "/*.py " + args.save)
-    #os.system("cp -rf " + args.hf_ckpt_path + "/special_tokens_map.json " + args.save)
-
-    # os.system("cp -rf " + args.hf_ckpt_path + "/*config.json " + args.load)
-    # os.system("cp -rf " + args.hf_ckpt_path + "/tokenizer* " + args.load)
-    # os.system("cp -rf " + args.hf_ckpt_path + "/*.py " + args.load)
-    # os.system("cp -rf " + args.hf_ckpt_path + "/special_tokens_map.json " + args.load)
+    os.makedirs(args.save, exist_ok=True)
 
     # os.system(f"cp ./modeling_deepseek_align_version.py {args.save}/modeling_deepseek.py")  # replace the modeling file - no rescale for pretrain temp.
 
@@ -431,12 +431,12 @@ def load_megatron_model_latest(args):
 
     iter_folder = os.path.join(model_path, f'iter_{iteration:07d}') if not release else f'{model_path}/release'
 
-    if args.target_num_layers_per_virtual_pipeline_stage: # or args.num_virtual_stages_per_pipeline_rank:
-        #args.num_layers_per_virtual_pipeline_stage = args.target_num_layers_per_virtual_pipeline_stage
+    if args.target_num_layers_per_virtual_pipeline_stage:  # or args.num_virtual_stages_per_pipeline_rank:
+        # args.num_layers_per_virtual_pipeline_stage = args.target_num_layers_per_virtual_pipeline_stage
         args.load = iter_folder
         return load_megatron_model_with_vp_support_unbalance(args)
 
-    model = model_provider()
+    # model = model_provider()
 
     args.tensor_model_parallel_size = args.target_tensor_model_parallel_size
     args.pipeline_model_parallel_size = args.target_pipeline_model_parallel_size
@@ -447,7 +447,6 @@ def load_megatron_model_latest(args):
     if args.tensor_model_parallel_size > 1:
         args.sequence_parallel = True
 
-    
     q_head_dim = args.qk_head_dim + args.qk_pos_emb_head_dim
     group_per_split = args.num_attention_heads // args.tensor_model_parallel_size
     if args.num_experts is not None:
@@ -456,17 +455,17 @@ def load_megatron_model_latest(args):
     state_dict = {}
     mid_state = defaultdict(list)
     if (
-        args.tensor_model_parallel_size == 1
-        and args.pipeline_model_parallel_size == 1
-        and args.expert_model_parallel_size == 1
+            args.tensor_model_parallel_size == 1
+            and args.pipeline_model_parallel_size == 1
+            and args.expert_model_parallel_size == 1
     ):
         checkpoint_name = get_checkpoint_name(model_path, iteration, release, None, None, None, None, None)
         state_dict = torch.load(checkpoint_name)['model']
     elif (
-        args.tensor_model_parallel_size == 1
-        and args.pipeline_model_parallel_size == 1
-        and args.expert_model_parallel_size > 1
-        and args.num_experts % args.expert_model_parallel_size == 0
+            args.tensor_model_parallel_size == 1
+            and args.pipeline_model_parallel_size == 1
+            and args.expert_model_parallel_size > 1
+            and args.num_experts % args.expert_model_parallel_size == 0
     ):
         for ep_rank in range(args.expert_model_parallel_size):
             checkpoint_name = get_checkpoint_name(model_path, iteration, release, None, None, None, True, ep_rank)
@@ -484,11 +483,11 @@ def load_megatron_model_latest(args):
                 if k not in state_dict.keys():
                     state_dict[k] = v
     elif (
-        args.tensor_model_parallel_size >= 1
-        and args.pipeline_model_parallel_size >= 1
-        and args.expert_model_parallel_size >= 1
-        and args.num_experts % args.expert_model_parallel_size == 0
-    ):  
+            args.tensor_model_parallel_size >= 1
+            and args.pipeline_model_parallel_size >= 1
+            and args.expert_model_parallel_size >= 1
+            and args.num_experts % args.expert_model_parallel_size == 0
+    ):
         first_pp_layers = args.target_decoder_first_pipeline_num_layers
         last_pp_layers = args.target_decoder_last_pipeline_num_layers
         remained_stages = args.pipeline_model_parallel_size
@@ -502,17 +501,17 @@ def load_megatron_model_latest(args):
         assert remained_layers % remained_stages == 0
         mid_pp_layers = remained_layers // remained_stages
         pp_layers_per_stage = ([first_pp_layers] if first_pp_layers else []) + [mid_pp_layers] * remained_stages + \
-                                                                       ( [last_pp_layers] if last_pp_layers else [])
-        #assert args.num_layers % args.pipeline_model_parallel_size == 0 # temp
+                              ([last_pp_layers] if last_pp_layers else [])
+        # assert args.num_layers % args.pipeline_model_parallel_size == 0 # temp
         # if args.target_decoder_first_pipeline_num_layers is not None:
         #     remained_layers = args.num_layers - args.target_decoder_first_pipeline_num_layers
         #     remained_stages = args.pipeline_model_parallel_size - 1
         #     assert remained_layers % remained_stages == 0
         #     pp_layers_per_stage = [args.target_decoder_first_pipeline_num_layers] +([remained_layers // remained_stages] * remained_stages)
         # else:
-        #pp_layers_per_stage = [args.num_layers // args.pipeline_model_parallel_size] * args.pipeline_model_parallel_size
+        # pp_layers_per_stage = [args.num_layers // args.pipeline_model_parallel_size] * args.pipeline_model_parallel_size
         # when not divisible
-        #num_layers = args.num_layers // args.pipeline_model_parallel_size
+        # num_layers = args.num_layers // args.pipeline_model_parallel_size
         layers_to_copy = {}
         for tp_rank in range(args.tensor_model_parallel_size):
             for ep_rank in range(args.expert_model_parallel_size):
@@ -523,7 +522,8 @@ def load_megatron_model_latest(args):
                         layers_to_copy[(pp_rank, layer)] = pp_layer_id
 
                     if args.expert_model_parallel_size > 1:
-                        checkpoint_name = get_checkpoint_name(model_path, iteration, release, True, tp_rank, pp_rank, True,
+                        checkpoint_name = get_checkpoint_name(model_path, iteration, release, True, tp_rank, pp_rank,
+                                                              True,
                                                               ep_rank)
                     elif args.expert_model_parallel_size == 1:
                         checkpoint_name = get_checkpoint_name(model_path, iteration, release, True, tp_rank, pp_rank,
@@ -536,15 +536,16 @@ def load_megatron_model_latest(args):
                         if 'decoder.layers' in k:
                             pattern = re.compile(r'\d+')
                             res = pattern.findall(k)
-                            tgt = re.sub(r"decoder.layers.\d+", "decoder.layers." + str(layers_to_copy[(pp_rank, int(res[0]))]), k)
+                            tgt = re.sub(r"decoder.layers.\d+",
+                                         "decoder.layers." + str(layers_to_copy[(pp_rank, int(res[0]))]), k)
                             if 'local_experts' in k:
                                 local_expert_rank = int(re.findall(pattern_exp, tgt)[0])
-                                expert_rank = local_expert_rank + num_local_experts * ep_rank ##
+                                expert_rank = local_expert_rank + num_local_experts * ep_rank  ##
                                 tgt = tgt.replace(f'local_experts.{local_expert_rank}', f'local_experts.{expert_rank}')
                                 mid_state[tgt].append(v)
                             elif 'mlp.experts' in k:
                                 local_expert_rank = int(re.findall(pattern_exp, tgt)[0])
-                                expert_rank = local_expert_rank + num_local_experts * ep_rank ##
+                                expert_rank = local_expert_rank + num_local_experts * ep_rank  ##
                                 tgt = tgt.replace(f'weight{local_expert_rank}', f'weight{expert_rank}')
                                 mid_state[tgt].append(v)
                             else:
@@ -553,20 +554,22 @@ def load_megatron_model_latest(args):
                                 #         'mlp.linear_fc1' in k or 'shared_experts.linear_fc1' in k or 'shared_experts.linear_fc2' in k or \
                                 #         'linear_kv_a_proj' in k or 'linear_kv_b_proj' in k or 'linear_q_a_proj' in k or 'linear_q_b_proj' in k or \
                                 #         'shared_expert.linear_fc1' in k or 'shared_expert.linear_fc2' in k:
-                                if ep_rank ==0:
+                                if ep_rank == 0:
                                     mid_state[tgt].append(v)
                                 # else:
                                 #     mid_state[tgt].append(v)
                         else:
                             if "word_embeddings" in k:
-                                if ep_rank ==0 and pp_rank == 0:
+                                if ep_rank == 0 and pp_rank == 0:
                                     mid_state[k].append(v)
                             elif "output_layer" in k or "final_layernorm" in k:
-                                if ep_rank ==0 and pp_rank == args.pipeline_model_parallel_size - 1:
+                                if ep_rank == 0 and pp_rank == args.pipeline_model_parallel_size - 1:
                                     mid_state[k].append(v)
                             else:
                                 raise ValueError(f"{k} is missing! ")
-
+        for k, v in mid_state.items():
+            print(k)
+            print(len(v))
         for k, v in mid_state.items():
             if not isinstance(v[0], torch.Tensor) or 'router' in k or 'gate' in k:
                 target_v = v[0]
@@ -580,7 +583,8 @@ def load_megatron_model_latest(args):
                 viewed = [x.view(group_per_split, -1, q_head_dim, args.hidden_size) for x in v]
                 target_v = torch.cat(viewed, dim=0).view(-1, args.hidden_size)
             elif 'linear_kv_up_proj.weight' in k or 'linear_kv_b_proj' in k:
-                viewed = [x.view(group_per_split, -1, q_head_dim - args.qk_pos_emb_head_dim + args.v_head_dim, args.kv_lora_rank) for x in v]
+                viewed = [x.view(group_per_split, -1, q_head_dim - args.qk_pos_emb_head_dim + args.v_head_dim,
+                                 args.kv_lora_rank) for x in v]
                 target_v = torch.cat(viewed, dim=0).view(-1, args.kv_lora_rank)
             elif 'linear_kv_up_proj.layer_norm_weight' in k:
                 target_v = v[0]
@@ -611,13 +615,220 @@ def load_megatron_model_latest(args):
 
     else:
         raise ValueError('not support yet')
-    #for k,v in model.named_parameters():
+    # for k,v in model.named_parameters():
     #  if k not in state_dict:
     #    print(k)
-    #print("check potential missed keys")
+    # print("check potential missed keys")
 
-    model.load_state_dict(state_dict, strict=False)
-    return model
+    # model.load_state_dict(state_dict, strict=False)
+    return state_dict
+
+
+def load_megatron_model_latest_multi_thread(args):
+    os.makedirs(args.save, exist_ok=True)
+    os.system("cp -rf " + args.hf_ckpt_path + "/*config.json " + args.save)
+    os.system("cp -rf " + args.hf_ckpt_path + "/tokenizer* " + args.save)
+    os.system("cp -rf " + args.hf_ckpt_path + "/*.py " + args.save)
+    os.system("cp -rf " + args.hf_ckpt_path + "/special_tokens_map.json " + args.save)
+
+
+    # os.system(f"cp ./modeling_deepseek_align_version.py {args.save}/modeling_deepseek.py")  # replace the modeling file - no rescale for pretrain temp.
+
+    model_path = args.load
+    if args.iteration < 0:
+        tracker_filename = get_checkpoint_tracker_filename(model_path)
+        iteration, release = read_metadata(tracker_filename)
+    else:
+        iteration = args.iteration
+        release = False
+
+    iter_folder = os.path.join(model_path, f'iter_{iteration:07d}') if not release else f'{model_path}/release'
+
+    if args.target_num_layers_per_virtual_pipeline_stage:  # or args.num_virtual_stages_per_pipeline_rank:
+        # args.num_layers_per_virtual_pipeline_stage = args.target_num_layers_per_virtual_pipeline_stage
+        args.load = iter_folder
+        return load_megatron_model_with_vp_support_unbalance(args)
+
+    # model = model_provider()
+
+    args.tensor_model_parallel_size = args.target_tensor_model_parallel_size
+    args.pipeline_model_parallel_size = args.target_pipeline_model_parallel_size
+
+    if args.num_experts is not None:
+        args.expert_model_parallel_size = args.target_expert_model_parallel_size
+
+    if args.tensor_model_parallel_size > 1:
+        args.sequence_parallel = True
+
+    q_head_dim = args.qk_head_dim + args.qk_pos_emb_head_dim
+    group_per_split = args.num_attention_heads // args.tensor_model_parallel_size
+    if args.num_experts is not None:
+        pattern_exp = r'mlp\.experts\.linear_fc[12]\.weight(\d+)' if args.moe_grouped_gemm else r'local_experts\.(\d+)\.'
+        num_local_experts = args.num_experts // args.expert_model_parallel_size
+    state_dict = {}
+    mid_state = defaultdict(list)
+    if (
+            args.tensor_model_parallel_size == 1
+            and args.pipeline_model_parallel_size == 1
+            and args.expert_model_parallel_size == 1
+    ):
+        checkpoint_name = get_checkpoint_name(model_path, iteration, release, None, None, None, None, None)
+        state_dict = torch.load(checkpoint_name)['model']
+    elif (
+            args.tensor_model_parallel_size == 1
+            and args.pipeline_model_parallel_size == 1
+            and args.expert_model_parallel_size > 1
+            and args.num_experts % args.expert_model_parallel_size == 0
+    ):
+        for ep_rank in range(args.expert_model_parallel_size):
+            checkpoint_name = get_checkpoint_name(model_path, iteration, release, None, None, None, True, ep_rank)
+            print(f'load {checkpoint_name}')
+            split_state = torch.load(checkpoint_name, map_location="cpu", weights_only=False)['model']
+            for k, v in split_state.items():
+                if 'local_experts' in k and "_extra_state" not in k:
+                    expert_local_rank = int(re.findall(pattern_exp, k)[0])
+                    expert_rank = expert_local_rank + num_local_experts * ep_rank
+                    k = k.replace(f'local_experts.{expert_local_rank}', f'local_experts.{expert_rank}')
+                elif 'mlp.experts' in k and "_extra_state" not in k:
+                    expert_local_rank = int(re.findall(pattern_exp, k)[0])
+                    expert_rank = expert_local_rank + num_local_experts * ep_rank
+                    k = k.replace(f'weight{expert_local_rank}', f'weight{expert_rank}')
+                if k not in state_dict.keys():
+                    state_dict[k] = v
+    elif (
+            args.tensor_model_parallel_size >= 1
+            and args.pipeline_model_parallel_size >= 1
+            and args.expert_model_parallel_size >= 1
+            and args.num_experts % args.expert_model_parallel_size == 0
+    ):
+        first_pp_layers = args.target_decoder_first_pipeline_num_layers
+        last_pp_layers = args.target_decoder_last_pipeline_num_layers
+        remained_stages = args.pipeline_model_parallel_size
+        remained_layers = args.num_layers
+        if first_pp_layers:
+            remained_layers -= first_pp_layers
+            remained_stages -= 1
+        if last_pp_layers:
+            remained_layers -= last_pp_layers
+            remained_stages -= 1
+        assert remained_layers % remained_stages == 0
+        mid_pp_layers = remained_layers // remained_stages
+        pp_layers_per_stage = ([first_pp_layers] if first_pp_layers else []) + [mid_pp_layers] * remained_stages + \
+                              ([last_pp_layers] if last_pp_layers else [])
+        layers_to_copy = {}
+        def load_ckpt_part(tp_rank,ep_rank,pp_rank):
+            layer_offset = sum(pp_layers_per_stage[:pp_rank])
+            for layer in range(pp_layers_per_stage[pp_rank]):
+                pp_layer_id = layer + layer_offset
+                layers_to_copy[(pp_rank, layer)] = pp_layer_id
+
+            if args.expert_model_parallel_size > 1:
+                checkpoint_name = get_checkpoint_name(model_path, iteration, release, True, tp_rank, pp_rank,
+                                                      True,
+                                                      ep_rank)
+            elif args.expert_model_parallel_size == 1:
+                checkpoint_name = get_checkpoint_name(model_path, iteration, release, True, tp_rank, pp_rank,
+                                                      False)
+            print(f'load {checkpoint_name}')
+            split_state = torch.load(checkpoint_name, map_location="cpu", weights_only=False)['model']
+            for k, v in split_state.items():
+                if '_extra_state' in k:
+                    continue
+                if 'decoder.layers' in k:
+                    pattern = re.compile(r'\d+')
+                    res = pattern.findall(k)
+                    tgt = re.sub(r"decoder.layers.\d+",
+                                 "decoder.layers." + str(layers_to_copy[(pp_rank, int(res[0]))]), k)
+                    if 'local_experts' in k:
+                        local_expert_rank = int(re.findall(pattern_exp, tgt)[0])
+                        expert_rank = local_expert_rank + num_local_experts * ep_rank  ##
+                        tgt = tgt.replace(f'local_experts.{local_expert_rank}', f'local_experts.{expert_rank}')
+                        mid_state[tgt].append(v)
+                    elif 'mlp.experts' in k:
+                        local_expert_rank = int(re.findall(pattern_exp, tgt)[0])
+                        expert_rank = local_expert_rank + num_local_experts * ep_rank  ##
+                        tgt = tgt.replace(f'weight{local_expert_rank}', f'weight{expert_rank}')
+                        mid_state[tgt].append(v)
+                    else:
+                        # if 'linear_proj' in k or 'linear_q_proj' in k or 'linear_q_down_proj' in k or 'linear_q_up_proj'in k or \
+                        #         'linear_kv_up_proj' in k or 'linear_kv_down_proj' in k or 'mlp.linear_fc2' in k or \
+                        #         'mlp.linear_fc1' in k or 'shared_experts.linear_fc1' in k or 'shared_experts.linear_fc2' in k or \
+                        #         'linear_kv_a_proj' in k or 'linear_kv_b_proj' in k or 'linear_q_a_proj' in k or 'linear_q_b_proj' in k or \
+                        #         'shared_expert.linear_fc1' in k or 'shared_expert.linear_fc2' in k:
+                        if ep_rank == 0:
+                            mid_state[tgt].append(v)
+                        # else:
+                        #     mid_state[tgt].append(v)
+                else:
+                    if "word_embeddings" in k:
+                        if ep_rank == 0 and pp_rank == 0:
+                            mid_state[k].append(v)
+                    elif "output_layer" in k or "final_layernorm" in k:
+                        if ep_rank == 0 and pp_rank == args.pipeline_model_parallel_size - 1:
+                            mid_state[k].append(v)
+                    else:
+                        raise ValueError(f"{k} is missing! ")
+
+        tp_args = []
+        ep_args = []
+        pp_args = []
+        for tp_rank in range(args.tensor_model_parallel_size):
+            for ep_rank in range(args.expert_model_parallel_size):
+                for pp_rank in range(args.pipeline_model_parallel_size):
+                    tp_args.append(tp_rank)
+                    ep_args.append(ep_rank)
+                    pp_args.append(pp_rank)
+        with ThreadPoolExecutor(max_workers=args.tensor_model_parallel_size *
+                                            args.pipeline_model_parallel_size * args.expert_model_parallel_size) as pool:
+            result = pool.map(load_ckpt_part,tp_args,ep_args,pp_args)
+            for each in result:
+                continue
+        for k, v in mid_state.items():
+            if not isinstance(v[0], torch.Tensor) or 'router' in k or 'gate' in k:
+                target_v = v[0]
+            elif 'extra_state' in k:
+                target_v = None
+            elif 'word_embeddings' in k or 'output_layer' in k or 'final_layernorm' in k:
+                target_v = torch.cat(v, dim=0)
+            elif 'linear_proj' in k:
+                target_v = torch.cat(v, dim=1)
+            elif 'linear_q_proj' in k:
+                viewed = [x.view(group_per_split, -1, q_head_dim, args.hidden_size) for x in v]
+                target_v = torch.cat(viewed, dim=0).view(-1, args.hidden_size)
+            elif 'linear_kv_up_proj.weight' in k or 'linear_kv_b_proj' in k:
+                viewed = [x.view(group_per_split, -1, q_head_dim - args.qk_pos_emb_head_dim + args.v_head_dim,
+                                 args.kv_lora_rank) for x in v]
+                target_v = torch.cat(viewed, dim=0).view(-1, args.kv_lora_rank)
+            elif 'linear_kv_up_proj.layer_norm_weight' in k:
+                target_v = v[0]
+            elif 'linear_q_up_proj' in k or 'linear_q_b_proj' in k:
+                target_v = v[0]
+            elif 'linear_q_down_proj' in k or 'linear_q_a_proj' in k:
+                target_v = v[0]
+            elif 'linear_kv_down_proj' in k or 'linear_kv_a_proj' in k:
+                target_v = v[0]
+            elif 'linear_fc1.weight' in k:
+                viewed = [x.view(2, -1, args.hidden_size) for x in v]
+                target_v = torch.cat(viewed, dim=1).view(-1, args.hidden_size)
+            elif 'linear_fc1.layer_norm_weight' in k:
+                target_v = v[0]
+            elif 'linear_fc2' in k:
+                target_v = torch.cat(v, dim=1)
+            elif 'input_layernorm' in k:
+                target_v = v[0]
+            elif 'q_layernorm' in k or 'q_a_layernorm' in k:
+                target_v = v[0]
+            elif 'kv_layernorm' in k or 'kv_a_layernorm' in k:
+                target_v = v[0]
+            elif 'pre_mlp_layernorm' in k:
+                target_v = v[0]
+            else:
+                raise ValueError(f"{k} is missing!")
+            state_dict[k] = target_v
+
+    else:
+        raise ValueError('not support yet')
+    return state_dict
 
 
 def convert_checkpoint_from_megatron_to_transformers(mgmodel, hfmodel, args):
@@ -634,8 +845,8 @@ def convert_checkpoint_from_megatron_to_transformers(mgmodel, hfmodel, args):
         for layer_idx, (mglayer, hflayer) in enumerate(zip(mgmodel.decoder.layers, hfmodel.model.layers)):
             hflayer.input_layernorm.weight.copy_(mglayer.input_layernorm.weight)
             # hflayer.post_attention_layernorm.weight.copy_(mglayer.pre_mlp_layernorm.weight)
-            #if layer_idx <= first_k_dense_replace - 1 and args.moe_grouped_gemm:
-            if layer_idx <= first_k_dense_replace - 1 :
+            # if layer_idx <= first_k_dense_replace - 1 and args.moe_grouped_gemm:
+            if layer_idx <= first_k_dense_replace - 1:
                 hflayer.post_attention_layernorm.weight.copy_(mglayer.mlp.linear_fc1.layer_norm_weight)
             else:
                 hflayer.post_attention_layernorm.weight.copy_(mglayer.pre_mlp_layernorm.weight)
@@ -655,7 +866,8 @@ def convert_checkpoint_from_megatron_to_transformers(mgmodel, hfmodel, args):
             hflayer.self_attn.o_proj.weight.copy_(mglayer.self_attention.linear_proj.weight)
 
             if layer_idx <= first_k_dense_replace - 1:
-                gate_weight, up_weight = torch.split(mglayer.mlp.linear_fc1.weight, split_size_or_sections=args.ffn_hidden_size)
+                gate_weight, up_weight = torch.split(mglayer.mlp.linear_fc1.weight,
+                                                     split_size_or_sections=args.ffn_hidden_size)
                 hflayer.mlp.gate_proj.weight.copy_(gate_weight)
                 hflayer.mlp.up_proj.weight.copy_(up_weight)
                 hflayer.mlp.down_proj.weight.copy_(mglayer.mlp.linear_fc2.weight)
@@ -670,7 +882,7 @@ def convert_checkpoint_from_megatron_to_transformers(mgmodel, hfmodel, args):
                 if not args.moe_grouped_gemm:
                     for mgexpert, hfexpert in zip(mglayer.mlp.experts.local_experts, hflayer.mlp.experts):
                         gate_weight, up_weight = torch.split(mgexpert.linear_fc1.weight,
-                                                            split_size_or_sections=args.moe_ffn_hidden_size)
+                                                             split_size_or_sections=args.moe_ffn_hidden_size)
                         hfexpert.gate_proj.weight.copy_(gate_weight)
                         hfexpert.up_proj.weight.copy_(up_weight)
                         hfexpert.down_proj.weight.copy_(mgexpert.linear_fc2.weight)
@@ -679,14 +891,14 @@ def convert_checkpoint_from_megatron_to_transformers(mgmodel, hfmodel, args):
                         mgexpert_linear_fc1_weight = getattr(mglayer.mlp.experts.linear_fc1, f"weight{expert_id}")
                         mgexpert_linear_fc2_weight = getattr(mglayer.mlp.experts.linear_fc2, f"weight{expert_id}")
                         gate_weight, up_weight = torch.split(mgexpert_linear_fc1_weight,
-                                                            split_size_or_sections=args.moe_ffn_hidden_size)
+                                                             split_size_or_sections=args.moe_ffn_hidden_size)
                         hfexpert.gate_proj.weight.copy_(gate_weight)
                         hfexpert.up_proj.weight.copy_(up_weight)
                         hfexpert.down_proj.weight.copy_(mgexpert_linear_fc2_weight)
 
                 shared_expert_gate_weight, shared_expert_up_weight = \
                     torch.split(mglayer.mlp.shared_experts.linear_fc1.weight,
-                                split_size_or_sections=args.moe_shared_expert_intermediate_size) # args.moe_ffn_hidden_size*args.num_shared_experts
+                                split_size_or_sections=args.moe_shared_expert_intermediate_size)  # args.moe_ffn_hidden_size*args.num_shared_experts
                 hflayer.mlp.shared_experts.gate_proj.weight.copy_(shared_expert_gate_weight)
                 hflayer.mlp.shared_experts.up_proj.weight.copy_(shared_expert_up_weight)
                 hflayer.mlp.shared_experts.down_proj.weight.copy_(mglayer.mlp.shared_experts.linear_fc2.weight)
@@ -695,9 +907,8 @@ def convert_checkpoint_from_megatron_to_transformers(mgmodel, hfmodel, args):
         hfmodel.lm_head.weight.copy_(mgmodel.output_layer.weight)
 
 
-def set_state_dict(sd,key,val):
+def set_state_dict(sd, key, val):
     sd[key] = val
-
 
 
 def convert_checkpoint_from_megatron_to_transformers_low_memory(mgmodel, args):
@@ -708,88 +919,91 @@ def convert_checkpoint_from_megatron_to_transformers_low_memory(mgmodel, args):
     SAVE_NAME = "model-{now_part:05}-of-{total_part:05}.safetensors"
     total_files = args.save_num_files
     now_files = 1
-    layer_to_save = int(math.ceil(args.num_layers/total_files))
+    layer_to_save = int(math.ceil(args.num_layers / total_files))
     first_k_dense_replace = args.moe_first_k_dense_replace
     state_dict = {}
     saved_key_index = {}
     with torch.no_grad():
-        #hfmodel.model.embed_tokens.weight.copy_(mgmodel.embedding.word_embeddings.weight)
-        set_state_dict(state_dict,"model.embed_tokens.weight",mgmodel.embedding.word_embeddings.weight)
+        # hfmodel.model.embed_tokens.weight.copy_(mgmodel.embedding.word_embeddings.weight)
+        set_state_dict(state_dict, "model.embed_tokens.weight", mgmodel.embedding.word_embeddings.weight)
         for layer_idx, mglayer in enumerate(mgmodel.decoder.layers):
             layer_prefix = f"model.layers.{layer_idx}"
-            #hflayer.input_layernorm.weight.copy_(mglayer.input_layernorm.weight)
-            set_state_dict(state_dict,f"{layer_prefix}.input_layernorm.weight",mglayer.input_layernorm.weight)
+            # hflayer.input_layernorm.weight.copy_(mglayer.input_layernorm.weight)
+            set_state_dict(state_dict, f"{layer_prefix}.input_layernorm.weight", mglayer.input_layernorm.weight)
             # hflayer.post_attention_layernorm.weight.copy_(mglayer.pre_mlp_layernorm.weight)
             if layer_idx <= first_k_dense_replace - 1:
-                #hflayer.post_attention_layernorm.weight.copy_(mglayer.mlp.linear_fc1.layer_norm_weight)
-                set_state_dict(state_dict,f"{layer_prefix}.post_attention_layernorm.weight",mglayer.mlp.linear_fc1.layer_norm_weight)
+                # hflayer.post_attention_layernorm.weight.copy_(mglayer.mlp.linear_fc1.layer_norm_weight)
+                set_state_dict(state_dict, f"{layer_prefix}.post_attention_layernorm.weight",
+                               mglayer.mlp.linear_fc1.layer_norm_weight)
             else:
-                #hflayer.post_attention_layernorm.weight.copy_(mglayer.pre_mlp_layernorm.weight)
-                set_state_dict(state_dict,f"{layer_prefix}.post_attention_layernorm.weight",mglayer.pre_mlp_layernorm.weight)
+                # hflayer.post_attention_layernorm.weight.copy_(mglayer.pre_mlp_layernorm.weight)
+                set_state_dict(state_dict, f"{layer_prefix}.post_attention_layernorm.weight",
+                               mglayer.pre_mlp_layernorm.weight)
 
             if args.q_lora_rank is not None:
-                #hflayer.self_attn.q_a_proj.weight.copy_(mglayer.self_attention.linear_q_down_proj.weight)
+                # hflayer.self_attn.q_a_proj.weight.copy_(mglayer.self_attention.linear_q_down_proj.weight)
                 set_state_dict(state_dict, f"{layer_prefix}.self_attn.q_a_proj.weight",
                                mglayer.self_attention.linear_q_down_proj.weight)
-                #hflayer.self_attn.q_b_proj.weight.copy_(mglayer.self_attention.linear_q_up_proj.weight)
+                # hflayer.self_attn.q_b_proj.weight.copy_(mglayer.self_attention.linear_q_up_proj.weight)
                 set_state_dict(state_dict, f"{layer_prefix}.self_attn.q_b_proj.weight",
                                mglayer.self_attention.linear_q_up_proj.weight)
-                #hflayer.self_attn.q_a_layernorm.weight.copy_(mglayer.self_attention.linear_q_up_proj.layer_norm_weight)
+                # hflayer.self_attn.q_a_layernorm.weight.copy_(mglayer.self_attention.linear_q_up_proj.layer_norm_weight)
                 set_state_dict(state_dict, f"{layer_prefix}.self_attn.q_a_layernorm.weight",
                                mglayer.self_attention.linear_q_up_proj.layer_norm_weight)
             else:
-                #hflayer.self_attn.q_proj.weight.copy_(mglayer.self_attention.linear_q_proj.weight)
+                # hflayer.self_attn.q_proj.weight.copy_(mglayer.self_attention.linear_q_proj.weight)
                 set_state_dict(state_dict, f"{layer_prefix}.self_attn.q_proj.weight",
                                mglayer.self_attention.linear_q_proj.weight)
-            #hflayer.self_attn.kv_a_proj_with_mqa.weight.copy_(mglayer.self_attention.linear_kv_down_proj.weight)
+            # hflayer.self_attn.kv_a_proj_with_mqa.weight.copy_(mglayer.self_attention.linear_kv_down_proj.weight)
             set_state_dict(state_dict, f"{layer_prefix}.self_attn.kv_a_proj_with_mqa.weight",
                            mglayer.self_attention.linear_kv_down_proj.weight)
             # hflayer.self_attn.kv_b_proj.weight.copy_(mglayer.self_attention.linear_kv_b_proj.weight)
-            #hflayer.self_attn.kv_b_proj.weight.copy_(mglayer.self_attention.linear_kv_up_proj.weight)
+            # hflayer.self_attn.kv_b_proj.weight.copy_(mglayer.self_attention.linear_kv_up_proj.weight)
             set_state_dict(state_dict, f"{layer_prefix}.self_attn.kv_b_proj.weight",
                            mglayer.self_attention.linear_kv_up_proj.weight)
             # hflayer.self_attn.kv_a_layernorm.weight.copy_(mglayer.self_attention.kv_a_layernorm.weight)
-            #hflayer.self_attn.kv_a_layernorm.weight.copy_(mglayer.self_attention.linear_kv_up_proj.layer_norm_weight)
+            # hflayer.self_attn.kv_a_layernorm.weight.copy_(mglayer.self_attention.linear_kv_up_proj.layer_norm_weight)
             set_state_dict(state_dict, f"{layer_prefix}.self_attn.kv_a_layernorm.weight",
                            mglayer.self_attention.linear_kv_up_proj.layer_norm_weight)
-            #hflayer.self_attn.o_proj.weight.copy_(mglayer.self_attention.linear_proj.weight)
+            # hflayer.self_attn.o_proj.weight.copy_(mglayer.self_attention.linear_proj.weight)
             set_state_dict(state_dict, f"{layer_prefix}.self_attn.o_proj.weight",
                            mglayer.self_attention.linear_proj.weight)
 
             if layer_idx <= first_k_dense_replace - 1:
-                gate_weight, up_weight = torch.split(mglayer.mlp.linear_fc1.weight, split_size_or_sections=args.ffn_hidden_size)
-                #hflayer.mlp.gate_proj.weight.copy_(gate_weight)
+                gate_weight, up_weight = torch.split(mglayer.mlp.linear_fc1.weight,
+                                                     split_size_or_sections=args.ffn_hidden_size)
+                # hflayer.mlp.gate_proj.weight.copy_(gate_weight)
                 set_state_dict(state_dict, f"{layer_prefix}.mlp.gate_proj.weight",
                                gate_weight)
-                #hflayer.mlp.up_proj.weight.copy_(up_weight)
+                # hflayer.mlp.up_proj.weight.copy_(up_weight)
                 set_state_dict(state_dict, f"{layer_prefix}.mlp.up_proj.weight",
                                up_weight)
-                #hflayer.mlp.down_proj.weight.copy_(mglayer.mlp.linear_fc2.weight)
+                # hflayer.mlp.down_proj.weight.copy_(mglayer.mlp.linear_fc2.weight)
                 set_state_dict(state_dict, f"{layer_prefix}.mlp.down_proj.weight",
                                mglayer.mlp.linear_fc2.weight)
 
             else:
-                #hflayer.mlp.gate.weight.copy_(mglayer.mlp.router.weight)
+                # hflayer.mlp.gate.weight.copy_(mglayer.mlp.router.weight)
                 set_state_dict(state_dict, f"{layer_prefix}.mlp.gate.weight",
                                mglayer.mlp.router.weight)
                 # expert bias in Deepseek V3
                 if hasattr(mglayer.mlp.router, 'expert_bias') and mglayer.mlp.router.expert_bias is not None:
-                    #hflayer.mlp.gate.e_score_correction_bias.copy_(mglayer.mlp.router.expert_bias)
+                    # hflayer.mlp.gate.e_score_correction_bias.copy_(mglayer.mlp.router.expert_bias)
                     set_state_dict(state_dict, f"{layer_prefix}.mlp.gate.e_score_correction_bias",
                                    mglayer.mlp.router.expert_bias)
 
                 if not args.moe_grouped_gemm:
-                    for expert_id,mgexpert in enumerate(mglayer.mlp.experts.local_experts):
+                    for expert_id, mgexpert in enumerate(mglayer.mlp.experts.local_experts):
                         layer_expert_prefix = f"{layer_prefix}.mlp.experts.{expert_id}"
                         gate_weight, up_weight = torch.split(mgexpert.linear_fc1.weight,
                                                              split_size_or_sections=args.moe_ffn_hidden_size)
-                        #hfexpert.gate_proj.weight.copy_(gate_weight)
+                        # hfexpert.gate_proj.weight.copy_(gate_weight)
                         set_state_dict(state_dict, f"{layer_expert_prefix}.gate_proj.weight",
                                        gate_weight)
-                        #hfexpert.up_proj.weight.copy_(up_weight)
+                        # hfexpert.up_proj.weight.copy_(up_weight)
                         set_state_dict(state_dict, f"{layer_expert_prefix}.up_proj.weight",
                                        up_weight)
-                        #hfexpert.down_proj.weight.copy_(mgexpert.linear_fc2.weight)
+                        # hfexpert.down_proj.weight.copy_(mgexpert.linear_fc2.weight)
                         set_state_dict(state_dict, f"{layer_expert_prefix}.down_proj.weight",
                                        mgexpert.linear_fc2.weight)
                 else:
@@ -798,57 +1012,370 @@ def convert_checkpoint_from_megatron_to_transformers_low_memory(mgmodel, args):
                         mgexpert_linear_fc1_weight = getattr(mglayer.mlp.experts.linear_fc1, f"weight{expert_id}")
                         mgexpert_linear_fc2_weight = getattr(mglayer.mlp.experts.linear_fc2, f"weight{expert_id}")
                         gate_weight, up_weight = torch.split(mgexpert_linear_fc1_weight,
-                                                            split_size_or_sections=args.moe_ffn_hidden_size)
-                        #hfexpert.gate_proj.weight.copy_(gate_weight)
+                                                             split_size_or_sections=args.moe_ffn_hidden_size)
+                        # hfexpert.gate_proj.weight.copy_(gate_weight)
                         set_state_dict(state_dict, f"{layer_expert_prefix}.gate_proj.weight",
                                        gate_weight)
-                        #hfexpert.up_proj.weight.copy_(up_weight)
+                        # hfexpert.up_proj.weight.copy_(up_weight)
                         set_state_dict(state_dict, f"{layer_expert_prefix}.up_proj.weight",
                                        up_weight)
-                        #hfexpert.down_proj.weight.copy_(mgexpert_linear_fc2_weight)
+                        # hfexpert.down_proj.weight.copy_(mgexpert_linear_fc2_weight)
                         set_state_dict(state_dict, f"{layer_expert_prefix}.down_proj.weight",
                                        mgexpert_linear_fc2_weight)
 
                 shared_expert_gate_weight, shared_expert_up_weight = \
                     torch.split(mglayer.mlp.shared_experts.linear_fc1.weight,
-                                split_size_or_sections=args.moe_shared_expert_intermediate_size) # args.moe_ffn_hidden_size*args.num_shared_experts
-                #hflayer.mlp.shared_experts.gate_proj.weight.copy_(shared_expert_gate_weight)
+                                split_size_or_sections=args.moe_shared_expert_intermediate_size)  # args.moe_ffn_hidden_size*args.num_shared_experts
+                # hflayer.mlp.shared_experts.gate_proj.weight.copy_(shared_expert_gate_weight)
                 set_state_dict(state_dict, f"{layer_prefix}.mlp.shared_experts.gate_proj.weight",
                                shared_expert_gate_weight)
-                #hflayer.mlp.shared_experts.up_proj.weight.copy_(shared_expert_up_weight)
+                # hflayer.mlp.shared_experts.up_proj.weight.copy_(shared_expert_up_weight)
                 set_state_dict(state_dict, f"{layer_prefix}.mlp.shared_experts.up_proj.weight",
                                shared_expert_up_weight)
-                #hflayer.mlp.shared_experts.down_proj.weight.copy_(mglayer.mlp.shared_experts.linear_fc2.weight)
+                # hflayer.mlp.shared_experts.down_proj.weight.copy_(mglayer.mlp.shared_experts.linear_fc2.weight)
                 set_state_dict(state_dict, f"{layer_prefix}.mlp.shared_experts.down_proj.weight",
                                mglayer.mlp.shared_experts.linear_fc2.weight)
             if (layer_idx + 1) % layer_to_save == 0 and now_files != total_files:
-                save_name = SAVE_NAME.format(now_part=now_files,total_part=total_files)
+                save_name = SAVE_NAME.format(now_part=now_files, total_part=total_files)
                 for k in state_dict.keys():
                     saved_key_index[k] = save_name
-                save_file(state_dict,f"{args.save}/{save_name}")
+                save_file(state_dict, f"{args.save}/{save_name}")
                 state_dict = {}
-                now_files +=1
-        #hfmodel.model.norm.weight.copy_(mgmodel.decoder.final_layernorm.weight)
+                now_files += 1
+        # hfmodel.model.norm.weight.copy_(mgmodel.decoder.final_layernorm.weight)
         set_state_dict(state_dict, "model.norm.weight",
                        mgmodel.decoder.final_layernorm.weight)
-        #hfmodel.lm_head.weight.copy_(mgmodel.output_layer.weight)
-        set_state_dict(state_dict,"lm_head.weight",
+        # hfmodel.lm_head.weight.copy_(mgmodel.output_layer.weight)
+        set_state_dict(state_dict, "lm_head.weight",
                        mgmodel.output_layer.weight)
-        save_name = SAVE_NAME.format(now_part=now_files,total_part=total_files)
+        save_name = SAVE_NAME.format(now_part=now_files, total_part=total_files)
         for k in state_dict.keys():
             saved_key_index[k] = save_name
         save_file(state_dict, f"{args.save}/{save_name}")
-        #if total_files > 1:
-        with open(f"{args.save}/model.safetensors.index.json","w") as f:
-            to_save = {"weight_map":saved_key_index,"metadata":{}}
-            json.dump(to_save,f)
+        # if total_files > 1:
+        with open(f"{args.save}/model.safetensors.index.json", "w") as f:
+            to_save = {"weight_map": saved_key_index, "metadata": {}}
+            json.dump(to_save, f)
+
+
+from functools import partial
+
+
+def set_state_dict_ori(hf_dict, mg_dict, hf_prefix, mg_prefix, hf_key, mg_key):
+    hf_key = hf_prefix + hf_key
+    mg_key = mg_prefix + mg_key
+    hf_dict[hf_key] = mg_dict[mg_key]
+
+
+def set_state_dict_tensor(sd, key, val):
+    sd[key] = val
+
+
+def convert_checkpoint_from_megatron_dict_to_transformers_low_memory(mg_dict, args):
+    os.makedirs(args.save, exist_ok=True)
+    SAVE_NAME = "model-{now_part:05}-of-{total_part:05}.safetensors"
+    total_files = args.save_num_files
+    now_files = 1
+    layer_to_save = int(math.ceil(args.num_layers / total_files))
+    first_k_dense_replace = args.moe_first_k_dense_replace
+    state_dict = {}
+    saved_key_index = {}
+    with torch.no_grad():
+        # hfmodel.model.embed_tokens.weight.copy_(mgmodel.embedding.word_embeddings.weight)
+        for layer_idx in range(args.num_layers):
+            hf_layer_prefix = f"model.layers.{layer_idx}."
+            mg_layer_prefix = f"decoder.layers.{layer_idx}."
+            set_state_dict = partial(set_state_dict_ori, hf_dict=state_dict, mg_dict=mg_dict, hf_prefix=hf_layer_prefix,
+                                     mg_prefix=mg_layer_prefix)
+            # hflayer.input_layernorm.weight.copy_(mglayer.input_layernorm.weight)
+            set_state_dict(hf_key="input_layernorm.weight", mg_key="input_layernorm.weight")
+            # hflayer.post_attention_layernorm.weight.copy_(mglayer.pre_mlp_layernorm.weight)
+            if layer_idx <= first_k_dense_replace - 1:
+                # hflayer.post_attention_layernorm.weight.copy_(mglayer.mlp.linear_fc1.layer_norm_weight)
+                set_state_dict(hf_key="post_attention_layernorm.weight", mg_key="mlp.linear_fc1.layer_norm_weight")
+            else:
+                # hflayer.post_attention_layernorm.weight.copy_(mglayer.pre_mlp_layernorm.weight)
+                set_state_dict(hf_key="post_attention_layernorm.weight", mg_key="pre_mlp_layernorm.weight")
+            if args.q_lora_rank is not None:
+                # hflayer.self_attn.q_a_proj.weight.copy_(mglayer.self_attention.linear_q_down_proj.weight)
+                set_state_dict(hf_key="self_attn.q_a_proj.weight", mg_key="self_attention.linear_q_down_proj.weight")
+                # hflayer.self_attn.q_b_proj.weight.copy_(mglayer.self_attention.linear_q_up_proj.weight)
+                set_state_dict(hf_key="self_attn.q_b_proj.weight", mg_key="self_attention.linear_q_up_proj.weight")
+                # hflayer.self_attn.q_a_layernorm.weight.copy_(mglayer.self_attention.linear_q_up_proj.layer_norm_weight)
+                set_state_dict(hf_key="self_attn.q_a_layernorm.weight",
+                               mg_key="self_attention.linear_q_up_proj.layer_norm_weight")
+            else:
+                # hflayer.self_attn.q_proj.weight.copy_(mglayer.self_attention.linear_q_proj.weight)
+                set_state_dict(hf_key="self_attn.q_proj.weight",
+                               mg_key="self_attention.linear_q_proj.weight")
+            # hflayer.self_attn.kv_a_proj_with_mqa.weight.copy_(mglayer.self_attention.linear_kv_down_proj.weight)
+            set_state_dict(hf_key="self_attn.kv_a_proj_with_mqa.weight",
+                           mg_key="self_attention.linear_kv_down_proj.weight")
+            # hflayer.self_attn.kv_b_proj.weight.copy_(mglayer.self_attention.linear_kv_b_proj.weight)
+            # hflayer.self_attn.kv_b_proj.weight.copy_(mglayer.self_attention.linear_kv_up_proj.weight)
+            set_state_dict(hf_key="self_attn.kv_b_proj.weight",
+                           mg_key="self_attention.linear_kv_up_proj.weight")
+            # hflayer.self_attn.kv_a_layernorm.weight.copy_(mglayer.self_attention.kv_a_layernorm.weight)
+            # hflayer.self_attn.kv_a_layernorm.weight.copy_(mglayer.self_attention.linear_kv_up_proj.layer_norm_weight)
+            set_state_dict(hf_key="self_attn.kv_a_layernorm.weight",
+                           mg_key="self_attention.linear_kv_up_proj.layer_norm_weight")
+            # hflayer.self_attn.o_proj.weight.copy_(mglayer.self_attention.linear_proj.weight)
+            set_state_dict(hf_key="self_attn.o_proj.weight",
+                           mg_key="self_attention.linear_proj.weight")
+
+            if layer_idx <= first_k_dense_replace - 1:
+                mlp_weight = mg_dict[mg_layer_prefix + "mlp.linear_fc1.weight"]
+                gate_weight, up_weight = torch.split(mlp_weight, split_size_or_sections=args.ffn_hidden_size)
+                # hflayer.mlp.gate_proj.weight.copy_(gate_weight)
+                set_state_dict_tensor(state_dict, f"{hf_layer_prefix}mlp.gate_proj.weight",
+                                      gate_weight)
+                # hflayer.mlp.up_proj.weight.copy_(up_weight)
+                set_state_dict_tensor(state_dict, f"{hf_layer_prefix}mlp.up_proj.weight",
+                                      up_weight)
+                # hflayer.mlp.down_proj.weight.copy_(mglayer.mlp.linear_fc2.weight)
+                set_state_dict(hf_key="mlp.down_proj.weight",
+                               mg_key="mlp.linear_fc2.weight")
+
+            else:
+                # hflayer.mlp.gate.weight.copy_(mglayer.mlp.router.weight)
+                set_state_dict(hf_key="mlp.gate.weight", mg_key="mlp.router.weight")
+                # expert bias in Deepseek V3
+                expert_bias_key = f"{mg_layer_prefix}mlp.router.expert_bias"
+                if expert_bias_key in mg_dict and mg_dict[expert_bias_key] is not None:
+                    # hflayer.mlp.gate.e_score_correction_bias.copy_(mglayer.mlp.router.expert_bias)
+                    set_state_dict(hf_key="mlp.gate.e_score_correction_bias",
+                                   mg_key="mlp.router.expert_bias")
+
+                if not args.moe_grouped_gemm:
+                    # mglayer.mlp.experts.local_experts is torch.nn.ModuleList()
+                    for expert_id in range(args.num_experts):
+                        # local_experts_ = mg_dict[f"{mg_layer_prefix}mlp.experts.local_experts.{expert_id}.linear_fc1.weight"]
+                        mgexpert_linear_fc1 = mg_dict[
+                            f"{mg_layer_prefix}mlp.experts.local_experts.{expert_id}.linear_fc1.weight"]
+                        mgexpert_linear_fc2 = mg_dict[
+                            f"{mg_layer_prefix}mlp.experts.local_experts.{expert_id}.linear_fc2.weight"]
+                        layer_expert_prefix = f"{hf_layer_prefix}mlp.experts.{expert_id}"
+                        gate_weight, up_weight = torch.split(mgexpert_linear_fc1,
+                                                             split_size_or_sections=args.moe_ffn_hidden_size)
+                        # hfexpert.gate_proj.weight.copy_(gate_weight)
+                        set_state_dict_tensor(state_dict, f"{layer_expert_prefix}.gate_proj.weight",
+                                              gate_weight)
+                        # hfexpert.up_proj.weight.copy_(up_weight)
+                        set_state_dict_tensor(state_dict, f"{layer_expert_prefix}.up_proj.weight",
+                                              up_weight)
+                        # hfexpert.down_proj.weight.copy_(mgexpert.linear_fc2.weight)
+                        set_state_dict_tensor(state_dict, f"{layer_expert_prefix}.down_proj.weight",
+                                              mgexpert_linear_fc2)
+                else:
+                    for expert_id in range(args.num_experts):
+                        layer_expert_prefix = f"{hf_layer_prefix}mlp.experts.{expert_id}"
+                        mgexpert_linear_fc1_weight = mg_dict[
+                            f"{mg_layer_prefix}mlp.experts.linear_fc1.weight{expert_id}"]
+                        mgexpert_linear_fc2_weight = mg_dict[
+                            f"{mg_layer_prefix}mlp.experts.linear_fc2.weight{expert_id}"]
+                        gate_weight, up_weight = torch.split(mgexpert_linear_fc1_weight,
+                                                             split_size_or_sections=args.moe_ffn_hidden_size)
+                        # hfexpert.gate_proj.weight.copy_(gate_weight)
+                        set_state_dict_tensor(state_dict, f"{layer_expert_prefix}.gate_proj.weight",
+                                              gate_weight)
+                        # hfexpert.up_proj.weight.copy_(up_weight)
+                        set_state_dict_tensor(state_dict, f"{layer_expert_prefix}.up_proj.weight",
+                                              up_weight)
+                        # hfexpert.down_proj.weight.copy_(mgexpert_linear_fc2_weight)
+                        set_state_dict_tensor(state_dict, f"{layer_expert_prefix}.down_proj.weight",
+                                              mgexpert_linear_fc2_weight)
+                shared_expert = mg_dict[f"{mg_layer_prefix}mlp.shared_experts.linear_fc1.weight"]
+                shared_expert_gate_weight, shared_expert_up_weight = \
+                    torch.split(shared_expert,
+                                split_size_or_sections=args.moe_shared_expert_intermediate_size)  # args.moe_ffn_hidden_size*args.num_shared_experts
+                # hflayer.mlp.shared_experts.gate_proj.weight.copy_(shared_expert_gate_weight)
+                set_state_dict_tensor(state_dict, f"{hf_layer_prefix}mlp.shared_experts.gate_proj.weight",
+                                      shared_expert_gate_weight)
+                # hflayer.mlp.shared_experts.up_proj.weight.copy_(shared_expert_up_weight)
+                set_state_dict_tensor(state_dict, f"{hf_layer_prefix}mlp.shared_experts.up_proj.weight",
+                                      shared_expert_up_weight)
+                # hflayer.mlp.shared_experts.down_proj.weight.copy_(mglayer.mlp.shared_experts.linear_fc2.weight)
+                set_state_dict(hf_key="mlp.shared_experts.down_proj.weight",
+                               mg_key="mlp.shared_experts.linear_fc2.weight")
+            if (layer_idx + 1) % layer_to_save == 0 and now_files != total_files:
+                save_name = SAVE_NAME.format(now_part=now_files, total_part=total_files)
+                for k in state_dict.keys():
+                    saved_key_index[k] = save_name
+                save_file(state_dict, f"{args.save}/{save_name}")
+                state_dict = {}
+                now_files += 1
+        set_state_dict_tensor(state_dict, "model.embed_tokens.weight", mg_dict["embedding.word_embeddings.weight"])
+        # hfmodel.model.norm.weight.copy_(mgmodel.decoder.final_layernorm.weight)
+        set_state_dict_tensor(state_dict, "model.norm.weight",
+                              mg_dict["decoder.final_layernorm.weight"])
+        # hfmodel.lm_head.weight.copy_(mgmodel.output_layer.weight)
+        set_state_dict_tensor(state_dict, "lm_head.weight", mg_dict["output_layer.weight"])
+
+        save_name = SAVE_NAME.format(now_part=now_files, total_part=total_files)
+        for k in state_dict.keys():
+            saved_key_index[k] = save_name
+        save_file(state_dict, f"{args.save}/{save_name}")
+        # if total_files > 1:
+        with open(f"{args.save}/model.safetensors.index.json", "w") as f:
+            to_save = {"weight_map": saved_key_index, "metadata": {}}
+            json.dump(to_save, f)
+
+
+def convert_checkpoint_from_megatron_dict_to_transformers_low_memory_multi_thread(mg_dict, args):
+    os.makedirs(args.save, exist_ok=True)
+    SAVE_NAME = "model-{now_part:05}-of-{total_part:05}.safetensors"
+    total_files = args.save_num_files
+    layer_to_save = int(math.ceil(args.num_layers / total_files))
+    first_k_dense_replace = args.moe_first_k_dense_replace
+    layers_args = [range(args.num_layers)[start:start + layer_to_save] for start in range(0, args.num_layers, layer_to_save)]
+    now_files_args = list(range(1,total_files+1))
+    def save_file_multi_1(layer_args,now_files):
+        state_dict = {}
+        saved_key_index = {}
+        for layer_idx in layer_args:
+            hf_layer_prefix = f"model.layers.{layer_idx}."
+            mg_layer_prefix = f"decoder.layers.{layer_idx}."
+            set_state_dict = partial(set_state_dict_ori, hf_dict=state_dict, mg_dict=mg_dict, hf_prefix=hf_layer_prefix,
+                                     mg_prefix=mg_layer_prefix)
+            # hflayer.input_layernorm.weight.copy_(mglayer.input_layernorm.weight)
+            set_state_dict(hf_key="input_layernorm.weight", mg_key="input_layernorm.weight")
+            # hflayer.post_attention_layernorm.weight.copy_(mglayer.pre_mlp_layernorm.weight)
+            if layer_idx <= first_k_dense_replace - 1:
+                # hflayer.post_attention_layernorm.weight.copy_(mglayer.mlp.linear_fc1.layer_norm_weight)
+                set_state_dict(hf_key="post_attention_layernorm.weight", mg_key="mlp.linear_fc1.layer_norm_weight")
+            else:
+                # hflayer.post_attention_layernorm.weight.copy_(mglayer.pre_mlp_layernorm.weight)
+                set_state_dict(hf_key="post_attention_layernorm.weight", mg_key="pre_mlp_layernorm.weight")
+            if args.q_lora_rank is not None:
+                # hflayer.self_attn.q_a_proj.weight.copy_(mglayer.self_attention.linear_q_down_proj.weight)
+                set_state_dict(hf_key="self_attn.q_a_proj.weight", mg_key="self_attention.linear_q_down_proj.weight")
+                # hflayer.self_attn.q_b_proj.weight.copy_(mglayer.self_attention.linear_q_up_proj.weight)
+                set_state_dict(hf_key="self_attn.q_b_proj.weight", mg_key="self_attention.linear_q_up_proj.weight")
+                # hflayer.self_attn.q_a_layernorm.weight.copy_(mglayer.self_attention.linear_q_up_proj.layer_norm_weight)
+                set_state_dict(hf_key="self_attn.q_a_layernorm.weight",
+                               mg_key="self_attention.linear_q_up_proj.layer_norm_weight")
+            else:
+                # hflayer.self_attn.q_proj.weight.copy_(mglayer.self_attention.linear_q_proj.weight)
+                set_state_dict(hf_key="self_attn.q_proj.weight",
+                               mg_key="self_attention.linear_q_proj.weight")
+            # hflayer.self_attn.kv_a_proj_with_mqa.weight.copy_(mglayer.self_attention.linear_kv_down_proj.weight)
+            set_state_dict(hf_key="self_attn.kv_a_proj_with_mqa.weight",
+                           mg_key="self_attention.linear_kv_down_proj.weight")
+            # hflayer.self_attn.kv_b_proj.weight.copy_(mglayer.self_attention.linear_kv_b_proj.weight)
+            # hflayer.self_attn.kv_b_proj.weight.copy_(mglayer.self_attention.linear_kv_up_proj.weight)
+            set_state_dict(hf_key="self_attn.kv_b_proj.weight",
+                           mg_key="self_attention.linear_kv_up_proj.weight")
+            # hflayer.self_attn.kv_a_layernorm.weight.copy_(mglayer.self_attention.kv_a_layernorm.weight)
+            # hflayer.self_attn.kv_a_layernorm.weight.copy_(mglayer.self_attention.linear_kv_up_proj.layer_norm_weight)
+            set_state_dict(hf_key="self_attn.kv_a_layernorm.weight",
+                           mg_key="self_attention.linear_kv_up_proj.layer_norm_weight")
+            # hflayer.self_attn.o_proj.weight.copy_(mglayer.self_attention.linear_proj.weight)
+            set_state_dict(hf_key="self_attn.o_proj.weight",
+                           mg_key="self_attention.linear_proj.weight")
+
+            if layer_idx <= first_k_dense_replace - 1:
+                mlp_weight = mg_dict[mg_layer_prefix + "mlp.linear_fc1.weight"]
+                gate_weight, up_weight = torch.split(mlp_weight, split_size_or_sections=args.ffn_hidden_size)
+                # hflayer.mlp.gate_proj.weight.copy_(gate_weight)
+                set_state_dict_tensor(state_dict, f"{hf_layer_prefix}mlp.gate_proj.weight",
+                                      gate_weight)
+                # hflayer.mlp.up_proj.weight.copy_(up_weight)
+                set_state_dict_tensor(state_dict, f"{hf_layer_prefix}mlp.up_proj.weight",
+                                      up_weight)
+                # hflayer.mlp.down_proj.weight.copy_(mglayer.mlp.linear_fc2.weight)
+                set_state_dict(hf_key="mlp.down_proj.weight",
+                               mg_key="mlp.linear_fc2.weight")
+
+            else:
+                # hflayer.mlp.gate.weight.copy_(mglayer.mlp.router.weight)
+                set_state_dict(hf_key="mlp.gate.weight", mg_key="mlp.router.weight")
+                # expert bias in Deepseek V3
+                expert_bias_key = f"{mg_layer_prefix}mlp.router.expert_bias"
+                if expert_bias_key in mg_dict and mg_dict[expert_bias_key] is not None:
+                    # hflayer.mlp.gate.e_score_correction_bias.copy_(mglayer.mlp.router.expert_bias)
+                    set_state_dict(hf_key="mlp.gate.e_score_correction_bias",
+                                   mg_key="mlp.router.expert_bias")
+
+                if not args.moe_grouped_gemm:
+                    # mglayer.mlp.experts.local_experts is torch.nn.ModuleList()
+                    for expert_id in range(args.num_experts):
+                        # local_experts_ = mg_dict[f"{mg_layer_prefix}mlp.experts.local_experts.{expert_id}.linear_fc1.weight"]
+                        mgexpert_linear_fc1 = mg_dict[
+                            f"{mg_layer_prefix}mlp.experts.local_experts.{expert_id}.linear_fc1.weight"]
+                        mgexpert_linear_fc2 = mg_dict[
+                            f"{mg_layer_prefix}mlp.experts.local_experts.{expert_id}.linear_fc2.weight"]
+                        layer_expert_prefix = f"{hf_layer_prefix}mlp.experts.{expert_id}"
+                        gate_weight, up_weight = torch.split(mgexpert_linear_fc1,
+                                                             split_size_or_sections=args.moe_ffn_hidden_size)
+                        # hfexpert.gate_proj.weight.copy_(gate_weight)
+                        set_state_dict_tensor(state_dict, f"{layer_expert_prefix}.gate_proj.weight",
+                                              gate_weight)
+                        # hfexpert.up_proj.weight.copy_(up_weight)
+                        set_state_dict_tensor(state_dict, f"{layer_expert_prefix}.up_proj.weight",
+                                              up_weight)
+                        # hfexpert.down_proj.weight.copy_(mgexpert.linear_fc2.weight)
+                        set_state_dict_tensor(state_dict, f"{layer_expert_prefix}.down_proj.weight",
+                                              mgexpert_linear_fc2)
+                else:
+                    for expert_id in range(args.num_experts):
+                        layer_expert_prefix = f"{hf_layer_prefix}mlp.experts.{expert_id}"
+                        mgexpert_linear_fc1_weight = mg_dict[
+                            f"{mg_layer_prefix}mlp.experts.linear_fc1.weight{expert_id}"]
+                        mgexpert_linear_fc2_weight = mg_dict[
+                            f"{mg_layer_prefix}mlp.experts.linear_fc2.weight{expert_id}"]
+                        gate_weight, up_weight = torch.split(mgexpert_linear_fc1_weight,
+                                                             split_size_or_sections=args.moe_ffn_hidden_size)
+                        # hfexpert.gate_proj.weight.copy_(gate_weight)
+                        set_state_dict_tensor(state_dict, f"{layer_expert_prefix}.gate_proj.weight",
+                                              gate_weight)
+                        # hfexpert.up_proj.weight.copy_(up_weight)
+                        set_state_dict_tensor(state_dict, f"{layer_expert_prefix}.up_proj.weight",
+                                              up_weight)
+                        # hfexpert.down_proj.weight.copy_(mgexpert_linear_fc2_weight)
+                        set_state_dict_tensor(state_dict, f"{layer_expert_prefix}.down_proj.weight",
+                                              mgexpert_linear_fc2_weight)
+                shared_expert = mg_dict[f"{mg_layer_prefix}mlp.shared_experts.linear_fc1.weight"]
+                shared_expert_gate_weight, shared_expert_up_weight = \
+                    torch.split(shared_expert,
+                                split_size_or_sections=args.moe_shared_expert_intermediate_size)  # args.moe_ffn_hidden_size*args.num_shared_experts
+                # hflayer.mlp.shared_experts.gate_proj.weight.copy_(shared_expert_gate_weight)
+                set_state_dict_tensor(state_dict, f"{hf_layer_prefix}mlp.shared_experts.gate_proj.weight",
+                                      shared_expert_gate_weight)
+                # hflayer.mlp.shared_experts.up_proj.weight.copy_(shared_expert_up_weight)
+                set_state_dict_tensor(state_dict, f"{hf_layer_prefix}mlp.shared_experts.up_proj.weight",
+                                      shared_expert_up_weight)
+                # hflayer.mlp.shared_experts.down_proj.weight.copy_(mglayer.mlp.shared_experts.linear_fc2.weight)
+                set_state_dict(hf_key="mlp.shared_experts.down_proj.weight",
+                               mg_key="mlp.shared_experts.linear_fc2.weight")
+        if now_files == total_files:
+            set_state_dict_tensor(state_dict, "model.embed_tokens.weight", mg_dict["embedding.word_embeddings.weight"])
+            # hfmodel.model.norm.weight.copy_(mgmodel.decoder.final_layernorm.weight)
+            set_state_dict_tensor(state_dict, "model.norm.weight",
+                                  mg_dict["decoder.final_layernorm.weight"])
+            # hfmodel.lm_head.weight.copy_(mgmodel.output_layer.weight)
+            set_state_dict_tensor(state_dict, "lm_head.weight", mg_dict["output_layer.weight"])
+        save_name = SAVE_NAME.format(now_part=now_files, total_part=total_files)
+        for k in state_dict.keys():
+            saved_key_index[k] = save_name
+        print(f"start saving file {args.save}/{save_name}")
+        save_file(state_dict, f"{args.save}/{save_name}")
+        #del state_dict
+        return saved_key_index
+    with ThreadPoolExecutor(max_workers=total_files) as pool:
+        result = pool.map(save_file_multi_1,layers_args, now_files_args)
+    saved_key_index = {}
+    for each in result:
+        for k,v in each.items():
+            saved_key_index[k] = v
+    with open(f"{args.save}/model.safetensors.index.json", "w") as f:
+        to_save = {"weight_map": saved_key_index, "metadata": {}}
+        json.dump(to_save, f)
 
 
 
 
 
 def convert_checkpoint_from_megatron_to_transformers_with_vp(mgmodel, hfmodel, args):
-
     if args.fp16:
         mgmodel = mgmodel.half()
         hfmodel = hfmodel.half()
@@ -872,8 +1399,9 @@ def convert_checkpoint_from_megatron_to_transformers_with_vp(mgmodel, hfmodel, a
             hflayer.self_attn.kv_a_layernorm.weight.copy_(mglayer.self_attention.kv_a_layernorm.weight)
             hflayer.self_attn.o_proj.weight.copy_(mglayer.self_attention.linear_proj.weight)
 
-            if layer_idx == -1: # since we also use moe in the first layer, we do not need this.
-                gate_weight, up_weight = torch.split(mglayer.mlp.linear_fc1.weight, split_size_or_sections=args.ffn_hidden_size)
+            if layer_idx == -1:  # since we also use moe in the first layer, we do not need this.
+                gate_weight, up_weight = torch.split(mglayer.mlp.linear_fc1.weight,
+                                                     split_size_or_sections=args.ffn_hidden_size)
                 hflayer.mlp.gate_proj.weight.copy_(gate_weight)
                 hflayer.mlp.up_proj.weight.copy_(up_weight)
                 hflayer.mlp.down_proj.weight.copy_(mglayer.mlp.linear_fc2.weight)
@@ -890,7 +1418,7 @@ def convert_checkpoint_from_megatron_to_transformers_with_vp(mgmodel, hfmodel, a
 
                 shared_expert_gate_weight, shared_expert_up_weight = \
                     torch.split(mglayer.mlp.shared_expert.linear_fc1.weight,
-                                split_size_or_sections=args.moe_ffn_hidden_size*args.num_shared_experts)
+                                split_size_or_sections=args.moe_ffn_hidden_size * args.num_shared_experts)
                 hflayer.mlp.shared_experts.gate_proj.weight.copy_(shared_expert_gate_weight)
                 hflayer.mlp.shared_experts.up_proj.weight.copy_(shared_expert_up_weight)
                 hflayer.mlp.shared_experts.down_proj.weight.copy_(mglayer.mlp.shared_expert.linear_fc2.weight)
@@ -901,12 +1429,12 @@ def convert_checkpoint_from_megatron_to_transformers_with_vp(mgmodel, hfmodel, a
 
 def convert_checkpoint_from_transformers_to_megatron(hfmodel, mgmodel, args):
     # to do : change key names later.
-   # if args.fp16:
-   #     mgmodel = mgmodel.half()
-   #     hfmodel = hfmodel.half()
-   # elif args.bf16:
-   #     mgmodel = mgmodel.bfloat16()
-   #     hfmodel = hfmodel.bfloat16()
+    # if args.fp16:
+    #     mgmodel = mgmodel.half()
+    #     hfmodel = hfmodel.half()
+    # elif args.bf16:
+    #     mgmodel = mgmodel.bfloat16()
+    #     hfmodel = hfmodel.bfloat16()
     mgmodel = mgmodel.float()
     hfmodel = hfmodel.float()
 
@@ -959,13 +1487,14 @@ def save_state_dict(args, model, checkpoint_name):
     print(f'save model part {checkpoint_name}')
     torch.save(clone_state_dict(state_dict), checkpoint_name)
 
+
 def check_layer(layers_to_copy, k):
     pattern = re.compile(r"decoder.layers.\d+")
     res = pattern.findall(k)
     return res and res[0] in layers_to_copy.keys()
 
-def save_mgmodel(mgmodel, args):
 
+def save_mgmodel(mgmodel, args):
     args.tensor_model_parallel_size = args.target_tensor_model_parallel_size
     args.pipeline_model_parallel_size = args.target_pipeline_model_parallel_size
 
@@ -991,17 +1520,17 @@ def save_mgmodel(mgmodel, args):
         num_local_experts = args.num_experts // args.expert_model_parallel_size if args.num_experts else 0
 
     if (
-        args.tensor_model_parallel_size == 1
-        and args.pipeline_model_parallel_size == 1
-        and args.expert_model_parallel_size == 1
+            args.tensor_model_parallel_size == 1
+            and args.pipeline_model_parallel_size == 1
+            and args.expert_model_parallel_size == 1
     ):
         checkpoint_name = get_checkpoint_name(args.save, 0, True)
         save_state_dict(args, full_model, checkpoint_name)
     elif (
-        args.tensor_model_parallel_size == 1
-        and args.pipeline_model_parallel_size == 1
-        and args.expert_model_parallel_size >1
-        and args.num_experts % args.expert_model_parallel_size == 0
+            args.tensor_model_parallel_size == 1
+            and args.pipeline_model_parallel_size == 1
+            and args.expert_model_parallel_size > 1
+            and args.num_experts % args.expert_model_parallel_size == 0
     ):
 
         for ep_rank in range(args.expert_model_parallel_size):
@@ -1018,16 +1547,16 @@ def save_mgmodel(mgmodel, args):
                 model_split[k] = v
             save_state_dict(args, model_split, checkpoint_name)
     elif (
-        args.tensor_model_parallel_size > 1
-        and args.pipeline_model_parallel_size == 1
-        and args.num_experts % args.expert_model_parallel_size == 0
+            args.tensor_model_parallel_size > 1
+            and args.pipeline_model_parallel_size == 1
+            and args.num_experts % args.expert_model_parallel_size == 0
     ):
         for tp_rank in range(args.tensor_model_parallel_size):
             for ep_rank in range(args.expert_model_parallel_size):
                 model_split = {}
-                if args.expert_model_parallel_size >1:
+                if args.expert_model_parallel_size > 1:
                     checkpoint_name = get_checkpoint_name(args.save, 0, True, None, tp_rank, None, True, ep_rank)
-                elif args.expert_model_parallel_size ==1:
+                elif args.expert_model_parallel_size == 1:
                     checkpoint_name = get_checkpoint_name(args.save, 0, True, None, tp_rank, None, False)
                 for k, v in full_model.items():
                     if not isinstance(v, torch.Tensor):
@@ -1044,7 +1573,7 @@ def save_mgmodel(mgmodel, args):
                         target_v = v[seg * tp_rank: seg * (tp_rank + 1)]
                     elif 'linear_kv_b_proj' in k:
                         seg = v.shape[0] // args.tensor_model_parallel_size
-                        target_v = v[seg * tp_rank:seg* (tp_rank + 1)]
+                        target_v = v[seg * tp_rank:seg * (tp_rank + 1)]
                     elif 'linear_proj' in k:
                         seg = v.shape[1] // args.tensor_model_parallel_size
                         target_v = v[:, seg * tp_rank: seg * (tp_rank + 1)]
@@ -1085,8 +1614,8 @@ def save_mgmodel(mgmodel, args):
                 save_state_dict(args, model_split, checkpoint_name)
 
     elif (
-        args.pipeline_model_parallel_size > 1
-        and args.num_experts % args.expert_model_parallel_size == 0
+            args.pipeline_model_parallel_size > 1
+            and args.num_experts % args.expert_model_parallel_size == 0
     ):
         assert args.num_layers % args.pipeline_model_parallel_size == 0
         num_layers = args.num_layers // args.pipeline_model_parallel_size
@@ -1108,7 +1637,8 @@ def save_mgmodel(mgmodel, args):
                         if check_layer(layers_to_copy, k):
                             layer_pattern = re.compile(r'\d+')
                             res = layer_pattern.findall(k)
-                            k = re.sub(r"decoder.layers.\d+", "decoder.layers." + str(layers_to_copy["decoder.layers." + res[0]]), k)
+                            k = re.sub(r"decoder.layers.\d+",
+                                       "decoder.layers." + str(layers_to_copy["decoder.layers." + res[0]]), k)
                         elif not ("word_embeddings" in k or "output_layer" in k or "final_layernorm" in k):
                             continue
                         if not isinstance(v, torch.Tensor):
@@ -1147,7 +1677,8 @@ def save_mgmodel(mgmodel, args):
                             if 'linear_fc1' in k:
                                 viewed = v.view(-1, args.moe_ffn_hidden_size, args.hidden_size)
                                 seg = args.moe_ffn_hidden_size // args.tensor_model_parallel_size
-                                target_v = viewed[:, seg * tp_rank: seg * (tp_rank + 1), :].reshape(-1, args.hidden_size)
+                                target_v = viewed[:, seg * tp_rank: seg * (tp_rank + 1), :].reshape(-1,
+                                                                                                    args.hidden_size)
                             elif 'linear_fc2' in k:
                                 seg = v.shape[1] // args.tensor_model_parallel_size
                                 target_v = v[:, seg * tp_rank: seg * (tp_rank + 1)]
@@ -1157,7 +1688,8 @@ def save_mgmodel(mgmodel, args):
                                 viewed = v.view(-1, args.moe_ffn_hidden_size * args.num_shared_experts,
                                                 args.hidden_size)
                                 seg = args.moe_ffn_hidden_size * args.num_shared_experts // args.tensor_model_parallel_size
-                                target_v = viewed[:, seg * tp_rank: seg * (tp_rank + 1), :].reshape(-1, args.hidden_size)
+                                target_v = viewed[:, seg * tp_rank: seg * (tp_rank + 1), :].reshape(-1,
+                                                                                                    args.hidden_size)
                             elif 'linear_fc2' in k:
                                 seg = v.shape[1] // args.tensor_model_parallel_size
                                 target_v = v[:, seg * tp_rank: seg * (tp_rank + 1)]
@@ -1181,7 +1713,7 @@ def save_mgmodel(mgmodel, args):
 
 def save_hfmodel(args, model):
     # output_state_dict = model.state_dict()
-    #max_shard_size = "10GB"
+    # max_shard_size = "10GB"
     # shards, index = shard_checkpoint(output_state_dict, max_shard_size=max_shard_size)
     os.makedirs(args.save, exist_ok=True)
     # for shard_file, shard in shards.items():
@@ -1224,6 +1756,7 @@ def save_hfmodel(args, model):
     print("saved")
     model.save_pretrained(args.save)
 
+
 def check_hf_mg_forward(hfmodel, mgmodel, mgargs):
     hf_hiddens = [{} for _ in range(mgargs.num_layers)]
     mg_hiddens = [{} for _ in range(mgargs.num_layers)]
@@ -1243,7 +1776,7 @@ def check_hf_mg_forward(hfmodel, mgmodel, mgargs):
         frame, name = mode.split('-')
         if frame == 'hf':
             hf_hiddens[layer_idx][name] = args[0].transpose(0, 1)
-        elif frame == 'mg' and 'layer' in mode and not 'layernorm' in mode: # 
+        elif frame == 'mg' and 'layer' in mode and not 'layernorm' in mode:  #
             mg_hiddens[layer_idx][name] = kwargs.get('hidden_states')
         elif frame == 'mg':
             mg_hiddens[layer_idx][name] = args[0]
@@ -1258,7 +1791,8 @@ def check_hf_mg_forward(hfmodel, mgmodel, mgargs):
             mg_hiddens[layer_idx][name] = output[0].reshape(-1, vocab_size)
             mg_hiddens[layer_idx][name + "_weight"] = module.weight
             mg_hiddens[layer_idx][name + '_token'] = output[0].max(dim=-1)[1]
-        elif mode in ['hf-q_proj_out', 'hf-o_proj_out', 'hf-kv_b_proj_out', 'hf-kv_a_proj_out', 'hf-kv_a_norm_out', 'hf-q_a_proj_out', 'hf-q_a_layernorm_out', 'hf-q_b_proj_out']:
+        elif mode in ['hf-q_proj_out', 'hf-o_proj_out', 'hf-kv_b_proj_out', 'hf-kv_a_proj_out', 'hf-kv_a_norm_out',
+                      'hf-q_a_proj_out', 'hf-q_a_layernorm_out', 'hf-q_b_proj_out']:
             hf_hiddens[layer_idx][name] = output
             hf_hiddens[layer_idx][name + '_weight'] = module.weight
         elif mode in ['mg-kv_a_norm_out']:
@@ -1310,8 +1844,9 @@ def check_hf_mg_forward(hfmodel, mgmodel, mgargs):
             mg_hiddens[layer_idx][name + "_weight"] = module.weight
 
     if mgargs.untie_embeddings_and_output_weights:
-        hfmodel.lm_head.register_forward_hook(partial(print_output_hook, layer_idx=mgargs.num_layers - 1, mode='hf-lmhead'),
-                                            with_kwargs=True)
+        hfmodel.lm_head.register_forward_hook(
+            partial(print_output_hook, layer_idx=mgargs.num_layers - 1, mode='hf-lmhead'),
+            with_kwargs=True)
         mgmodel.output_layer.register_forward_hook(
             partial(print_output_hook, layer_idx=mgargs.num_layers - 1, mode='mg-lmhead'), with_kwargs=True)
 
@@ -1321,22 +1856,30 @@ def check_hf_mg_forward(hfmodel, mgmodel, mgargs):
 
         if mgargs.q_lora_rank is None:
 
-            layer.self_attn.q_proj.register_forward_pre_hook(partial(print_input_hook, layer_idx=idx, mode='hf-q_proj_in'),
-                                                             with_kwargs=True)
+            layer.self_attn.q_proj.register_forward_pre_hook(
+                partial(print_input_hook, layer_idx=idx, mode='hf-q_proj_in'),
+                with_kwargs=True)
 
-            layer.self_attn.q_proj.register_forward_hook(partial(print_output_hook, layer_idx=idx, mode='hf-q_proj_out'),
-                                                         with_kwargs=True)
-            layer.input_layernorm.register_forward_pre_hook(partial(print_input_hook, layer_idx=idx, mode='hf-input_layernorm_in'),
-                                                             with_kwargs=True)
-            layer.input_layernorm.register_forward_hook(partial(print_output_hook, layer_idx=idx, mode='hf-input_layernorm_out'),
-                                                         with_kwargs=True)
+            layer.self_attn.q_proj.register_forward_hook(
+                partial(print_output_hook, layer_idx=idx, mode='hf-q_proj_out'),
+                with_kwargs=True)
+            layer.input_layernorm.register_forward_pre_hook(
+                partial(print_input_hook, layer_idx=idx, mode='hf-input_layernorm_in'),
+                with_kwargs=True)
+            layer.input_layernorm.register_forward_hook(
+                partial(print_output_hook, layer_idx=idx, mode='hf-input_layernorm_out'),
+                with_kwargs=True)
         else:
-            layer.self_attn.q_a_proj.register_forward_pre_hook(partial(print_input_hook, layer_idx=idx, mode='hf-q_a_proj_in'), with_kwargs=True)
-            layer.self_attn.q_a_proj.register_forward_hook(partial(print_output_hook, layer_idx=idx, mode='hf-q_a_proj_out'), with_kwargs=True)
-            layer.self_attn.q_a_layernorm.register_forward_pre_hook(partial(print_input_hook, layer_idx=idx, mode='hf-q_a_layernorm_in'), with_kwargs=True)
+            layer.self_attn.q_a_proj.register_forward_pre_hook(
+                partial(print_input_hook, layer_idx=idx, mode='hf-q_a_proj_in'), with_kwargs=True)
+            layer.self_attn.q_a_proj.register_forward_hook(
+                partial(print_output_hook, layer_idx=idx, mode='hf-q_a_proj_out'), with_kwargs=True)
+            layer.self_attn.q_a_layernorm.register_forward_pre_hook(
+                partial(print_input_hook, layer_idx=idx, mode='hf-q_a_layernorm_in'), with_kwargs=True)
             # layer.self_attn.q_a_layernorm.register_forward_hook(partial(print_output_hook, layer_idx=idx, mode='hf-q_a_layernorm_out'), with_kwargs=True)
             # layer.self_attn.q_b_proj.register_forward_pre_hook(partial(print_input_hook, layer_idx=idx, mode='hf-q_b_proj_in'), with_kwargs=True)
-            layer.self_attn.q_b_proj.register_forward_hook(partial(print_output_hook, layer_idx=idx, mode='hf-q_b_proj_out'), with_kwargs=True)
+            layer.self_attn.q_b_proj.register_forward_hook(
+                partial(print_output_hook, layer_idx=idx, mode='hf-q_b_proj_out'), with_kwargs=True)
 
         layer.self_attn.kv_a_proj_with_mqa.register_forward_pre_hook(
             partial(print_input_hook, layer_idx=idx, mode='hf-kv_a_proj_in'), with_kwargs=True)
@@ -1435,7 +1978,7 @@ def check_hf_mg_forward(hfmodel, mgmodel, mgargs):
         layer.self_attention.register_forward_hook(partial(print_output_hook, layer_idx=idx, mode='mg-attn_out'),
                                                    with_kwargs=True)
 
-        if idx <= first_k_dense_replace-1:
+        if idx <= first_k_dense_replace - 1:
             layer.mlp.linear_fc2.register_forward_pre_hook(
                 partial(print_input_hook, layer_idx=idx, mode='mg-down_proj_in'), with_kwargs=True)
 
@@ -1451,14 +1994,15 @@ def check_hf_mg_forward(hfmodel, mgmodel, mgargs):
     # input_ids = torch.tensor([[1, 2, 3]]).long().cuda()
     # input_ids = torch.randint(1,100,(1,100)).long().cuda()
     input_ids = torch.arange(100).unsqueeze(0).long().cuda()
-    input_ids = torch.tensor([[128000,   2127,   6666,    734,    649,    387,   7633,    439,  13021,
-            264,   3319,    323,    264,    743,    315,   1401,  19625,  13840,
-            311,    459,   2612,     11,   1405,    279,   3319,     11,   7039,
-             11,   2819,     11,    323,   2612,    527,    682,  23728,     13,
-            578,   2612,    374]]).long().cuda() # zjllama tokenizer -> "An attention function can be described as mapping a query and a set of key-value pairs to an output, where the query, keys, values, and output are all vectors. The output is"
+    input_ids = torch.tensor([[128000, 2127, 6666, 734, 649, 387, 7633, 439, 13021,
+                               264, 3319, 323, 264, 743, 315, 1401, 19625, 13840,
+                               311, 459, 2612, 11, 1405, 279, 3319, 11, 7039,
+                               11, 2819, 11, 323, 2612, 527, 682, 23728, 13,
+                               578, 2612,
+                               374]]).long().cuda()  # zjllama tokenizer -> "An attention function can be described as mapping a query and a set of key-value pairs to an output, where the query, keys, values, and output are all vectors. The output is"
 
     attention_mask, loss_mask, position_ids = get_ltor_masks_and_position_ids(input_ids, -100, True, True, True)
-    inference_params = InferenceParams(max_batch_size=16, max_sequence_length=4096) ##
+    inference_params = InferenceParams(max_batch_size=16, max_sequence_length=4096)  ##
     print(hfmodel)
     print(mgmodel)
     is_oom = False
@@ -1470,29 +2014,31 @@ def check_hf_mg_forward(hfmodel, mgmodel, mgargs):
         except torch.cuda.OutOfMemoryError:
             print('oom for huggingface model forward')
             is_oom = True
-            
+
         hfmodel.cpu()
         del hfmodel
 
     with torch.inference_mode():
         try:
             mgmodel.cuda()
-            mglogits = mgmodel(input_ids=input_ids, attention_mask=attention_mask, position_ids=position_ids, inference_params=inference_params)
+            mglogits = mgmodel(input_ids=input_ids, attention_mask=attention_mask, position_ids=position_ids,
+                               inference_params=inference_params)
         except torch.cuda.OutOfMemoryError:
             print('oom for megatron model forward')
             is_oom = True
         mgmodel.cpu()
         del mgmodel
 
-    epsilon = 1e-5 if mgargs.params_dtype == torch.float32 else 1e-2 ## 1e-5
+    epsilon = 1e-5 if mgargs.params_dtype == torch.float32 else 1e-2  ## 1e-5
     for idx, (hfh, mgh) in enumerate(zip(hf_hiddens, mg_hiddens)):
         assert len(hfh) == len(mgh)
         for k, hfv in hfh.items():
             mgv, hfv = mgh[k].cpu(), hfv.cpu()
             same_num = (hfv != mgv).sum()
-            diff_num = ((hfv - mgv).abs() > epsilon).sum() # 
+            diff_num = ((hfv - mgv).abs() > epsilon).sum()  #
             diff_max = (hfv - mgv).abs().max()
-            print(f'layer:{idx}, {k}, shape:{hfv.shape}, diff: {same_num}, diff>{epsilon}:[{diff_num}/{hfv.numel()}] diff_max:{diff_max}')
+            print(
+                f'layer:{idx}, {k}, shape:{hfv.shape}, diff: {same_num}, diff>{epsilon}:[{diff_num}/{hfv.numel()}] diff_max:{diff_max}')
 
     if not is_oom:
         same_num = (hflogits != mglogits).sum()
@@ -1513,38 +2059,53 @@ def add_extra_args(parser):
     parser = add_model_args(parser)
     return parser
 
+
+import time
+
+
 def main():
     initialize_megatron(extra_args_provider=add_extra_args)
     args = get_args()
-
     if args.convert_checkpoint_from_megatron_to_transformers:
-        mg_model = load_megatron_model_latest(args)
         if args.use_low_memory_convert:
-          convert_checkpoint_from_megatron_to_transformers_low_memory(mg_model, args)
-          if args.check_diff:
-            hf_model = AutoModelForCausalLM.from_pretrained(args.save, trust_remote_code=True)
-            if args.bf16:
-              hf_model = hf_model.bfloat16()
-            check_hf_mg_forward(hf_model, mg_model, args)
+            if args.check_diff:
+                mg_model = model_provider()
+            t1 = time.time()
+            mg_model_dict = load_megatron_model_latest_multi_thread(args)
+            t2 = time.time()
+            print(f"time for load megatron is {t2 - t1}")
+            convert_checkpoint_from_megatron_dict_to_transformers_low_memory(mg_model_dict, args)
+            t3 = time.time()
+            print(f"time for convert and save megatron is {t3 - t2}")
+            # convert_checkpoint_from_megatron_to_transformers_low_memory(mg_model, args)
+            if args.check_diff:
+                mg_model.load_state_dict(mg_model_dict, strict=False)
+                hf_model = AutoModelForCausalLM.from_pretrained(args.save, trust_remote_code=True)
+                if args.bf16:
+                    hf_model = hf_model.bfloat16()
+                    mg_model = mg_model.bfloat16()
+                check_hf_mg_forward(hf_model, mg_model, args)
         else:
-          config = AutoConfig.from_pretrained(args.hf_ckpt_path, trust_remote_code=True)
-          hf_model = AutoModelForCausalLM.from_pretrained(args.hf_ckpt_path, trust_remote_code=True)
-          if args.bf16:
-            hf_model = hf_model.bfloat16()
-          convert_checkpoint_from_megatron_to_transformers(mg_model, hf_model, args)
-          save_hfmodel(args, hf_model)
-          if args.check_diff:
-            check_hf_mg_forward(hf_model, mg_model, args)
-        
+            print("this mode is abandoned due to slow speed, use low memory convert instead")
+            # config = AutoConfig.from_pretrained(args.hf_ckpt_path, trust_remote_code=True)
+            # hf_model = AutoModelForCausalLM.from_pretrained(args.hf_ckpt_path, trust_remote_code=True)
+            # if args.bf16:
+            #     hf_model = hf_model.bfloat16()
+            # convert_checkpoint_from_megatron_to_transformers(mg_model, hf_model, args)
+            # save_hfmodel(args, hf_model)
+            # if args.check_diff:
+            #     check_hf_mg_forward(hf_model, mg_model, args)
     else:
         config = AutoConfig.from_pretrained(args.load, trust_remote_code=True)
-        hf_model = AutoModelForCausalLM.from_pretrained(args.load, trust_remote_code=True, torch_dtype=config.torch_dtype)
+        hf_model = AutoModelForCausalLM.from_pretrained(args.load, trust_remote_code=True,
+                                                        torch_dtype=config.torch_dtype)
         mg_model = model_provider()
         # pdb.set_trace()
         convert_checkpoint_from_transformers_to_megatron(hf_model, mg_model, args)
         # if args.q_lora_rank is None:
         check_hf_mg_forward(hf_model, mg_model, args)
         save_mgmodel(mg_model, args)
+
 
 if __name__ == "__main__":
     main()
