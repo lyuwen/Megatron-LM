@@ -768,6 +768,7 @@ if [[ $OFFLOAD_OPTIMIZER = true ]]; then
         --overlap-cpu-optimizer-d2h-h2d \
     "
         #--use-torch-optimizer-for-cpu-offload \
+
 fi
 
 # 开启12LHSD的atten计算方法,打印MFU
@@ -809,6 +810,13 @@ if [[ ${SCHEDULE_VISUAL:-false} = true ]]; then
         echo "Schedule visualization start !!!"
         nohup bash schedule_visual.sh ${MEGATRON_PATH} ${TENSORBOARD_DIR} ${SCHEDULE_VISUAL_ITER_END:-35} &
     fi
+fi
+
+if [[ ${ENABLE_TIMING_LOG:-false} = true ]]; then
+    megatron_options=" ${megatron_options} \
+        --timing-log-level 2 \
+        --timing-log-option minmax \
+    "
 fi
 
 run_cmd="torchrun $DISTRIBUTED_ARGS ${MEGATRON_PATH}/pretrain_gpt.py
