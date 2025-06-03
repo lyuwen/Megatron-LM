@@ -255,13 +255,17 @@ class MoELayer(BaseMoELayer):
                 output, mlp_bias = self._checkpoint_handler(custom_forward, hidden_states)
         else:
             MOE_CKPT_LEVEL = os.getenv('MOE_CKPT_LEVEL', 'full')
+            PERM_CKPT_LAYER = int(os.getenv('PERM_CKPT_LAYER', '12'))
             MOE_CKPT_LAYER = int(os.getenv('MOE_CKPT_LAYER', '30'))
-            if MOE_CKPT_LEVEL == 'full' or self.layer_number >= MOE_CKPT_LAYER:
+            assert PERM_CKPT_LAYER <= MOE_CKPT_LAYER, "PERM_CKPT_LAYER must be less than MOE_CKPT_LAYER"
+            if MOE_CKPT_LEVEL == 'full':
                 output, mlp_bias = custom_forward(hidden_states)
             else:
-                if MOE_CKPT_LEVEL == 'half-perm':
+                if self.layer_number < PERM_CKPT_LAYER:
+                    output, mlp_bias = self._checkpoint_handler(custom_forward, hidden_states)
+                elif self.layer_number < MOE_CKPT_LAYER:
                     output, mlp_bias = custom_forward_perm_checkpoint(hidden_states)
                 else:
-                    output, mlp_bias = self._checkpoint_handler(custom_forward, hidden_states)
+                    output, mlp_bias = custom_forward(hidden_states)
 
         return output, mlp_bias

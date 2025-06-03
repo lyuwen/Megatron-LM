@@ -370,7 +370,7 @@ if [ $DISPATCHER_TYPE = alltoall_seq ]; then
 elif [ $DISPATCHER_TYPE = alltoall ]; then
     moe_options=" ${moe_options}  --moe-token-dispatcher-type alltoall --moe-shared-expert-overlap "
 elif [ $DISPATCHER_TYPE = flex_deepep ]; then
-    moe_options=" ${moe_options} --moe-token-dispatcher-type flex --moe-enable-deepep "
+    moe_options=" ${moe_options} --moe-token-dispatcher-type flex --moe-enable-deepep " #--moe-shared-expert-overlap "
 else
 echo "Unsupported dispatcher type: ${DISPATCHER_TYPE}"
 exit 1
@@ -378,7 +378,9 @@ fi
 
 ROUTER_SCORE_FUNC=${ROUTER_SCORE_FUNC:-pre_softmax}
 if [ $ROUTER_SCORE_FUNC = sigmod ]; then
-    moe_options=" ${moe_options}  --moe-router-score-function sigmoid  "
+    moe_options=" ${moe_options}  --moe-router-score-function sigmoid \
+                                    --moe-topk-router-fusion \
+                                    "
 elif [ $ROUTER_SCORE_FUNC = softmax ]; then
     moe_options=" ${moe_options}  --moe-router-score-function softmax "
 elif [ $ROUTER_SCORE_FUNC = pre_softmax ]; then
