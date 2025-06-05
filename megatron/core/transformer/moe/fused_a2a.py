@@ -237,4 +237,4 @@ else:
     fused_dispatch = None
     fused_combine = None
     wait_dispatch_finish = None
-    wait_combine_finish megatron/core/transformer/moe/fused_a2a.py= None
+    wait_combine_finish = None
