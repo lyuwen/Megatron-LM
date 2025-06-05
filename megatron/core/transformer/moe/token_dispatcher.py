@@ -12,7 +12,7 @@ from megatron.core.tensor_parallel import (
     gather_from_sequence_parallel_region,
     reduce_scatter_to_sequence_parallel_region,
 )
-from megatron.core.transformer.moe.fused_a2a import fused_combine, fused_dispatch
+from megatron.core.transformer.moe.fused_a2a import fused_combine, fused_dispatch, wait_dispatch_finish, wait_combine_finish
 from megatron.core.transformer.moe.moe_utils import (
     ModelCommProcessGroups,
     get_capacity,
@@ -818,23 +818,21 @@ class _DeepepManager(_DispatchManager):
             mask = self.token_probs == 0
             self.token_indices = self.token_indices.masked_fill(mask, -1)
 
-    def dispatch(self, hidden_states: torch.Tensor) -> torch.Tensor:
+    def dispatch(self, hidden_states: torch.Tensor, async_finish=False) -> torch.Tensor:
         # DeepEP only supports float32 probs
         if self.token_probs.dtype != torch.float32:
             if self.token_probs.dtype in [torch.bfloat16, torch.float16]:
                 print("DeepEP only supports float32 probs, please set --moe-router-dtype=fp32")
             self.token_probs = self.token_probs.float()  # downcast or upcast
-        hidden_states, dispatched_indices, dispatched_probs, num_tokens_per_expert, handle = (
-            fused_dispatch(
-                hidden_states, self.token_indices, self.token_probs, self.num_experts, self.group
-            )
+        hidden_states, dispatched_indices, dispatched_probs, num_tokens_per_expert, handle, event= (
+            fused_dispatch(hidden_states, self.token_indices, self.token_probs, self.num_experts, self.group, async_finish=async_finish)
         )
         self.handle = handle
         self.tokens_per_expert = num_tokens_per_expert
         self.dispatched_indices = dispatched_indices
         self.dispatched_probs = dispatched_probs
 
-        return hidden_states
+        return hidden_states, event
 
     def _indices_to_multihot(self, indices, probs):
         """
@@ -876,11 +874,11 @@ class _DeepepManager(_DispatchManager):
         """
         return self.tokens_per_expert
 
-    def combine(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        hidden_states, event = fused_combine(hidden_states, self.group, self.handle)
+    def combine(self, hidden_states: torch.Tensor, async_finish=False) -> torch.Tensor:
+        hidden_states, event = fused_combine(hidden_states, self.group, self.handle, async_finish=async_finish)
         # Release the handle after combine operation
         self.handle = None
-        return hidden_states
+        return hidden_states, event
 
     def get_permuted_hidden_states_by_experts(self, hidden_states: torch.Tensor) -> torch.Tensor:
         if self.permute_fusion:
@@ -913,7 +911,6 @@ class _DeepepManager(_DispatchManager):
             fused=self.permute_fusion,
         )
         return hidden_states
-
 
 class MoEFlexTokenDispatcher(MoETokenDispatcher):
     """
@@ -958,9 +955,11 @@ class MoEFlexTokenDispatcher(MoETokenDispatcher):
         )
 
     def set_shared_experts(self, shared_experts):
-        raise NotImplementedError(
-            "Shared expert overlap is not supported in Flex Token Dispatcher."
-        )
+        assert self.config.moe_shared_expert_overlap
+        self.shared_experts = shared_experts
+        # raise NotImplementedError(
+        #     "Shared expert overlap is not supported in Flex Token Dispatcher."
+        # )
 
     def _initialize_metadata(self, routing_map: torch.Tensor, probs: torch.Tensor) -> torch.Tensor:
         """
@@ -999,7 +998,14 @@ class MoEFlexTokenDispatcher(MoETokenDispatcher):
         routing_map, probs = self._initialize_metadata(routing_map, probs)
 
         self._comm_manager.setup_metadata(routing_map, probs)
-        hidden_states = self._comm_manager.dispatch(hidden_states)
+        if self.shared_experts is not None:
+            self.shared_experts.pre_forward_comm(hidden_states.view(self.hidden_shape))
+        if self.shared_experts is not None:
+            hidden_states, dispatch_event = self._comm_manager.dispatch(hidden_states, async_finish=True)
+            self.shared_experts.linear_fc1_forward_and_act()
+            hidden_states = wait_dispatch_finish(hidden_states, dispatch_event)
+        else:
+            hidden_states, dispatch_event = self._comm_manager.dispatch(hidden_states)
         global_input_tokens, permuted_probs = (
             self._comm_manager.get_permuted_hidden_states_by_experts(hidden_states)
         )
@@ -1012,6 +1018,17 @@ class MoEFlexTokenDispatcher(MoETokenDispatcher):
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         assert bias is None, "Bias is not supported in MoEFlexTokenDispatcher"
         hidden_states = self._comm_manager.get_restored_hidden_states_by_experts(hidden_states)
-        hidden_states = self._comm_manager.combine(hidden_states)
+        if self.shared_experts is not None:
+            hidden_states, combine_event = self._comm_manager.combine(hidden_states, async_finish=True)
+            self.shared_experts.linear_fc2_forward()
+            hidden_states = wait_combine_finish(hidden_states, combine_event)
+        else:
+            hidden_states, combine_event = self._comm_manager.combine(hidden_states)
+        if self.shared_experts is not None:
+            self.shared_experts.post_forward_comm()
+            shared_expert_output = self.shared_experts.get_output()
+        hidden_states = hidden_states.view(self.hidden_shape)
+        if self.shared_experts is not None:
+            hidden_states += shared_expert_output
 
-        return hidden_states.view(self.hidden_shape), None
+        return hidden_states, None
