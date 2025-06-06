@@ -650,7 +650,6 @@ megatron_options="  \
         --norm-epsilon ${RMS_NORM_EPS} \
         --use-rotary-position-embeddings \
         --no-bias-swiglu-fusion \
-        --no-rope-fusion \
         --position-embedding-type rope \
         --untie-embeddings-and-output-weights \
         --disable-bias-linear \
@@ -662,6 +661,7 @@ megatron_options="  \
         --moe-router-dtype fp32 \
         --moe-permute-fusion \
         --multi-latent-attention"
+        #--no-rope-fusion \
         # --patch-tokenizer-type DeepSeekV2Tokenizer \
         # --rotary-seq-len-interpolation-factor 1 增加
 
