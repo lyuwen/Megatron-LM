@@ -251,11 +251,11 @@ moe_options=" \
 elif [ $MODEL_SIZE = 600B ]; then
 
 HIDDEN_SIZE=7168
-NUM_ATTENTION_HEADS=128
+NUM_ATTN_HEADS=128
 NUM_LAYERS=${NUM_LAYERS:-61}
 INTERMEDIATE_SIZE=18432
 MOE_INTERMEDIATE_SIZE=2048
-MAX_POSITION_EMBEDDINGS=${MAX_POSITION_EMBEDDINGS:-${SEQ_LEN}}
+MAX_POSITION_EMBEDDINGS=163840
 EXTRA_VOCAB_SIZE=467
 Q_LORA_RANK=1536
 KV_LORA_RANK=512
@@ -642,7 +642,7 @@ megatron_options="  \
         --tensor-model-parallel-size ${TP} \
         --pipeline-model-parallel-size ${PP} \
         --context-parallel-size ${CP} \
-        --tokenizer-type 021Tokenizer \
+        --tokenizer-type ${TOKENIZER_TYPE:-021Tokenizer} \
         --tokenizer-model $TOKENIZER_PATH \
         --vocab-file $TOKENIZER_PATH/tokenizer.model \
         --swiglu \
