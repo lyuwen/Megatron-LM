@@ -78,7 +78,7 @@ class FusedDispatch(torch.autograd.Function):
     """Fused dispatch operation for MoE routing combining computation and communication."""
 
     @staticmethod
-    def forward(ctx, x, token_indices, token_probs, num_experts, group, previous_event=None, async_finish=False):
+    def forward(ctx, x, token_indices, token_probs, num_experts, group, previous_event=None):
         """Forward pass of fused dispatch."""
         # Do Fp8 quantize
         if FP8_COMM_DEEPEP:
@@ -119,7 +119,7 @@ class FusedDispatch(torch.autograd.Function):
             is_token_in_rank=is_token_in_rank,
             num_tokens_per_expert=num_tokens_per_expert,
             previous_event=None,
-            async_finish=async_finish,
+            async_finish=False,
             allocate_on_comm_stream=False,
         )
 
@@ -129,14 +129,14 @@ class FusedDispatch(torch.autograd.Function):
         tokens_per_expert = torch.tensor(num_recv_tokens_per_expert_list)
 
         # Do Fp8 dequantize
-        if FP8_COMM_DEEPEP and not async_finish:
+        if FP8_COMM_DEEPEP:
             recv_x = act_dequant(*recv_x)
 
-        return (recv_x, recv_token_indices, recv_token_probs, tokens_per_expert, handle, event)
+        return (recv_x, recv_token_indices, recv_token_probs, tokens_per_expert, handle)
 
     @staticmethod
     def backward(
-        ctx, grad_output, grad_token_indices, grad_token_probs, grad_tokens_per_expert, grad_handle, previous_event=None
+        ctx, grad_output, grad_token_indices, grad_token_probs, grad_tokens_per_expert, grad_handle
     ):
         """Backward pass of fused dispatch."""
         buffer = get_buffer(ctx.group, get_hidden_bytes(grad_output))
@@ -150,17 +150,17 @@ class FusedDispatch(torch.autograd.Function):
             async_finish=False,
             allocate_on_comm_stream=False,
         )
-        return grad_x, None, grad_token_probs, None, None, None, None
+        return grad_x, None, grad_token_probs, None, None, None
 
 class FusedCombine(torch.autograd.Function):
     """Fused combine operation for MoE output combining computation and communication."""
 
     @staticmethod
-    def forward(ctx, x, group, handle, previous_event=None, async_finish=False):
+    def forward(ctx, x, group, handle, previous_event=None):
         """Forward pass of fused combine."""
         buffer = get_buffer(group, get_hidden_bytes(x))
         combined_x, _, event = buffer.combine(
-            x, handle=handle, async_finish=async_finish, previous_event=None, allocate_on_comm_stream=False
+            x, handle=handle, async_finish=False, previous_event=None, allocate_on_comm_stream=False
         )
         ctx.handle = handle
         ctx.group = group
@@ -188,12 +188,12 @@ class FusedCombine(torch.autograd.Function):
         if FP8_COMM_DEEPEP:
             grad_x = act_dequant(*grad_x)
 
-        return grad_x, None, None, None, None
+        return grad_x, None, None, None
 
 
 if HAVE_DEEP_EP:
 
-    def fused_dispatch(x, token_indices, token_probs, num_experts, group, previous_event=None, async_finish=False):
+    def fused_dispatch(x, token_indices, token_probs, num_experts, group, previous_event=None):
         """Perform fused dispatch operation if deep_ep is available.
 
         Args:
@@ -207,15 +207,9 @@ if HAVE_DEEP_EP:
         Returns:
             Result of FusedDispatch
         """
-        return FusedDispatch.apply(x.contiguous(), token_indices, token_probs, num_experts, group, previous_event, async_finish)
+        return FusedDispatch.apply(x.contiguous(), token_indices, token_probs, num_experts, group, previous_event)
 
-    def wait_dispatch_finish(hidden_states, dispatch_event):
-        dispatch_event.current_stream_wait()
-        if FP8_COMM_DEEPEP:
-            hidden_states = act_dequant(*hidden_states)
-        return hidden_states
-
-    def fused_combine(x, group, handle, previous_event=None, async_finish=False):
+    def fused_combine(x, group, handle, previous_event=None):
         """Perform fused combine operation if deep_ep is available.
 
         Args:
@@ -227,14 +221,8 @@ if HAVE_DEEP_EP:
         Returns:
             Result of FusedCombine
         """
-        return FusedCombine.apply(x, group, handle, previous_event, async_finish)
-
-    def wait_combine_finish(hidden_states, combine_event):
-        combine_event.current_stream_wait()
-        return hidden_states
+        return FusedCombine.apply(x, group, handle, previous_event)
 
 else:
     fused_dispatch = None
     fused_combine = None
-    wait_dispatch_finish = None
-    wait_combine_finish = None
