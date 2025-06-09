@@ -370,7 +370,7 @@ if [ $DISPATCHER_TYPE = alltoall_seq ]; then
 elif [ $DISPATCHER_TYPE = alltoall ]; then
     moe_options=" ${moe_options}  --moe-token-dispatcher-type alltoall --moe-shared-expert-overlap "
 elif [ $DISPATCHER_TYPE = flex_deepep ]; then
-    moe_options=" ${moe_options} --moe-token-dispatcher-type flex --moe-enable-deepep " #--moe-shared-expert-overlap "
+    moe_options=" ${moe_options} --moe-token-dispatcher-type flex --moe-enable-deepep --moe-shared-expert-overlap "
 else
 echo "Unsupported dispatcher type: ${DISPATCHER_TYPE}"
 exit 1
@@ -673,14 +673,14 @@ megatron_options="  \
 #动态bs
 ENABLE_RAMPUP_BS=${ENABLE_RAMPUP_BS:-false}
 if  [[ $ENABLE_RAMPUP_BS = false ]]; then
-    LR_WARMUP_ITERS=2000
+    LR_WARMUP_ITERS=${LR_WARMUP_ITERS:-2000}
     LR_DECAY_ITERS=$(( ${TRAIN_TOKENS} /  ${GLOBAL_BATCH_SIZE} / ${SEQ_LEN} ))
     megatron_options=" ${megatron_options} \
         --lr-decay-iters ${LR_DECAY_ITERS} \
         --lr-warmup-iters ${LR_WARMUP_ITERS} \
         --train-iters ${TRAIN_ITERS} "
 else
-    warm_step=2000
+    warm_step=${LR_WARMUP_ITERS:-2000}
     GLOBAL_BATCH_SIZE_avg=1920
     TRAIN_SAMPLES=$(( ${TRAIN_TOKENS} / ${SEQ_LEN} ))
     LR_WARMUP_SAMPLES=$((${warm_step} * ${GLOBAL_BATCH_SIZE_avg} ))
