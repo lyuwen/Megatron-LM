@@ -25,7 +25,7 @@ from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core import mpu
 from megatron.core.sequence_length_scheduler import get_iteration
 
-from megatron.core.fusions.fused_topk_gating_v2 import fused_topk_gating
+from megatron.core.fusions.fused_topk_gating import fused_topk_gating_without_capacity
 
 class Router(ABC, MegatronModule):
     """Base Router class"""
@@ -222,15 +222,22 @@ class TopKRouter(Router):
             routing_map (torch.Tensor): The mask of token to experts assignment.
         """
         if (self.config.moe_topk_router_fusion
-            and self.score_function == "sigmoid"
-            and self.config.moe_router_num_groups == None
-            and self.config.moe_router_group_topk == None 
-            and self.config.moe_router_pre_softmax == False
-            and self.expert_bias == None 
-            and self.topk > 1
-            and self.config.moe_router_topk_scaling_factor == None
+            and self.config.moe_router_pre_softmax == True
             and self.config.moe_expert_capacity_factor == None):
-            probs, routing_map, tokens_per_expert = fused_topk_gating(logits, self.topk)
+            probs, routing_map, tokens_per_expert = fused_topk_gating_without_capacity(
+                logits,
+                self.topk,
+                capacity_factor=self.config.moe_expert_capacity_factor,
+                pad_to_capacity=self.config.moe_pad_expert_input_to_capacity,
+                drop_policy=self.config.moe_token_drop_policy,
+                use_pre_softmax=self.config.moe_router_pre_softmax,
+                num_groups=self.config.moe_router_num_groups,
+                group_topk=self.config.moe_router_group_topk,
+                scaling_factor=self.config.moe_router_topk_scaling_factor,
+                deterministic_mode=self.config.deterministic_mode,
+                score_function=self.score_function,
+                expert_bias=self.expert_bias,
+            )
         else:
             probs, routing_map, tokens_per_expert = topk_softmax_with_capacity(
                 logits,
@@ -276,15 +283,22 @@ class TopKRouter(Router):
         """
 
         if (self.config.moe_topk_router_fusion
-            and self.score_function == "sigmoid"
-            and self.config.moe_router_num_groups == None
-            and self.config.moe_router_group_topk == None 
-            and self.config.moe_router_pre_softmax == False
-            and self.expert_bias == None 
-            and self.topk > 1
-            and self.config.moe_router_topk_scaling_factor == None
+            and self.config.moe_router_pre_softmax == True
             and self.config.moe_expert_capacity_factor == None):
-            probs, routing_map, tokens_per_expert = fused_topk_gating(logits, self.topk)
+            probs, routing_map, tokens_per_expert = fused_topk_gating_without_capacity(
+                logits,
+                self.topk,
+                capacity_factor=self.config.moe_expert_capacity_factor,
+                pad_to_capacity=self.config.moe_pad_expert_input_to_capacity,
+                drop_policy=self.config.moe_token_drop_policy,
+                use_pre_softmax=self.config.moe_router_pre_softmax,
+                num_groups=self.config.moe_router_num_groups,
+                group_topk=self.config.moe_router_group_topk,
+                scaling_factor=self.config.moe_router_topk_scaling_factor,
+                deterministic_mode=self.config.deterministic_mode,
+                score_function=self.score_function,
+                expert_bias=self.expert_bias,
+            )
         else:
             probs, routing_map, tokens_per_expert = topk_softmax_with_capacity(
                 logits,

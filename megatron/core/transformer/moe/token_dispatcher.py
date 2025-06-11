@@ -493,7 +493,7 @@ class MoEAlltoAllTokenDispatcher(MoETokenDispatcher):
         hidden_states = hidden_states.view(-1, self.hidden_shape[-1])
         if self.config.moe_router_padding_for_fp8:
             pad_multiple = get_fp8_align_size(self.config.fp8_recipe)
-            if experimental_config.ENABLE_EXPERIMENTAL and self.config.moe_permute_fusion:
+            if self.config.moe_permute_fusion:
                 self.routing_map = fused_pad_routing_map(self.routing_map, pad_multiple)
             else:
                 self.routing_map = pad_routing_map(self.routing_map, pad_multiple)
@@ -924,7 +924,7 @@ class _DeepepManager(_DispatchManager):
                 "Falling back to explicit padding within GroupedMLP"
             )
         else:
-            if experimental_config.ENABLE_EXPERIMENTAL and self.permute_fusion:
+            if self.permute_fusion:
                 from megatron.core.fusions.fused_pad_routing_map import fused_pad_routing_map
 
                 routing_map = fused_pad_routing_map(routing_map, pad_multiple)
