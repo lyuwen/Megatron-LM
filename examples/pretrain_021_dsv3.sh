@@ -370,7 +370,7 @@ if [ $DISPATCHER_TYPE = alltoall_seq ]; then
 elif [ $DISPATCHER_TYPE = alltoall ]; then
     moe_options=" ${moe_options}  --moe-token-dispatcher-type alltoall --moe-shared-expert-overlap "
 elif [ $DISPATCHER_TYPE = flex_deepep ]; then
-    moe_options=" ${moe_options} --moe-token-dispatcher-type flex --moe-enable-deepep "
+    moe_options=" ${moe_options} --moe-token-dispatcher-type flex --moe-enable-deepep " #--moe-shared-expert-overlap "
 else
 echo "Unsupported dispatcher type: ${DISPATCHER_TYPE}"
 exit 1
@@ -378,7 +378,9 @@ fi
 
 ROUTER_SCORE_FUNC=${ROUTER_SCORE_FUNC:-pre_softmax}
 if [ $ROUTER_SCORE_FUNC = sigmod ]; then
-    moe_options=" ${moe_options}  --moe-router-score-function sigmoid  "
+    moe_options=" ${moe_options}  --moe-router-score-function sigmoid \
+                                    --moe-topk-router-fusion \
+                                    "
 elif [ $ROUTER_SCORE_FUNC = softmax ]; then
     moe_options=" ${moe_options}  --moe-router-score-function softmax "
 elif [ $ROUTER_SCORE_FUNC = pre_softmax ]; then
@@ -768,6 +770,7 @@ if [[ $OFFLOAD_OPTIMIZER = true ]]; then
         --overlap-cpu-optimizer-d2h-h2d \
     "
         #--use-torch-optimizer-for-cpu-offload \
+
 fi
 
 # 开启12LHSD的atten计算方法,打印MFU
@@ -809,6 +812,13 @@ if [[ ${SCHEDULE_VISUAL:-false} = true ]]; then
         echo "Schedule visualization start !!!"
         nohup bash schedule_visual.sh ${MEGATRON_PATH} ${TENSORBOARD_DIR} ${SCHEDULE_VISUAL_ITER_END:-35} &
     fi
+fi
+
+if [[ ${ENABLE_TIMING_LOG:-false} = true ]]; then
+    megatron_options=" ${megatron_options} \
+        --timing-log-level 2 \
+        --timing-log-option minmax \
+    "
 fi
 
 run_cmd="torchrun $DISTRIBUTED_ARGS ${MEGATRON_PATH}/pretrain_gpt.py

@@ -291,7 +291,7 @@ def or_pipelining(
                     collect_non_loss_data,
                     checkpoint_activations_microbatch,
                     check_first_val_step(
-                        first_val_step, forward_only, (i == 0) and (num_warmup_microbatches == 0)
+                        first_val_step, forward_only, microbatch_id == 0
                     ),
                     current_microbatch=microbatch_id,
                     encoder_decoder_xattn=encoder_decoder_xattn,
