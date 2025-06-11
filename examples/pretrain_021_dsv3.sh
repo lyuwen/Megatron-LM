@@ -380,7 +380,6 @@ fi
 ROUTER_SCORE_FUNC=${ROUTER_SCORE_FUNC:-pre_softmax}
 if [ $ROUTER_SCORE_FUNC = sigmod ]; then
     moe_options=" ${moe_options}  --moe-router-score-function sigmoid \
-                                    --moe-topk-router-fusion \
                                     "
 elif [ $ROUTER_SCORE_FUNC = softmax ]; then
     moe_options=" ${moe_options}  --moe-router-score-function softmax "
@@ -663,6 +662,7 @@ megatron_options="  \
         --moe-router-dtype fp32 \
         --moe-permute-fusion \
         --moe-router-padding-for-fp8 \
+        --moe-topk-router-fusion \
         --multi-latent-attention"
         #--no-rope-fusion \
         # --patch-tokenizer-type DeepSeekV2Tokenizer \
