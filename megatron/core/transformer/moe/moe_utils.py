@@ -724,7 +724,7 @@ def save_to_tokens_experts_info_tracker(
     # Skip logging if layer_number is None.
     if layer_number is None:
         return
-    tracker = parallel_state.get_moe_layer_wise_logging_tracker()
+    tracker = get_moe_layer_wise_logging_tracker()
     if name not in tracker:
         tracker[name] = {}
         tracker[name]["values"] = torch.zeros((num_layers,num_experts), device=tokens_expert.device, dtype=torch.int64)
