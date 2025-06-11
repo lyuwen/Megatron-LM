@@ -62,6 +62,7 @@ elif [ ${CKPT_FORMAT} = torch_no_optim ] ; then
     ckpt_options=" --ckpt-format torch --no-save-optim --no-load-optim"
 fi
 ckpt_options="${ckpt_options} \
+            --dist-ckpt-strictness log_all \
 "
             #--auto-detect-ckpt-format \
             #--no-ckpt-fully-parallel-save \
@@ -484,6 +485,7 @@ elif [ $PR = fp8 ]; then
         --fp8-amax-history-len 1024 \
         --v3-fp8-grouped-linear \
     "
+        #--v3-fp8-linear \
 elif [ $PR = fp8_delayed ]; then
     # normal fp8, support delayed/tensorwise recipe in all
     pr_options=" \
@@ -660,6 +662,7 @@ megatron_options="  \
         --qk-layernorm \
         --moe-router-dtype fp32 \
         --moe-permute-fusion \
+        --moe-router-padding-for-fp8 \
         --multi-latent-attention"
         #--no-rope-fusion \
         # --patch-tokenizer-type DeepSeekV2Tokenizer \
@@ -793,7 +796,7 @@ if [[ ${CHECK_NAN:-true} = false ]]; then
 fi
 
 if [[ ${FP8_COMM:-false} = true ]]; then
-    new_options=" ${new_options} --fp8-comm "
+    #new_options=" ${new_options} --fp8-comm "
     export FP8_COMM_DEEPEP=true
 fi
 
@@ -823,6 +826,10 @@ fi
 
 if [[ ${MANUAL_GC:-0} -gt 0 ]]; then
     megatron_options=" ${megatron_options} --manual-gc --manual-gc-interval ${MANUAL_GC} "
+fi
+
+if [[ ${MTP_NUM_LAYERS:-0} -gt 0 ]]; then
+    megatron_options=" ${megatron_options} --mtp-num-layers ${MTP_NUM_LAYERS} "
 fi
 
 run_cmd="torchrun $DISTRIBUTED_ARGS ${MEGATRON_PATH}/pretrain_gpt.py
