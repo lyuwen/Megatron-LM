@@ -924,7 +924,7 @@ class _DeepepManager(_DispatchManager):
                 "Falling back to explicit padding within GroupedMLP"
             )
         else:
-            if experimental_config.ENABLE_EXPERIMENTAL and self.permute_fusion:
+            if self.permute_fusion:
                 from megatron.core.fusions.fused_pad_routing_map import fused_pad_routing_map
 
                 routing_map = fused_pad_routing_map(routing_map, pad_multiple)
