@@ -18,6 +18,7 @@ from megatron.core.transformer.moe.moe_utils import (
 )
 from megatron.core.transformer.moe.token_dispatcher import MoETokenDispatcher
 from megatron.core.transformer.transformer_config import TransformerConfig
+from megatron.core.custom_rs import custom_recompute
 
 
 class MoEAlltoAllSEQTokenDispatcher(MoETokenDispatcher):
@@ -196,6 +197,7 @@ class MoEAlltoAllSEQTokenDispatcher(MoETokenDispatcher):
 
         return num_tokens_per_local_expert
 
+    @custom_recompute('permutation')
     def token_permutation(
         self, hidden_states: torch.Tensor, probs: torch.Tensor, routing_map: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -268,6 +270,7 @@ class MoEAlltoAllSEQTokenDispatcher(MoETokenDispatcher):
 
         return global_input_tokens, tokens_per_expert, global_probs
 
+    @custom_recompute('unpermutation')
     def token_unpermutation(
         self, hidden_states: torch.Tensor, bias: torch.Tensor = None
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:

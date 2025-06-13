@@ -379,8 +379,7 @@ fi
 
 ROUTER_SCORE_FUNC=${ROUTER_SCORE_FUNC:-pre_softmax}
 if [ $ROUTER_SCORE_FUNC = sigmod ]; then
-    moe_options=" ${moe_options}  --moe-router-score-function sigmoid \
-                                    "
+    moe_options=" ${moe_options}  --moe-router-score-function sigmoid --moe-router-pre-softmax "
 elif [ $ROUTER_SCORE_FUNC = softmax ]; then
     moe_options=" ${moe_options}  --moe-router-score-function softmax "
 elif [ $ROUTER_SCORE_FUNC = pre_softmax ]; then
@@ -428,22 +427,20 @@ elif [ $AC = sel ]; then
         --recompute-granularity selective \
         --recompute-modules ${RECOMPUTE_MODULES:-"core_attn moe_act layernorm mla_up_proj mlp moe"} \
     "
-    if [[ ${MOE_PERMUTE_CHECKPOINT:-none} != none ]]; then
-        activation_checkpoint_options=" ${activation_checkpoint_options} \
-            --moe-perm-checkpoint ${MOE_PERMUTE_CHECKPOINT} 
-        "
-    fi
-elif [ $AC = permckpt ]; then
-    activation_checkpoint_options=" \
-        --recompute-granularity selective \
-        --recompute-beside-moe \
-        --recompute-modules moe \
-        --moe-perm-checkpoint ${MOE_PERMUTE_CHECKPOINT:-half} \
-    "
-elif [ $AC = moeckpt ]; then
-    activation_checkpoint_options=" \
-        --recompute-beside-moe \
-    "
+elif [ $AC = custom ]; then
+    activation_checkpoint_options=""
+    export ENABLE_CUSTOM_RECOMPUTE=${ENABLE_CUSTOM_RECOMPUTE:-true}
+    export RECOMPUTE_MOE=${RECOMPUTE_MOE:-true}
+    export RECOMPUTE_MLP=${RECOMPUTE_MLP:-true}
+    export RECOMPUTE_ATTN=${RECOMPUTE_ATTN:-true}
+    export RECOMPUTE_ROUTER=${RECOMPUTE_ROUTER:-true}
+    export RECOMPUTE_PERMUTATION=${RECOMPUTE_PERMUTATION:-true}
+    export RECOMPUTE_EXPERTS=${RECOMPUTE_EXPERTS:-true}
+    export RECOMPUTE_UNPERMUTATION=${RECOMPUTE_UNPERMUTATION:-true}
+    export RECOMPUTE_SHARED_EXPERTS=${RECOMPUTE_SHARED_EXPERTS:-true}
+    export RECOMPUTE_EXPERT_FC1=${RECOMPUTE_EXPERT_FC1:-true}
+    export RECOMPUTE_EXPERT_BIAS_ACT=${RECOMPUTE_EXPERT_BIAS_ACT:-true}
+    export RECOMPUTE_EXPERT_FC2=${RECOMPUTE_EXPERT_FC2:-true}
 elif [ $AC = none ]; then
     activation_checkpoint_options=" \
     "
@@ -482,8 +479,10 @@ elif [ $PR = fp8 ]; then
         --fp8-recipe delayed \
         --fp8-amax-compute-algo max \
         --fp8-amax-history-len 1024 \
+        --no-fp8-wgrad \
         --v3-fp8-grouped-linear \
     "
+        #--fp8-param-gather \
         #--v3-fp8-linear \
 elif [ $PR = fp8_delayed ]; then
     # normal fp8, support delayed/tensorwise recipe in all
@@ -492,8 +491,11 @@ elif [ $PR = fp8_delayed ]; then
          --fp8-format hybrid \
          --fp8-recipe delayed \
          --fp8-amax-compute-algo max \
+         --no-fp8-wgrad \
          --fp8-amax-history-len 1024 \
      "
+         #--fp8-param-gather \
+
 fi
 
 if [ $DO = true ]; then
@@ -771,8 +773,8 @@ if [[ $OFFLOAD_OPTIMIZER = true ]]; then
         --use-precision-aware-optimizer \
         --optimizer-cpu-offload \
         --overlap-cpu-optimizer-d2h-h2d \
+        --use-torch-optimizer-for-cpu-offload \
     "
-        #--use-torch-optimizer-for-cpu-offload \
 
 fi
 

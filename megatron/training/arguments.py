@@ -2684,10 +2684,6 @@ def _add_moe_args(parser):
                        help='Pads the input for each expert to match the expert capacity length, effective only after the --moe-expert-capacity-factor is set.')
     group.add_argument('--moe-token-drop-policy', type=str, default='probs', choices=['probs', 'position'],
                        help='The policy to drop tokens. Can be either "probs" or "position". If "probs", the tokens with the lowest probabilities will be dropped. If "position", tokens at the end of each batch will be dropped.')
-    group.add_argument('--moe-perm-checkpoint', type=str, default='none', choices=['full', 'half', 'none'],
-                       help='Use checkpointing for permutation of MoE layer. Options are "full", "half", "none".')
-    group.add_argument('--recompute-beside-moe', action='store_true',
-                       help='Recompute the operations beside the MoE layer.')
     #
     group.add_argument('--moe-warmup-router', type=int, default=-1,
                        help='Number of steps to apply router warmup randomness.')

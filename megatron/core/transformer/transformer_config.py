@@ -478,13 +478,6 @@ class TransformerConfig(ModelParallelConfig):
     moe_layer_recompute: bool = False
     """Memory optimization: checkpointing moe_layer to save actiavtion memory."""
 
-    moe_perm_checkpoint: str = 'none'
-    """Use checkpointing for permutation of MoE layer.
-    Options are 'full', 'half', 'none'."""
-
-    recompute_beside_moe: bool = False
-    """Recompute the operations beside the MoE layer."""
-
     moe_permute_fusion: bool = False
     """Fuse token rearrangement ops during token dispatching."""
 

@@ -27,6 +27,8 @@ from megatron.core.sequence_length_scheduler import get_iteration
 
 from megatron.core.fusions.fused_topk_gating import fused_topk_gating_without_capacity
 
+from megatron.core.custom_rs import custom_recompute
+
 class Router(ABC, MegatronModule):
     """Base Router class"""
 
@@ -520,6 +522,7 @@ class TopKRouter(Router):
 
         return scores, routing_map
 
+    @custom_recompute('router')
     def forward(self, input: torch.Tensor):
         """
         Forward pass of the router.

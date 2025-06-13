@@ -27,6 +27,7 @@ from megatron.core.transformer.moe.moe_utils import (
 )
 from megatron.core.transformer.moe.shared_experts import SharedExpertMLP
 from megatron.core.transformer.transformer_config import TransformerConfig
+from megatron.core.custom_rs import custom_recompute
 
 """ We use the following notation throughout this file:
      H: hidden size
@@ -139,6 +140,7 @@ class MoEAllGatherTokenDispatcher(MoETokenDispatcher):
         # device token permutation is enabled and **AllGahter** is performed.
         self.global_local_map = None
 
+    @custom_recompute('permutation')
     def token_permutation(
         self, hidden_states: torch.Tensor, probs: torch.Tensor, routing_map: torch.Tensor
     ):
@@ -210,6 +212,7 @@ class MoEAllGatherTokenDispatcher(MoETokenDispatcher):
 
         return permuted_local_hidden_states, tokens_per_expert, self.local_probs
 
+    @custom_recompute('unpermutation')
     def token_unpermutation(self, hidden_states: torch.Tensor, bias: torch.Tensor = None):
         """
         Reverse process of `dispatch()` which permutes the output of local
@@ -460,6 +463,7 @@ class MoEAlltoAllTokenDispatcher(MoETokenDispatcher):
         ), "cuda_sync_point must be after cuda_dtoh_point."
         return num_tokens_per_local_expert
 
+    @custom_recompute('permutation')
     def token_permutation(
         self, hidden_states: torch.Tensor, probs: torch.Tensor, routing_map: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -586,6 +590,7 @@ class MoEAlltoAllTokenDispatcher(MoETokenDispatcher):
 
         return global_input_tokens, tokens_per_expert, global_probs
 
+    @custom_recompute('unpermutation')
     def token_unpermutation(
         self, hidden_states: torch.Tensor, bias: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
@@ -1044,6 +1049,7 @@ class MoEFlexTokenDispatcher(MoETokenDispatcher):
         ).contiguous()
         return routing_map, probs
 
+    @custom_recompute('permutation')
     def token_permutation(
         self, hidden_states: torch.Tensor, probs: torch.Tensor, routing_map: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -1064,6 +1070,7 @@ class MoEFlexTokenDispatcher(MoETokenDispatcher):
 
         return global_input_tokens, tokens_per_expert, permuted_probs
 
+    @custom_recompute('unpermutation')
     def token_unpermutation(
         self, hidden_states: torch.Tensor, bias: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
