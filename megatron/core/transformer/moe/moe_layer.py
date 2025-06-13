@@ -114,7 +114,6 @@ class MoELayer(BaseMoELayer):
         self.moe_layer_recompute = (
             config.recompute_granularity == 'selective' and "moe" in config.recompute_modules
         )
-        self.moe_perm_checkpoint = config.moe_perm_checkpoint
 
         # Initialize router
         self.router = TopKRouter(config=self.config, model_comm_pgs=model_comm_pgs)
@@ -179,22 +178,21 @@ class MoELayer(BaseMoELayer):
         # process MoE
         def custom_forward(hidden_states):
             probs, routing_map = self.router(hidden_states)
+
             (dispatched_input, tokens_per_expert, permuted_probs) = (
                 self.token_dispatcher.token_permutation(hidden_states, probs, routing_map)
             )
-            use_experts_fp8_context = self.config.v3_fp8_grouped_linear
-            experts_fp8_context = get_fp8_context(self.config, is_gl=True) if use_experts_fp8_context else nullcontext()
+            experts_fp8_context = get_fp8_context(self.config, layer_type='moe')
             with experts_fp8_context:
                 expert_output, mlp_bias = self.experts(
                     dispatched_input, tokens_per_expert, permuted_probs
                 )
-            use_linear_fp8_context = self.config.v3_fp8_linear
-            linear_fp8_context = get_fp8_context(self.config, is_gl=True) if use_linear_fp8_context else nullcontext()
-            with linear_fp8_context:
-                output, mlp_bias = self.token_dispatcher.token_unpermutation(expert_output, mlp_bias)
-                if self.use_shared_expert and not self.shared_expert_overlap:
-                    # if shared_expert_overlap is True, the expert calculation happens in
-                    # the token_dispatcher to overlap communications and computations
+            output, mlp_bias = self.token_dispatcher.token_unpermutation(expert_output, mlp_bias)
+            if self.use_shared_expert and not self.shared_expert_overlap:
+                # if shared_expert_overlap is True, the expert calculation happens in
+                # the token_dispatcher to overlap communications and computations
+                shared_experts_fp8_context = get_fp8_context(self.config, layer_type='moe')
+                with shared_experts_fp8_context:
                     output = output + self.shared_experts(hidden_states)
             return output, mlp_bias
 

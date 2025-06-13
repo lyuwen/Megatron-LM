@@ -410,7 +410,6 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
         # use_nvfuser = TORCH_MAJOR > 1 or (TORCH_MAJOR == 1 and TORCH_MINOR >= 10)
         # self.bias_dropout_add_exec_handler = nullcontext if use_nvfuser else torch.enable_grad
         self.bias_dropout_add_exec_handler = torch.enable_grad
-        self.recompute_beside_moe = config.recompute_beside_moe
 
     @staticmethod
     def _get_layer_offset(config: TransformerConfig):

@@ -1095,7 +1095,7 @@ def _add_transformer_engine_args(parser):
                        dest='fp8')
     # per tensor current scaling recipe selection
     group.add_argument('--fp8-recipe', default='delayed',
-                       choices=['tensorwise', 'delayed', 'mxfp8', 'blockwise'],
+                       choices=['tensorwise', 'delayed', 'mxfp8', 'blockwise', 'deepgemm'],
                        help='Which fp8 recipe to use for FP8 tensors in the forward and backward pass',
                        dest='fp8_recipe')
     # delayed scaling only configs
@@ -1132,13 +1132,6 @@ def _add_transformer_engine_args(parser):
                             'Required for CUDA graphs support.')
     group.add_argument('--inference-rng-tracker', action='store_true', default=False,
                        help='Use a random number generator configured for inference.')
-    
-    group.add_argument('--v3-fp8-linear', action='store_true', default=False,
-                       help="Using fp8 in TE Linear")
-    group.add_argument('--v3-fp8-grouped-linear', action='store_true', default=False,
-                       help="Using fp8 in TE Grouped Linear")
-    group.add_argument('--fp8-comm', action='store_true', default=False,
-                       help='Use fp8 stream in P2P comm and A2A comm.')
     return parser
 
 def _add_inference_args(parser):

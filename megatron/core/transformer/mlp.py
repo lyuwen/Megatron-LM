@@ -165,8 +165,7 @@ class MLP(MegatronModule):
 
         # [s, b, h]
         from megatron.core.fp8_utils import get_fp8_context
-        use_linear_fp8_context = self.config.v3_fp8_linear
-        linear_fp8_context = get_fp8_context(self.config, is_gl=True) if use_linear_fp8_context else nullcontext()
+        linear_fp8_context = get_fp8_context(self.config, layer_type='mlp')
         with linear_fp8_context:
             output, output_bias = self.linear_fc2(intermediate_parallel)
 

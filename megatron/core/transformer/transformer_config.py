@@ -315,12 +315,6 @@ class TransformerConfig(ModelParallelConfig):
     """Number of layers at the end of the model to keep in BF16 precision when
     first_last_layers_bf16 is True."""
 
-    v3_fp8_linear: bool = False
-    """When set to True, use the FP8 computation of standard Linear."""
-
-    v3_fp8_grouped_linear: bool = False
-    """When set to True, use the FP8 computation of Grouped Linear."""
-
     ####################
     # MoE related
     ####################

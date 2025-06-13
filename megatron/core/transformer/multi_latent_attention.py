@@ -249,8 +249,7 @@ class MultiLatentAttention(Attention):
         # =================
         # Output. [sq, b, h]
         # =================
-        use_linear_fp8_context = self.config.v3_fp8_linear
-        linear_fp8_context = get_fp8_context(self.config, is_gl=True) if use_linear_fp8_context else nullcontext()
+        linear_fp8_context = get_fp8_context(self.config, layer_type='attention')
         with linear_fp8_context:
             output, bias = self.linear_proj(core_attn_out)
 
@@ -448,8 +447,7 @@ class MLASelfAttention(MultiLatentAttention):
         #     kv_combined: [s, b, (kv_lora_rank + qk_pos_emb_head_dim) / TP]
         # elif linear_kv_down_proj is Linear:
         #     kv_combined: [s / TP, b, (kv_lora_rank + qk_pos_emb_head_dim)]
-        use_linear_fp8_context = self.config.v3_fp8_linear
-        linear_fp8_context = get_fp8_context(self.config, is_gl=True) if use_linear_fp8_context else nullcontext()
+        linear_fp8_context = get_fp8_context(self.config, layer_type='attention')
         with linear_fp8_context:
             kv_combined, _ = self.linear_kv_down_proj(hidden_states)
         if kv_combined.size(-1) != self.config.kv_lora_rank + self.config.qk_pos_emb_head_dim:
@@ -497,8 +495,7 @@ class MLASelfAttention(MultiLatentAttention):
             else:
                 # q_compressed: [num_tokens, hidden_size]
                 # q: [num_tokens, n * (qk_head_dim + qk_pos_emb_head_dim)]
-                use_linear_fp8_context = self.config.v3_fp8_linear
-                linear_fp8_context = get_fp8_context(self.config, is_gl=True) if use_linear_fp8_context else nullcontext()
+                linear_fp8_context = get_fp8_context(self.config, layer_type='attention')
                 with linear_fp8_context:
                     q, _ = self.linear_q_proj(q_compressed)
 

@@ -467,35 +467,20 @@ elif [ $PR = bf16 ]; then
     pr_options=" \
         --bf16"
 elif [ $PR = fp8 ]; then
-    #镜像：te23-glfp8-baseline-0424
-    #   TE: 2.3_dev
-    #   OpenMixOpl: 0.1.15.2
-    #   OpenMixOpl_GroupGemm: 1.2.0
-
-    # use blockwise recipe in gl, delayed/tensorwise recipe in others
    pr_options=" \
         --bf16 \
         --fp8-format hybrid  \
-        --fp8-recipe delayed \
+        --fp8-recipe deepgemm \
         --fp8-amax-compute-algo max \
         --fp8-amax-history-len 1024 \
         --no-fp8-wgrad \
-        --v3-fp8-grouped-linear \
     "
         #--fp8-param-gather \
-        #--v3-fp8-linear \
-elif [ $PR = fp8_delayed ]; then
-    # normal fp8, support delayed/tensorwise recipe in all
-    pr_options=" \
-         --bf16 \
-         --fp8-format hybrid \
-         --fp8-recipe delayed \
-         --fp8-amax-compute-algo max \
-         --no-fp8-wgrad \
-         --fp8-amax-history-len 1024 \
-     "
-         #--fp8-param-gather \
-
+    export FP8_MLP=${FP8_MLP:-true}
+    export FP8_ATTENTION=${FP8_ATTENTION:-true}
+    export FP8_MOE=${FP8_MOE:-true}
+    export FP8_COMM_P2P=${FP8_COMM_P2P:-true}
+    export FP8_COMM_DEEPEP=${FP8_COMM_DEEPEP:-true}
 fi
 
 if [ $DO = true ]; then
@@ -795,11 +780,6 @@ fi
 
 if [[ ${CHECK_NAN:-true} = false ]]; then
     new_options=" ${new_options} --no-check-for-nan-in-loss-and-grad"
-fi
-
-if [[ ${FP8_COMM:-false} = true ]]; then
-    #new_options=" ${new_options} --fp8-comm "
-    export FP8_COMM_DEEPEP=true
 fi
 
 # 开启流水线并行调度plan和executer分离
