@@ -2694,7 +2694,8 @@ def _add_moe_args(parser):
     group.add_argument('--moe-apply-norm-head', action="store_true",
                        help='Apply lm_head L2 normalization to improve Moe stability.')
     group.add_argument('--moe-topk-router-fusion', action="store_true",
-                    help='use trion fusion op in router')
+                       help='experimental use trion fusion op in topk router, '
+                       'moe-router-pre-softmax must be set to true, moe-expert-capacity-factor must be set to None must be set to true')
 
     return parser
 
