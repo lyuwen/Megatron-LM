@@ -25,7 +25,10 @@ class TransformerConfig(ModelParallelConfig):
     ####################
     # model architecture
     ####################
-
+    moe_layer_pattern : List = None
+    """Moe layer pattern for dense or expert layer, where 0 means dense layer ,
+    1 means expert layer"""
+    
     num_layers: int = 0
     """Number of transformer layers in a transformer block."""
 
