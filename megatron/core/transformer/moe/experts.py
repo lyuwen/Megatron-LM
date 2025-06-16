@@ -58,6 +58,11 @@ except ImportError:
     HAVE_TE = False
 
 
+class FP8Config:
+    FP8_COMM_DEEPEP = os.getenv('FP8_COMM_DEEPEP', '0') == '1' or os.getenv('FP8_COMM_DEEPEP', 'false') == 'true'
+    FP8_DATAFLOW = os.getenv('FP8_DATAFLOW', '0') == '1' or os.getenv('FP8_DATAFLOW', 'false') == 'true'
+
+
 # TODO(Hepteract): delete the usage of the global parallel_state.
 # Currently we still have to use the global parallel_state in expert_dist_ckpt_decorator(),
 # in order to set sub-module's process group while getting sharded_state_dict.
@@ -738,6 +743,17 @@ class TEGroupedMLP(MegatronModule):
             self.fp8_padding = Fp8Padding(self.num_local_experts, 128)
             self.fp8_unpadding = Fp8Unpadding(self.num_local_experts, 128)
 
+        if (not self.config.v3_fp8_grouped_linear
+            or not FP8Config.FP8_COMM_DEEPEP
+            or not self.config.moe_permute_fusion):
+            FP8Config.FP8_DATAFLOW = False
+
+        if FP8Config.FP8_DATAFLOW:
+            if hasattr(self.linear_fc1, "set_bwd_out_block_fp8"):
+                self.linear_fc1.set_bwd_out_block_fp8(True)
+            if hasattr(self.linear_fc2, "set_fwd_out_block_fp8"):
+                self.linear_fc2.set_fwd_out_block_fp8(True)
+    
     @custom_recompute('experts')
     def forward(
         self,
