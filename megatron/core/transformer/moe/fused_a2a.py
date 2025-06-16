@@ -11,19 +11,15 @@ try:
 except ImportError:
     HAVE_DEEP_EP = False
 
-from megatron.core.transformer.moe.experts import FP8Config
-
-if FP8Config.FP8_COMM_DEEPEP:
+FP8_COMM_DEEPEP = os.getenv('FP8_COMM_DEEPEP', '0') == '1' or os.getenv('FP8_COMM_DEEPEP', 'false') == 'true'
+if FP8_COMM_DEEPEP:
     try:
         from OpenMixOpl.triton import (
-            act_quant_B_ptr as zj_act_quant_B_ptr,
-            act_dequant_B_ptr as zj_act_dequant_B_ptr,
+            act_quant_B_ptr as act_quant,
+            act_dequant_B_ptr as act_dequant
         )
     except ImportError:
-        FP8Config.FP8_COMM_DEEPEP = False
-from transformer_engine.pytorch.tensor.float8_blockwise_tensor import (
-    Float8BlockwiseQTensor,
-)
+        FP8_COMM_DEEPEP = False
 
 import torch
 
@@ -85,8 +81,8 @@ class FusedDispatch(torch.autograd.Function):
     def forward(ctx, x, token_indices, token_probs, num_experts, group, previous_event=None):
         """Forward pass of fused dispatch."""
         # Do Fp8 quantize
-        if FP8Config.FP8_COMM_DEEPEP:
-            x = zj_act_quant_B_ptr(x, 128)
+        if FP8_COMM_DEEPEP:
+            x = act_quant(x)
 
         # Calculate layout before actual dispatch
         buffer = get_buffer(group, get_hidden_bytes(x))
@@ -127,30 +123,14 @@ class FusedDispatch(torch.autograd.Function):
             allocate_on_comm_stream=False,
         )
 
-        if FP8Config.FP8_COMM_DEEPEP:
-            recv_x_fp8, recv_x_fp8_si = recv_x
-
-            if FP8Config.FP8_DATAFLOW:
-                # FP8 dataflow
-                recv_x = Float8BlockwiseQTensor(
-                    shape=recv_x_fp8.shape,
-                    dtype=torch.bfloat16,
-                    rowwise_data=recv_x_fp8,
-                    rowwise_scale_inv=recv_x_fp8_si,
-                    columnwise_data=None,
-                    columnwise_scale_inv=None,
-                    fp8_dtype=recv_x_fp8.dtype,
-                    quantizer=None,
-                    is_2D_scaled=False,
-                    requires_grad=recv_x_fp8.requires_grad,
-                )
-            else:
-                recv_x = zj_act_dequant_B_ptr(recv_x_fp8, recv_x_fp8_si)
-
         ctx.group = group
         ctx.handle = handle
         ctx.event = event
         tokens_per_expert = torch.tensor(num_recv_tokens_per_expert_list)
+
+        # Do Fp8 dequantize
+        if FP8_COMM_DEEPEP:
+            recv_x = act_dequant(*recv_x)
 
         return (recv_x, recv_token_indices, recv_token_probs, tokens_per_expert, handle)
 
@@ -159,9 +139,6 @@ class FusedDispatch(torch.autograd.Function):
         ctx, grad_output, grad_token_indices, grad_token_probs, grad_tokens_per_expert, grad_handle
     ):
         """Backward pass of fused dispatch."""
-        if FP8Config.FP8_DATAFLOW and isinstance(grad_output, Float8BlockwiseQTensor):
-            grad_output = zj_act_dequant_B_ptr(grad_output._rowwise_data, grad_output._rowwise_scale_inv)
-
         buffer = get_buffer(ctx.group, get_hidden_bytes(grad_output))
         handle = ctx.handle
 
@@ -181,9 +158,6 @@ class FusedCombine(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x, group, handle, previous_event=None):
         """Forward pass of fused combine."""
-        if FP8Config.FP8_DATAFLOW and isinstance(x, Float8BlockwiseQTensor):
-            x = zj_act_dequant_B_ptr(x._rowwise_data, x._rowwise_scale_inv)
-
         buffer = get_buffer(group, get_hidden_bytes(x))
         combined_x, _, event = buffer.combine(
             x, handle=handle, async_finish=False, previous_event=None, allocate_on_comm_stream=False
@@ -196,39 +170,23 @@ class FusedCombine(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_output, previous_event=None):
         """Backward pass of fused combine."""
-        grad_output = grad_output.contiguous()
         # Do Fp8 quantize
-        if FP8Config.FP8_COMM_DEEPEP:
-            grad_output = zj_act_quant_B_ptr(grad_output, 128)
+        if FP8_COMM_DEEPEP:
+            grad_output = act_quant(grad_output)
 
         buffer = get_buffer(ctx.group, get_hidden_bytes(grad_output))
 
         grad_x, _, _, _, _, event = buffer.dispatch(
-            grad_output,
+            grad_output.contiguous() if isinstance(grad_output, torch.Tensor) else grad_output,
             handle=ctx.handle,
             previous_event=previous_event,
             async_finish=False,
             allocate_on_comm_stream=False,
         )
 
-        if FP8Config.FP8_COMM_DEEPEP:
-            grad_x_fp8, grad_x_fp8_si = grad_x
-            if FP8Config.FP8_DATAFLOW:
-                # FP8 dataflow
-                grad_x = Float8BlockwiseQTensor(
-                    shape=grad_x_fp8.shape,
-                    dtype=torch.bfloat16,
-                    rowwise_data=grad_x_fp8,
-                    rowwise_scale_inv=grad_x_fp8_si,
-                    columnwise_data=None,
-                    columnwise_scale_inv=None,
-                    fp8_dtype=grad_x_fp8.dtype,
-                    quantizer=None,
-                    is_2D_scaled=False,
-                    requires_grad=grad_x_fp8.requires_grad,
-                )
-            else:
-                grad_x = zj_act_dequant_B_ptr(grad_x_fp8, grad_x_fp8_si)
+        # Do Fp8 dequantize
+        if FP8_COMM_DEEPEP:
+            grad_x = act_dequant(*grad_x)
 
         return grad_x, None, None, None
 
