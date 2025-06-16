@@ -27,12 +27,6 @@ from megatron.core.fp8_utils import get_fp8_context
 from megatron.core.enums import Fp8Recipe
 from contextlib import nullcontext
 from megatron.core.extensions.transformer_engine import te_checkpoint
-try:
-    from transformer_engine.pytorch.distributed import te_checkpoint_fp8ctx
-    FP8_CTX_MOE = os.getenv('FP8_CTX_MOE', '0') == '1'
-except ImportError:
-    print("ZJ-Transformer-Engine not installed, skipping import")
-    FP8_CTX_MOE = False
 
 
 @dataclass
@@ -177,22 +171,13 @@ class MoELayer(BaseMoELayer):
     def _checkpoint_handler(self, forward_func, *args):
         """Determines whether to use the `te_checkpoint` or `tensor_parallel.checkpoint`"""
         if self.config.fp8 :
-            if FP8_CTX_MOE:
-                return te_checkpoint_fp8ctx(
-                    forward_func,
-                    *args,
-                    distribute_saved_activations=self.config.distribute_saved_activations,
-                    get_rng_state_tracker=tensor_parallel.random.get_cuda_rng_tracker,
-                    tp_group=parallel_state.get_tensor_model_parallel_group(),
-                )
-            else:
-                return te_checkpoint(
-                    forward_func,
-                    *args,
-                    distribute_saved_activations=self.config.distribute_saved_activations,
-                    get_rng_state_tracker=tensor_parallel.random.get_cuda_rng_tracker,
-                    tp_group=parallel_state.get_tensor_model_parallel_group(),
-                )
+            return te_checkpoint(
+                forward_func,
+                *args,
+                distribute_saved_activations=self.config.distribute_saved_activations,
+                get_rng_state_tracker=tensor_parallel.random.get_cuda_rng_tracker,
+                tp_group=parallel_state.get_tensor_model_parallel_group(),
+            )
         else:
             return tensor_parallel.checkpoint(
                 forward_func,

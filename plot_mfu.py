@@ -162,19 +162,20 @@ def plot_mfu_curves(file_paths, title, show_lm_loss=False, show_mfu=True, lm_los
             
             # 绘制MFU曲线（在第一个y轴）
             if show_mfu:
-                line1 = ax1.plot(iterations, mfu_values, color=color, linewidth=2, label=f'MFU: {file_name}')
+                # 将MFU值转换为百分比
+                mfu_values_percent = [mfu * 100 for mfu in mfu_values]
+                line1 = ax1.plot(iterations, mfu_values_percent, color=color, linewidth=2, label=f'MFU: {file_name}')
                 
                 # 找出最高点并标注
-                if mfu_values:
-                    max_index = np.argmax(mfu_values)
+                if mfu_values_percent:
+                    max_index = np.argmax(mfu_values_percent)
                     max_iteration = iterations[max_index]
-                    max_mfu = mfu_values[max_index]
+                    max_mfu = mfu_values_percent[max_index]
                     
                     # 每隔50轮标注一次MFU值
-                    for idx, (iter_num, mfu_val) in enumerate(zip(iterations, mfu_values)):
-                        if iter_num % 300 == 0:
-                            mfu_percent = mfu_val * 100
-                            ax1.annotate(f'{mfu_percent:.1f}%', 
+                    for idx, (iter_num, mfu_val) in enumerate(zip(iterations, mfu_values_percent)):
+                        if iter_num % 250 == 0:
+                            ax1.annotate(f'{mfu_val:.1f}%', 
                                         xy=(iter_num, mfu_val),
                                         xytext=(0, 10),  # 文本偏移量（向上偏移）
                                         textcoords='offset points',
@@ -199,7 +200,7 @@ def plot_mfu_curves(file_paths, title, show_lm_loss=False, show_mfu=True, lm_los
                 
                 # 如果显示lm_loss，每隔50轮标注一次lm_loss值
                 for idx, (iter_num, lm_loss_val) in enumerate(zip(iterations, lm_loss_values)):
-                    if iter_num % 300 == 0:
+                    if iter_num % 250 == 0:
                         ax2.annotate(f'{lm_loss_val:.4f}', 
                                     xy=(iter_num, lm_loss_val),
                                     xytext=(0, -10),  # 文本偏移量（向下偏移）
@@ -212,8 +213,10 @@ def plot_mfu_curves(file_paths, title, show_lm_loss=False, show_mfu=True, lm_los
     # 设置第一个y轴（MFU）
     if show_mfu:
         ax1.set_xlabel('Iteration')
-        ax1.set_ylabel('MFU')
-        ax1.set_ylim(0.0, 0.35)
+        ax1.set_ylabel('MFU (%)')
+        ax1.set_ylim(0.0, 35.0)  # 改为百分比范围
+        # 设置y轴刻度格式为百分比
+        ax1.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'{x:.0f}%'))
         ax1.grid(True, linestyle='--', alpha=0.7)
     
     # 设置第二个y轴（lm loss，如果需要）

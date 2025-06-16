@@ -30,8 +30,7 @@ def get_hidden_bytes(x: torch.Tensor) -> int:
     """Calculate the number of hidden bytes for a tensor.
 
     Args:
-        x (torch.Tensor | tuple[torch.Tensor, torch.Tensor]): Input tensor or tuple of fp8 tensors.
-            If a tuple is provided, uses the first tensor in the tuple.
+        x (torch.Tensor | tuple[torch.Tensor, torch.Tensor]): Input tensor or tuple of fp8 tensors. If a tuple is provided, uses the first tensor in the tuple.
 
     Returns:
         int: Number of hidden bytes
@@ -153,7 +152,6 @@ class FusedDispatch(torch.autograd.Function):
         )
         return grad_x, None, grad_token_probs, None, None, None
 
-
 class FusedCombine(torch.autograd.Function):
     """Fused combine operation for MoE output combining computation and communication."""
 
@@ -177,6 +175,7 @@ class FusedCombine(torch.autograd.Function):
             grad_output = act_quant(grad_output)
 
         buffer = get_buffer(ctx.group, get_hidden_bytes(grad_output))
+
         grad_x, _, _, _, _, event = buffer.dispatch(
             grad_output.contiguous() if isinstance(grad_output, torch.Tensor) else grad_output,
             handle=ctx.handle,
@@ -208,9 +207,7 @@ if HAVE_DEEP_EP:
         Returns:
             Result of FusedDispatch
         """
-        return FusedDispatch.apply(
-            x.contiguous(), token_indices, token_probs, num_experts, group, previous_event
-        )
+        return FusedDispatch.apply(x.contiguous(), token_indices, token_probs, num_experts, group, previous_event)
 
     def fused_combine(x, group, handle, previous_event=None):
         """Perform fused combine operation if deep_ep is available.

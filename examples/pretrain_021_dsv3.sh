@@ -62,6 +62,7 @@ elif [ ${CKPT_FORMAT} = torch_no_optim ] ; then
     ckpt_options=" --ckpt-format torch --no-save-optim --no-load-optim"
 fi
 ckpt_options="${ckpt_options} \
+            --dist-ckpt-strictness log_all \
 "
             #--auto-detect-ckpt-format \
             #--no-ckpt-fully-parallel-save \
@@ -251,11 +252,11 @@ moe_options=" \
 elif [ $MODEL_SIZE = 600B ]; then
 
 HIDDEN_SIZE=7168
-NUM_ATTENTION_HEADS=128
+NUM_ATTN_HEADS=128
 NUM_LAYERS=${NUM_LAYERS:-61}
 INTERMEDIATE_SIZE=18432
 MOE_INTERMEDIATE_SIZE=2048
-MAX_POSITION_EMBEDDINGS=${MAX_POSITION_EMBEDDINGS:-${SEQ_LEN}}
+MAX_POSITION_EMBEDDINGS=163840
 EXTRA_VOCAB_SIZE=467
 Q_LORA_RANK=1536
 KV_LORA_RANK=512
@@ -370,7 +371,7 @@ if [ $DISPATCHER_TYPE = alltoall_seq ]; then
 elif [ $DISPATCHER_TYPE = alltoall ]; then
     moe_options=" ${moe_options}  --moe-token-dispatcher-type alltoall --moe-shared-expert-overlap "
 elif [ $DISPATCHER_TYPE = flex_deepep ]; then
-    moe_options=" ${moe_options} --moe-token-dispatcher-type flex --moe-enable-deepep " #--moe-shared-expert-overlap "
+    moe_options=" ${moe_options} --moe-token-dispatcher-type flex --moe-enable-deepep --moe-shared-expert-overlap "
 else
 echo "Unsupported dispatcher type: ${DISPATCHER_TYPE}"
 exit 1
@@ -379,7 +380,6 @@ fi
 ROUTER_SCORE_FUNC=${ROUTER_SCORE_FUNC:-pre_softmax}
 if [ $ROUTER_SCORE_FUNC = sigmod ]; then
     moe_options=" ${moe_options}  --moe-router-score-function sigmoid \
-                                    --moe-topk-router-fusion \
                                     "
 elif [ $ROUTER_SCORE_FUNC = softmax ]; then
     moe_options=" ${moe_options}  --moe-router-score-function softmax "
@@ -484,6 +484,7 @@ elif [ $PR = fp8 ]; then
         --fp8-amax-history-len 1024 \
         --v3-fp8-grouped-linear \
     "
+        #--v3-fp8-linear \
 elif [ $PR = fp8_delayed ]; then
     # normal fp8, support delayed/tensorwise recipe in all
     pr_options=" \
@@ -642,7 +643,7 @@ megatron_options="  \
         --tensor-model-parallel-size ${TP} \
         --pipeline-model-parallel-size ${PP} \
         --context-parallel-size ${CP} \
-        --tokenizer-type 021Tokenizer \
+        --tokenizer-type ${TOKENIZER_TYPE:-021Tokenizer} \
         --tokenizer-model $TOKENIZER_PATH \
         --vocab-file $TOKENIZER_PATH/tokenizer.model \
         --swiglu \
@@ -650,7 +651,6 @@ megatron_options="  \
         --norm-epsilon ${RMS_NORM_EPS} \
         --use-rotary-position-embeddings \
         --no-bias-swiglu-fusion \
-        --no-rope-fusion \
         --position-embedding-type rope \
         --untie-embeddings-and-output-weights \
         --disable-bias-linear \
@@ -661,7 +661,10 @@ megatron_options="  \
         --qk-layernorm \
         --moe-router-dtype fp32 \
         --moe-permute-fusion \
+        --moe-router-padding-for-fp8 \
+        --moe-topk-router-fusion \
         --multi-latent-attention"
+        #--no-rope-fusion \
         # --patch-tokenizer-type DeepSeekV2Tokenizer \
         # --rotary-seq-len-interpolation-factor 1 增加
 
@@ -673,14 +676,14 @@ megatron_options="  \
 #动态bs
 ENABLE_RAMPUP_BS=${ENABLE_RAMPUP_BS:-false}
 if  [[ $ENABLE_RAMPUP_BS = false ]]; then
-    LR_WARMUP_ITERS=2000
+    LR_WARMUP_ITERS=${LR_WARMUP_ITERS:-2000}
     LR_DECAY_ITERS=$(( ${TRAIN_TOKENS} /  ${GLOBAL_BATCH_SIZE} / ${SEQ_LEN} ))
     megatron_options=" ${megatron_options} \
         --lr-decay-iters ${LR_DECAY_ITERS} \
         --lr-warmup-iters ${LR_WARMUP_ITERS} \
         --train-iters ${TRAIN_ITERS} "
 else
-    warm_step=2000
+    warm_step=${LR_WARMUP_ITERS:-2000}
     GLOBAL_BATCH_SIZE_avg=1920
     TRAIN_SAMPLES=$(( ${TRAIN_TOKENS} / ${SEQ_LEN} ))
     LR_WARMUP_SAMPLES=$((${warm_step} * ${GLOBAL_BATCH_SIZE_avg} ))
@@ -793,7 +796,7 @@ if [[ ${CHECK_NAN:-true} = false ]]; then
 fi
 
 if [[ ${FP8_COMM:-false} = true ]]; then
-    new_options=" ${new_options} --fp8-comm "
+    #new_options=" ${new_options} --fp8-comm "
     export FP8_COMM_DEEPEP=true
 fi
 
@@ -819,6 +822,14 @@ if [[ ${ENABLE_TIMING_LOG:-false} = true ]]; then
         --timing-log-level 2 \
         --timing-log-option minmax \
     "
+fi
+
+if [[ ${MANUAL_GC:-0} -gt 0 ]]; then
+    megatron_options=" ${megatron_options} --manual-gc --manual-gc-interval ${MANUAL_GC} "
+fi
+
+if [[ ${MTP_NUM_LAYERS:-0} -gt 0 ]]; then
+    megatron_options=" ${megatron_options} --mtp-num-layers ${MTP_NUM_LAYERS} "
 fi
 
 run_cmd="torchrun $DISTRIBUTED_ARGS ${MEGATRON_PATH}/pretrain_gpt.py
