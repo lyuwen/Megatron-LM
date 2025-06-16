@@ -28,6 +28,7 @@ from megatron.core.transformer.transformer_config import MLATransformerConfig
 from megatron.core.utils import deprecate_inference_params
 from megatron.core.fp8_utils import get_fp8_context
 from contextlib import nullcontext
+from megatron.core.custom_rs import conditional_checkpoint, recompute_controller
 
 try:
     from megatron.core.fusions.fused_mla_yarn_rope_apply import (
@@ -212,7 +213,7 @@ class MultiLatentAttention(Attention):
         if self.q_head_dim != self.config.v_head_dim and self.config.attention_backend == AttnBackend.flash:
             value = F.pad(value, [0, self.q_head_dim - self.config.v_head_dim])
         # Need corresponding TE change
-        if self.checkpoint_core_attention and self.training:
+        if (self.checkpoint_core_attention or recompute_controller.should_recompute('attn_core')) and self.training:
             core_attn_out = self._checkpointed_attention_forward(
                 query, key, value, attention_mask, packed_seq_params=packed_seq_params
             )
@@ -596,7 +597,7 @@ class MLASelfAttention(MultiLatentAttention):
             value = value.contiguous()
             return query, key, value
 
-        if self.recompute_up_proj:
+        if self.recompute_up_proj or recompute_controller.should_recompute('attn_upproj'):
             #self.qkv_up_checkpoint = tensor_parallel.CheckpointWithoutOutput(fp8=self.config.fp8)
             self.qkv_up_checkpoint = tensor_parallel.CheckpointWithoutOutput()
             query, key, value = self.qkv_up_checkpoint.checkpoint(

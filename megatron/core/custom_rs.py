@@ -26,8 +26,14 @@ class RecomputeController:
             'expert_fc1': os.getenv('RECOMPUTE_EXPERT_FC1', 'true').lower() == 'true',
             'expert_bias_act': os.getenv('RECOMPUTE_EXPERT_BIAS_ACT', 'true').lower() == 'true',
             'expert_fc2': os.getenv('RECOMPUTE_EXPERT_FC2', 'true').lower() == 'true',
+
+            'attn_core': os.getenv('RECOMPUTE_ATTN_CORE', 'true').lower() == 'true',
+            'attn_upproj': os.getenv('RECOMPUTE_ATTN_UPPROJ', 'true').lower() == 'true',
         }
 
+        if self.component_switches['attn']:
+            self.component_switches['attn_core'] = False
+            self.component_switches['attn_upproj'] = False
 
         if self.component_switches['moe']:
             self.component_switches['router'] = False
@@ -52,7 +58,7 @@ class RecomputeController:
         )
 
 # 全局重计算控制器实例
-_recompute_controller = RecomputeController()
+recompute_controller = RecomputeController()
 
 def custom_recompute(component_name: str):
     """
@@ -92,7 +98,7 @@ def conditional_checkpoint(component_name: str, force_recompute: bool, func: Cal
         output = conditional_checkpoint('expert_fc1', self.linear_fc1, input_tensor, tokens_per_expert)
     """
     # 根据环境变量决定是否启用重计算
-    should_recompute = _recompute_controller.should_recompute(component_name) or force_recompute
+    should_recompute = recompute_controller.should_recompute(component_name) or force_recompute
     
     if not should_recompute:
         # 不启用重计算，直接调用原函数

@@ -1062,7 +1062,7 @@ class MoEFlexTokenDispatcher(MoETokenDispatcher):
 
         self._comm_manager.setup_metadata(routing_map, probs)
         if self.shared_experts is not None:
-            shared_experts_fp8_context = get_fp8_context(self.config, layer_type='moe')
+            shared_experts_fp8_context = get_fp8_context(self.config, layer_type='mlp')
             with shared_experts_fp8_context:
                 self.shared_experts.pre_forward_comm(hidden_states.view(self.hidden_shape))
         hidden_states= self._comm_manager.dispatch(hidden_states)
@@ -1081,7 +1081,7 @@ class MoEFlexTokenDispatcher(MoETokenDispatcher):
         hidden_states = self._comm_manager.get_restored_hidden_states_by_experts(hidden_states)
         hidden_states= self._comm_manager.combine(hidden_states)
         if self.shared_experts is not None:
-            shared_experts_fp8_context = get_fp8_context(self.config, layer_type='moe')
+            shared_experts_fp8_context = get_fp8_context(self.config, layer_type='mlp')
             with shared_experts_fp8_context:
                 self.shared_experts.linear_fc1_forward_and_act()
                 self.shared_experts.linear_fc2_forward()

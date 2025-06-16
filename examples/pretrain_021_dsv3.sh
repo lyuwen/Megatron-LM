@@ -412,6 +412,7 @@ if [ $TP_COMM_OVERLAP -eq 1 ]; then
     "
 fi
 
+export ENABLE_CUSTOM_RECOMPUTE=false 
 if [ $AC = full ]; then
     _check=$(( ($NUM_LAYERS / $PP) % ${MP_AC_LAYERS} ))
     if [ $_check != 0 ]; then
@@ -429,7 +430,7 @@ elif [ $AC = sel ]; then
     "
 elif [ $AC = custom ]; then
     activation_checkpoint_options=""
-    export ENABLE_CUSTOM_RECOMPUTE=${ENABLE_CUSTOM_RECOMPUTE:-true}
+    export ENABLE_CUSTOM_RECOMPUTE=true 
     export RECOMPUTE_MOE=${RECOMPUTE_MOE:-true}
     export RECOMPUTE_MLP=${RECOMPUTE_MLP:-true}
     export RECOMPUTE_ATTN=${RECOMPUTE_ATTN:-true}
@@ -441,6 +442,8 @@ elif [ $AC = custom ]; then
     export RECOMPUTE_EXPERT_FC1=${RECOMPUTE_EXPERT_FC1:-true}
     export RECOMPUTE_EXPERT_BIAS_ACT=${RECOMPUTE_EXPERT_BIAS_ACT:-true}
     export RECOMPUTE_EXPERT_FC2=${RECOMPUTE_EXPERT_FC2:-true}
+    export RECOMPUTE_ATTN_CORE=${RECOMPUTE_ATTN_CORE:-true}
+    export RECOMPUTE_ATTN_UPPROJ=${RECOMPUTE_ATTN_UPPROJ:-true}
 elif [ $AC = none ]; then
     activation_checkpoint_options=" \
     "
@@ -474,6 +477,7 @@ elif [ $PR = fp8 ]; then
         --fp8-amax-compute-algo max \
         --fp8-amax-history-len 1024 \
         --no-fp8-wgrad \
+        --moe-router-padding-for-fp8 \
     "
         #--fp8-param-gather \
     export FP8_MLP=${FP8_MLP:-true}
@@ -648,7 +652,6 @@ megatron_options="  \
         --qk-layernorm \
         --moe-router-dtype fp32 \
         --moe-permute-fusion \
-        --moe-router-padding-for-fp8 \
         --moe-topk-router-fusion \
         --multi-latent-attention"
         #--no-rope-fusion \
