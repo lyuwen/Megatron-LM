@@ -25,7 +25,7 @@ from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core import mpu
 from megatron.core.sequence_length_scheduler import get_iteration
 
-from megatron.core.fusions.fused_topk_gating import fused_topk_gating_without_capacity
+from megatron.core.fusions.fused_topk_routing import fused_topk_softmax_without_capacity
 
 class Router(ABC, MegatronModule):
     """Base Router class"""
@@ -224,7 +224,7 @@ class TopKRouter(Router):
         if (self.config.moe_topk_router_fusion
             and self.config.moe_router_pre_softmax == True
             and self.config.moe_expert_capacity_factor == None):
-            probs, routing_map, tokens_per_expert = fused_topk_gating_without_capacity(
+            probs, routing_map, tokens_per_expert = fused_topk_softmax_without_capacity(
                 logits,
                 self.topk,
                 capacity_factor=self.config.moe_expert_capacity_factor,
@@ -285,7 +285,7 @@ class TopKRouter(Router):
         if (self.config.moe_topk_router_fusion
             and self.config.moe_router_pre_softmax == True
             and self.config.moe_expert_capacity_factor == None):
-            probs, routing_map, tokens_per_expert = fused_topk_gating_without_capacity(
+            probs, routing_map, tokens_per_expert = fused_topk_softmax_without_capacity(
                 logits,
                 self.topk,
                 capacity_factor=self.config.moe_expert_capacity_factor,
