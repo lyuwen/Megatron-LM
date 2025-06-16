@@ -278,7 +278,7 @@ moe_options=" \
     --num-experts ${NUM_EXPERTS} \
     --moe-layer-freq ${MOE_LAYER_FREQ} \
     --moe-first-k-dense-replace ${MOE_FIRST_K_DENSE_REPLACE} \
-    --moe-aux-loss-coeff 0.001 \
+    --moe-aux-loss-coeff ${MOE_AUX_LOSS_COEFF:-0.001} \
     --moe-shared-expert-intermediate-size $((${MOE_INTERMEDIATE_SIZE} * ${NUM_SHARED_EXPERTS} )) \
     --expert-model-parallel-size ${EP} \
     --q-lora-rank ${Q_LORA_RANK} \
@@ -412,7 +412,6 @@ if [ $TP_COMM_OVERLAP -eq 1 ]; then
     "
 fi
 
-export ENABLE_CUSTOM_RECOMPUTE=false 
 if [ $AC = full ]; then
     _check=$(( ($NUM_LAYERS / $PP) % ${MP_AC_LAYERS} ))
     if [ $_check != 0 ]; then
@@ -474,12 +473,11 @@ elif [ $PR = fp8 ]; then
         --bf16 \
         --fp8-format hybrid  \
         --fp8-recipe deepgemm \
-        --fp8-amax-compute-algo max \
-        --fp8-amax-history-len 1024 \
         --no-fp8-wgrad \
         --moe-router-padding-for-fp8 \
     "
         #--fp8-param-gather \
+    export FP8_OUTER=${FP8_OUTER:-true}
     export FP8_MLP=${FP8_MLP:-true}
     export FP8_ATTENTION=${FP8_ATTENTION:-true}
     export FP8_MOE=${FP8_MOE:-true}

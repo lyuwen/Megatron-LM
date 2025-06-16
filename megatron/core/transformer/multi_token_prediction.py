@@ -444,7 +444,7 @@ class MultiTokenPredictionLayer(MegatronModule):
         # Unlike transformer_block.py which needs to support mixed-precision in different layers,
         # currently MTP only use global fp8 context.
         if self.config.fp8:
-            fp8_context = get_fp8_context(self.config)
+            fp8_context = get_fp8_context(self.config, layer_type='outer')
         else:
             fp8_context = nullcontext()
 
