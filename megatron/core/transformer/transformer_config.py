@@ -25,7 +25,10 @@ class TransformerConfig(ModelParallelConfig):
     ####################
     # model architecture
     ####################
-
+    moe_layer_pattern : List = None
+    """Moe layer pattern for dense or expert layer, where 0 means dense layer ,
+    1 means expert layer"""
+    
     num_layers: int = 0
     """Number of transformer layers in a transformer block."""
 
@@ -355,6 +358,11 @@ class TransformerConfig(ModelParallelConfig):
     DEPRECATED and replaced by moe_router_num_groups and moe_router_group_topk.
     """
 
+    moe_router_padding_for_fp8: Optional[bool] = False
+    """Whether to pad the routing_map to make sure the number of tokens each expert received
+    is a multiple of 16/32 for FP8 precision. This can remove the explicit padding in the
+    GroupedMLP layer."""
+
     moe_router_num_groups: Optional[int] = None
     """Number of groups to divide experts into for group-limited routing.
     When using group-limited routing:
@@ -464,13 +472,6 @@ class TransformerConfig(ModelParallelConfig):
     moe_layer_recompute: bool = False
     """Memory optimization: checkpointing moe_layer to save actiavtion memory."""
 
-    moe_perm_checkpoint: str = 'none'
-    """Use checkpointing for permutation of MoE layer.
-    Options are 'full', 'half', 'none'."""
-
-    recompute_beside_moe: bool = False
-    """Recompute the operations beside the MoE layer."""
-
     moe_permute_fusion: bool = False
     """Fuse token rearrangement ops during token dispatching."""
 
@@ -485,6 +486,9 @@ class TransformerConfig(ModelParallelConfig):
 
     moe_apply_probs_on_input: bool = False
     """Apply probs on input of experts instead of applying after activation and glu."""
+
+    moe_topk_router_fusion: bool = False
+    """Fuse seq aux loss ops during topk router."""
 
     ##################
     # Context Parallel
@@ -695,7 +699,7 @@ class TransformerConfig(ModelParallelConfig):
                     f'but got {self.moe_shared_expert_intermediate_size}'
                 )
             if self.moe_shared_expert_overlap and self.moe_token_dispatcher_type not in [
-                "alltoall"
+                "alltoall", "flex"
             ]:
                 raise ValueError(
                     f'moe_shared_expert_overlap only works with alltoall token dispatcher.'
@@ -960,25 +964,30 @@ class TransformerConfig(ModelParallelConfig):
                 raise ValueError("Storing activation input in FP8 is supported only for SwiGLU.")
 
         if self.apply_rope_fusion:
-            if self.rotary_interleaved:
-                if not is_te_min_version("2.3.0.dev0"):
-                    raise ValueError(
-                        "rotary_interleaved does not work with apply_rope_fusion for "
-                        "TE < 2.3.0.dev0. Please install TE >= 2.3.0.dev0"
-                    )
+            if self.multi_latent_attention:
+                warnings.warn(
+                    "apply_rope_fusion for multi-latent attention only supports training. "
+                    "It is experimental and may change in future versions."
+                )
+            else:
+                if self.rotary_interleaved:
+                    if not is_te_min_version("2.3.0.dev0"):
+                        raise ValueError(
+                            "rotary_interleaved does not work with apply_rope_fusion for "
+                            "TE < 2.3.0.dev0. Please install TE >= 2.3.0.dev0"
+                        )
 
-            from megatron.core.models.common.embeddings.rope_utils import (
-                fused_apply_rotary_pos_emb,
-                fused_apply_rotary_pos_emb_thd,
-            )
-
-            if fused_apply_rotary_pos_emb is None and fused_apply_rotary_pos_emb_thd is None:
-                raise ValueError(
-                    "apply_rope_fusion is not available. Please install TE >= 1.4 or Apex."
+                from megatron.core.models.common.embeddings.rope_utils import (
+                    fused_apply_rotary_pos_emb,
+                    fused_apply_rotary_pos_emb_thd,
                 )
 
-            if self.multi_latent_attention:
-                raise ValueError("multi_latent_attention does not support apply_rope_fusion.")
+                if fused_apply_rotary_pos_emb is None and fused_apply_rotary_pos_emb_thd is None:
+                    raise ValueError(
+                        "apply_rope_fusion is not available. Please install TE >= 1.4 or Apex."
+                    )
+
+        
 
         if self.multi_latent_attention and self.rotary_interleaved:
             raise ValueError("rotary_interleaved does not work with multi_latent_attention.")
@@ -1022,6 +1031,16 @@ class TransformerConfig(ModelParallelConfig):
                 raise ValueError(
                     "Only transformer-engine>=1.11.0 supports FP8 grouped gemm, "
                     f"but your version is {get_te_version()}."
+                )
+
+        if self.moe_router_padding_for_fp8:
+            if self.fp8 is None:
+                raise ValueError("fp8 must be specified when moe_router_padding_for_fp8 is True.")
+
+            if self.moe_token_dispatcher_type in ["allgather", "alltoall_seq"]:
+                raise ValueError(
+                    "allgather and alltoall_seq dispatcher does not support "
+                    "moe_router_padding_for_fp8."
                 )
 
         if (
@@ -1174,3 +1193,8 @@ class MLATransformerConfig(TransformerConfig):
 
     mscale_all_dim: float = 0.707
     """Mscale all dimensions for YaRN RoPE in Multi-Latent Attention, used by yarn."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        if self.multi_latent_attention and self.apply_rope_fusion and self.rope_type != "yarn":
+            raise ValueError("apply_rope_fusion for MLA only works with YARN RoPE.")

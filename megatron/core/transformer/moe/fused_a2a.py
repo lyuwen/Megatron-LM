@@ -10,11 +10,14 @@ try:
     HAVE_DEEP_EP = True
 except ImportError:
     HAVE_DEEP_EP = False
-    
+
 FP8_COMM_DEEPEP = os.getenv('FP8_COMM_DEEPEP', '0') == '1' or os.getenv('FP8_COMM_DEEPEP', 'false') == 'true'
 if FP8_COMM_DEEPEP:
     try:
-        from OpenMixOpl.triton import act_quant, act_dequant
+        from OpenMixOpl.triton import (
+            act_quant_B_ptr as act_quant,
+            act_dequant_B_ptr as act_dequant
+        )
     except ImportError:
         FP8_COMM_DEEPEP = False
 
@@ -27,14 +30,13 @@ def get_hidden_bytes(x: torch.Tensor) -> int:
     """Calculate the number of hidden bytes for a tensor.
 
     Args:
-        x (torch.Tensor): Input tensor
+        x (torch.Tensor | tuple[torch.Tensor, torch.Tensor]): Input tensor or tuple of fp8 tensors. If a tuple is provided, uses the first tensor in the tuple.
 
     Returns:
         int: Number of hidden bytes
     """
-    # return x.size(1) * max(x.element_size(), 2)
-    return x.size(1) * x.element_size()
-
+    t = x[0] if isinstance(x, tuple) else x
+    return t.size(1) * max(t.element_size(), 2)
 
 def get_buffer(group: torch.distributed.ProcessGroup, hidden_bytes: int):
     """Get or create a buffer for all-to-all communication.
@@ -80,10 +82,10 @@ class FusedDispatch(torch.autograd.Function):
         """Forward pass of fused dispatch."""
         # Do Fp8 quantize
         if FP8_COMM_DEEPEP:
-            x = act_quant(x, 128)
+            x = act_quant(x)
 
         # Calculate layout before actual dispatch
-        buffer = get_buffer(group, get_hidden_bytes(x) if not FP8_COMM_DEEPEP else get_hidden_bytes(x[0]))
+        buffer = get_buffer(group, get_hidden_bytes(x))
         (
             num_tokens_per_rank,
             num_tokens_per_rdma_rank,
@@ -121,15 +123,14 @@ class FusedDispatch(torch.autograd.Function):
             allocate_on_comm_stream=False,
         )
 
-        # Do Fp8 dequantize
-        if FP8_COMM_DEEPEP:
-            recv_x_fp8_tensor, recv_x_fp8_scale = recv_x
-            recv_x = act_dequant(recv_x_fp8_tensor, recv_x_fp8_scale, 128)
-
         ctx.group = group
         ctx.handle = handle
         ctx.event = event
         tokens_per_expert = torch.tensor(num_recv_tokens_per_expert_list)
+
+        # Do Fp8 dequantize
+        if FP8_COMM_DEEPEP:
+            recv_x = act_dequant(*recv_x)
 
         return (recv_x, recv_token_indices, recv_token_probs, tokens_per_expert, handle)
 
@@ -151,7 +152,6 @@ class FusedDispatch(torch.autograd.Function):
         )
         return grad_x, None, grad_token_probs, None, None, None
 
-
 class FusedCombine(torch.autograd.Function):
     """Fused combine operation for MoE output combining computation and communication."""
 
@@ -172,9 +172,9 @@ class FusedCombine(torch.autograd.Function):
         """Backward pass of fused combine."""
         # Do Fp8 quantize
         if FP8_COMM_DEEPEP:
-            grad_output = act_quant(grad_output, 128)
+            grad_output = act_quant(grad_output)
 
-        buffer = get_buffer(ctx.group, get_hidden_bytes(grad_output) if not FP8_COMM_DEEPEP else get_hidden_bytes(grad_output[0]))
+        buffer = get_buffer(ctx.group, get_hidden_bytes(grad_output))
 
         grad_x, _, _, _, _, event = buffer.dispatch(
             grad_output.contiguous() if isinstance(grad_output, torch.Tensor) else grad_output,
@@ -186,8 +186,7 @@ class FusedCombine(torch.autograd.Function):
 
         # Do Fp8 dequantize
         if FP8_COMM_DEEPEP:
-            grad_x_fp8_tensor, grad_x_fp8_scale = grad_x
-            grad_x = act_dequant(grad_x_fp8_tensor, grad_x_fp8_scale, 128)
+            grad_x = act_dequant(*grad_x)
 
         return grad_x, None, None, None
 
@@ -208,9 +207,7 @@ if HAVE_DEEP_EP:
         Returns:
             Result of FusedDispatch
         """
-        return FusedDispatch.apply(
-            x.contiguous(), token_indices, token_probs, num_experts, group, previous_event
-        )
+        return FusedDispatch.apply(x.contiguous(), token_indices, token_probs, num_experts, group, previous_event)
 
     def fused_combine(x, group, handle, previous_event=None):
         """Perform fused combine operation if deep_ep is available.

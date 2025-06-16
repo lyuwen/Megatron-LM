@@ -21,7 +21,8 @@ from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.spec_utils import ModuleSpec, build_module
 from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core.utils import get_tensor_model_parallel_group_if_none
-
+from contextlib import nullcontext
+from megatron.core.custom_rs import custom_recompute
 
 # pylint: disable=missing-class-docstring
 @dataclass
@@ -109,6 +110,7 @@ class MLP(MegatronModule):
             tp_group=tp_group,
         )
 
+    @custom_recompute('mlp')
     def forward(self, hidden_states, per_token_scale=None):
         """Perform the forward pass through the MLP block."""
         # [s, b, 4 * h/p]
@@ -162,7 +164,10 @@ class MLP(MegatronModule):
                 intermediate_parallel = intermediate_parallel.to(original_dtype)
 
         # [s, b, h]
-        output, output_bias = self.linear_fc2(intermediate_parallel)
+        from megatron.core.fp8_utils import get_fp8_context
+        linear_fp8_context = get_fp8_context(self.config, layer_type='mlp')
+        with linear_fp8_context:
+            output, output_bias = self.linear_fc2(intermediate_parallel)
 
         if per_token_scale is not None:
             assert output_bias is None, "Bias is not supported with per_token_scale"

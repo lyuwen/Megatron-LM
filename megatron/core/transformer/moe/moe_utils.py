@@ -547,6 +547,40 @@ def group_limited_topk(
 
     return probs, top_indices
 
+def pad_routing_map(routing_map: torch.Tensor, pad_multiple: int) -> torch.Tensor:
+    """Pad the routing map to ensure each expert has a multiple of pad_multiple tokens.
+
+    This function ensures that each expert has a number of tokens that is a multiple of
+    pad_multiple by converting some 0s to 1s in the routing map. The padding is done by
+    selecting the first N zero elements in each row, where N is the number needed to reach
+    the next multiple of pad_multiple.
+
+    Args:
+        routing_map (torch.Tensor): A boolean or integer tensor of shape [num_tokens,
+            num_experts] indicating which tokens are routed to which experts.
+        pad_multiple (int): The multiple to pad each expert's token count to.
+
+    Returns:
+        torch.Tensor: The padded routing map of shape [num_tokens, num_experts].
+    """
+    # Transpose to [num_experts, num_tokens] for easier row-wise operations
+    routing_map = routing_map.transpose(0, 1)  # [num_experts, num_tokens]
+
+    # Calculate how many tokens need to be padded for each expert
+    num_ones = routing_map.sum(dim=1)
+    num_to_pad = (-num_ones) % pad_multiple
+
+    # Find the positions of zeros in each row and their ranks
+    is_zero = routing_map == 0
+    zero_ranks = torch.cumsum(is_zero.int(), dim=1)
+
+    # Create mask for elements that need to be padded (converted from 0 to 1)
+    mask = zero_ranks <= num_to_pad.unsqueeze(1)
+    routing_map[mask] = 1
+
+    routing_map = routing_map.transpose(0, 1)
+    return routing_map
+    
 
 def topk_softmax_with_capacity(
     logits: torch.Tensor,
@@ -615,18 +649,14 @@ def topk_softmax_with_capacity(
             scores, top_indices = compute_topk(logits, topk, num_groups, group_topk)
             probs = torch.softmax(scores, dim=-1, dtype=torch.float32).type_as(logits)
     elif score_function == "sigmoid":
-        logits_fp32 = logits.float()  # use fp32 for stability
-        if use_pre_softmax:
-            logits_fp32 = torch.sigmoid(logits_fp32)
+        scores = torch.sigmoid(logits.float()).type_as(logits)
         if expert_bias is not None:
-            logits_fp32 = logits_fp32 + expert_bias
-        logits_fp32, top_indices = compute_topk(logits_fp32, topk, num_groups, group_topk)
-        if use_pre_softmax:
-            scores = logits_fp32.type_as(logits)
+            scores_for_routing = scores + expert_bias
+            _, top_indices = compute_topk(scores_for_routing, topk, num_groups, group_topk)
+            scores = torch.gather(scores, dim=1, index=top_indices).type_as(logits)
         else:
-            scores = torch.sigmoid(logits_fp32).type_as(logits)
+            scores, top_indices = compute_topk(scores, topk, num_groups, group_topk)
         probs = scores / (scores.sum(dim=-1, keepdim=True) + 1e-20) if topk > 1 else scores
-
     else:
         raise ValueError(f"Invalid score_function: {score_function}")
 

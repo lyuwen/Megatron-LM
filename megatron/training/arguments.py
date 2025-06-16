@@ -1083,7 +1083,7 @@ def _add_transformer_engine_args(parser):
                        dest='fp8')
     # per tensor current scaling recipe selection
     group.add_argument('--fp8-recipe', default='delayed',
-                       choices=['tensorwise', 'delayed', 'mxfp8', 'blockwise'],
+                       choices=['tensorwise', 'delayed', 'mxfp8', 'blockwise', 'deepgemm'],
                        help='Which fp8 recipe to use for FP8 tensors in the forward and backward pass',
                        dest='fp8_recipe')
     # delayed scaling only configs
@@ -1120,8 +1120,6 @@ def _add_transformer_engine_args(parser):
                             'Required for CUDA graphs support.')
     group.add_argument('--inference-rng-tracker', action='store_true', default=False,
                        help='Use a random number generator configured for inference.')
-    group.add_argument('--fp8-comm', action='store_true', default=False,
-                       help='Use fp8 stream in P2P comm and A2A comm.')
     return parser
 
 def _add_inference_args(parser):
@@ -2251,6 +2249,16 @@ def _add_distributed_args(parser):
                        "and must be consistent across all ranks.")
     group.add_argument('--replication-factor', default=2, type=int,
                        help="Number of machines storing the replica of a given rank's data.")
+    group.add_argument('--plan-exec-split', action='store_true', default=False,
+                       help="If set, plan and executer are splited in pipeline parallel schedule.")
+    group.add_argument('--schedule-type',type=str, default='1f1b', choices=['1f1b', 's16mb32_ori', 's16mb32_aa', 's16mb32_ab', 's6mb12_ori'],
+                       help="Schedule plan when --plan-exec-split=True")
+    group.add_argument('--schedule-visualble-path',type=str, default=None,
+                       help="Save path of schedule visualble")
+    group.add_argument('--schedule-visual-iter-start',type=int, default=30,
+                       help="Schedule visual iteration start")
+    group.add_argument('--schedule-visual-iter-end',type=int, default=35,
+                       help="Schedule visual iteration end")
     return parser
 
 
@@ -2625,6 +2633,12 @@ def _add_moe_args(parser):
                        'in moonshotai/Moonlight-16B-A3B (https://arxiv.org/abs/2502.16982). '
                        'It adds an extra correction based on the average load offset, '
                        'in the Moonlight-16B-A3B model the value is equal to the bias update rate.')
+    group.add_argument('--moe-router-padding-for-fp8', action='store_true',
+                       help='Pad the routing_map to make sure the number of tokens each expert received '
+                       'is a multiple of 16/32 for FP8 precision. It is suggested to enable this for '
+                       'dropless training with FP8 precision when num_local_experts > 1. This is a more '
+                       'efficient way to pad for FP8 which eliminates the explicit padding in the '
+                       'GroupedMLP layer.')
     group.add_argument('--moe-aux-loss-coeff', type=float, default=0.0,
                        help='Scaling coefficient for the aux loss: a starting value of 1e-2 is recommended.')
     group.add_argument('--moe-device-balance-loss-coeff', type=float, default=0.0,
@@ -2651,15 +2665,13 @@ def _add_moe_args(parser):
                        help='Pads the input for each expert to match the expert capacity length, effective only after the --moe-expert-capacity-factor is set.')
     group.add_argument('--moe-token-drop-policy', type=str, default='probs', choices=['probs', 'position'],
                        help='The policy to drop tokens. Can be either "probs" or "position". If "probs", the tokens with the lowest probabilities will be dropped. If "position", tokens at the end of each batch will be dropped.')
-    group.add_argument('--moe-perm-checkpoint', type=str, default='none', choices=['full', 'half', 'none'],
-                       help='Use checkpointing for permutation of MoE layer. Options are "full", "half", "none".')
-    group.add_argument('--recompute-beside-moe', action='store_true',
-                       help='Recompute the operations beside the MoE layer.')
     #
     group.add_argument('--moe-warmup-router', type=int, default=-1,
                        help='Number of steps to apply router warmup randomness.')
     group.add_argument('--moe-apply-norm-head', action="store_true",
                        help='Apply lm_head L2 normalization to improve Moe stability.')
+    group.add_argument('--moe-topk-router-fusion', action="store_true",
+                    help='use trion fusion op in router')
 
     return parser
 

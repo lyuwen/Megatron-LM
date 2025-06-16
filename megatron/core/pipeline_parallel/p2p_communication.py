@@ -1,6 +1,7 @@
 # Copyright (c) 2022, NVIDIA CORPORATION. All rights reserved.
 
 from typing import List, Optional, Tuple, Union
+import os
 
 import torch
 
@@ -13,11 +14,16 @@ from megatron.core.parallel_state import (
     get_pipeline_model_parallel_rank,
     get_pipeline_model_parallel_world_size,
 )
-from megatron.core.extensions.transformer_engine import Fp8Quantize, Fp8Dequantize
 
 # Types
 Shape = Union[List[int], torch.Size]
 
+FP8_COMM_P2P = os.getenv('FP8_COMM_P2P', 'false') == 'true'
+if FP8_COMM_P2P:
+    try:
+        from megatron.core.extensions.transformer_engine import Fp8Quantize, Fp8Dequantize
+    except ImportError:
+        FP8_COMM_P2P = False
 
 def _communicate_shapes(tensor_send_next, tensor_send_prev, recv_prev, recv_next, config):
     """Communicate tensor shapes between stages. Used to communicate
@@ -534,7 +540,7 @@ def _communicate(
     """
     
     # Interim solution: Directly invoke the FP8 approach
-    if config.fp8_comm:
+    if FP8_COMM_P2P:
         return _communicate_fp8(
             tensor_send_next=tensor_send_next,
             tensor_send_prev=tensor_send_prev, 

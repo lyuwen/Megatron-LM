@@ -3,6 +3,7 @@
 import contextlib
 from typing import Callable, Iterator, List, Optional, Union
 
+import time
 import os
 import torch
 from torch.autograd.variable import Variable
@@ -20,7 +21,6 @@ from megatron.core.utils import (
     get_model_type,
     get_model_xattn,
 )
-
 # Types
 Shape = Union[List[int], torch.Size]
 
@@ -114,7 +114,12 @@ def get_forward_backward_func():
         if parallel_state.get_virtual_pipeline_model_parallel_world_size() is not None:
             forward_backward_func = forward_backward_pipelining_with_interleaving
         else:
-            forward_backward_func = forward_backward_pipelining_without_interleaving
+            from megatron.training import get_args
+            args = get_args()
+            if args.plan_exec_split:
+                forward_backward_func = forward_backward_pipelining_without_interleaving_with_plan_exec_split
+            else:
+                forward_backward_func = forward_backward_pipelining_without_interleaving
     else:
         forward_backward_func = forward_backward_no_pipelining
     return forward_backward_func
@@ -2021,3 +2026,36 @@ def forward_backward_pipelining_without_interleaving(
         create_cudagraphs()
 
     return forward_data_store
+
+
+def forward_backward_pipelining_without_interleaving_with_plan_exec_split(
+    *,
+    forward_step_func,
+    data_iterator: Union[Iterator, List[Iterator]],
+    model: Union[torch.nn.Module, List[torch.nn.Module]],
+    num_microbatches: int,
+    seq_length: int,
+    micro_batch_size: int,
+    decoder_seq_length: Optional[int] = None,
+    forward_only: bool = False,
+    collect_non_loss_data: bool = False,
+    first_val_step: Optional[bool] = None,
+    adjust_tensor_shapes_fn: Optional[Callable] = None,
+):
+    """Run non-interleaved 1F1B schedule with plan and executer split, with communication between pipeline
+    stages. Returns dictionary with losses if the last stage, empty dict otherwise."""
+
+    from megatron.core.pipeline_parallel.or_schedule import  or_pipelining
+    
+    or_pipelining_result = or_pipelining(
+            forward_step_func=forward_step_func,
+            data_iterator=data_iterator,
+            model=model,
+            num_microbatches=num_microbatches,
+            seq_length=seq_length,
+            micro_batch_size=micro_batch_size,
+            decoder_seq_length=decoder_seq_length,
+            forward_only=forward_only,
+            collect_non_loss_data=collect_non_loss_data,
+            first_val_step=first_val_step)
+    return or_pipelining_result

@@ -8,9 +8,9 @@ DEFAULT_MODEL_SIZE=200B
 MODEL_SIZE=${MODEL_SIZE:-${DEFAULT_MODEL_SIZE}}
 BATCH_SIZE=${MICRO_BATCH_SIZE:-1}
 GLOBAL_BATCH_SIZE=${GLOBAL_BATCH_SIZE:-9600}
-DEFAULT_LR=4E-5
+DEFAULT_LR=2.4E-4
 LR=${LR:-${DEFAULT_LR}}
-DEFAULT_MIN_LR=4E-6
+DEFAULT_MIN_LR=2.4E-5
 MIN_LR=${MIN_LR:-${DEFAULT_MIN_LR}}
 INIT_METHOD_STD=${INIT_METHOD_STD:-0.006} # 0.006 
 
@@ -53,13 +53,22 @@ CKPT_FORMAT=${CKPT_FORMAT:-torch}
 if [ ${CKPT_FORMAT} = torch_dist_async ] ; then
     ckpt_options=" --ckpt-format torch_dist --async-save "
 elif [ ${CKPT_FORMAT} = torch_dist_no_optim ] ; then
-    ckpt_options=" --ckpt-format torch_dist --no-save-optim "
+    ckpt_options=" --ckpt-format torch_dist --no-save-optim --no-load-optim"
 elif [ ${CKPT_FORMAT} = torch_dist ] ; then
     ckpt_options=" --ckpt-format torch_dist "
 elif [ ${CKPT_FORMAT} = torch ] ; then
     ckpt_options=" --ckpt-format torch "
+elif [ ${CKPT_FORMAT} = torch_no_optim ] ; then
+    ckpt_options=" --ckpt-format torch --no-save-optim --no-load-optim"
 fi
-
+ckpt_options="${ckpt_options} \
+            --dist-ckpt-strictness log_all \
+"
+            #--auto-detect-ckpt-format \
+            #--no-ckpt-fully-parallel-save \
+            #--ckpt-assume-constant-structure \
+            #--use-checkpoint-opt_param-scheduler"
+            #--exit-on-missing-checkpoint \
 
 # training configuraitons
 TRAIN_TOKENS=${TRAIN_TOKENS:-11692571197196}
@@ -243,11 +252,11 @@ moe_options=" \
 elif [ $MODEL_SIZE = 600B ]; then
 
 HIDDEN_SIZE=7168
-NUM_ATTENTION_HEADS=128
+NUM_ATTN_HEADS=128
 NUM_LAYERS=${NUM_LAYERS:-61}
 INTERMEDIATE_SIZE=18432
 MOE_INTERMEDIATE_SIZE=2048
-MAX_POSITION_EMBEDDINGS=${MAX_POSITION_EMBEDDINGS:-${SEQ_LEN}}
+MAX_POSITION_EMBEDDINGS=163840
 EXTRA_VOCAB_SIZE=467
 Q_LORA_RANK=1536
 KV_LORA_RANK=512
@@ -269,7 +278,47 @@ moe_options=" \
     --num-experts ${NUM_EXPERTS} \
     --moe-layer-freq ${MOE_LAYER_FREQ} \
     --moe-first-k-dense-replace ${MOE_FIRST_K_DENSE_REPLACE} \
+    --moe-aux-loss-coeff ${MOE_AUX_LOSS_COEFF:-0.001} \
+    --moe-shared-expert-intermediate-size $((${MOE_INTERMEDIATE_SIZE} * ${NUM_SHARED_EXPERTS} )) \
+    --expert-model-parallel-size ${EP} \
+    --q-lora-rank ${Q_LORA_RANK} \
+    --kv-lora-rank ${KV_LORA_RANK} \
+    --qk-head-dim ${QK_NOPE_HEAD_DIM} \
+    --qk-pos-emb-head-dim ${QK_ROPE_HEAD_DIM} \
+    --v-head-dim ${V_HEAD_DIM} \
+    --moe-grouped-gemm"
+
+elif [ $MODEL_SIZE = 1000B ]; then
+
+HIDDEN_SIZE=${HIDDEN_SIZE:-8192}
+NUM_ATTN_HEADS=128
+NUM_LAYERS=${NUM_LAYERS:-59} 
+INTERMEDIATE_SIZE=${INTERMEDIATE_SIZE:-18432}
+MOE_INTERMEDIATE_SIZE=${MOE_INTERMEDIATE_SIZE:-2048}
+MAX_POSITION_EMBEDDINGS=${MAX_POSITION_EMBEDDINGS:-163840}
+EXTRA_VOCAB_SIZE=2400
+Q_LORA_RANK=1536
+KV_LORA_RANK=512
+QK_NOPE_HEAD_DIM=${QK_NOPE_HEAD_DIM:-128} 
+QK_ROPE_HEAD_DIM=64
+V_HEAD_DIM=128
+ROPE_THETA=10000
+SCALE_FACTOR=${SCALE_FACTOR:-40}
+NUM_EXPERTS=${NUM_EXPERTS:-384}
+ROUTER_TOPK=${ROUTER_TOPK:-8}
+NUM_SHARED_EXPERTS=${NUM_SHARED_EXPERTS:-1}
+MOE_LAYER_FREQ=1
+MOE_FIRST_K_DENSE_REPLACE=${MOE_FIRST_K_DENSE_REPLACE:-3}
+RMS_NORM_EPS=1e-6
+
+moe_options=" \
+    --moe-ffn-hidden-size ${MOE_INTERMEDIATE_SIZE} \
+    --moe-router-topk ${ROUTER_TOPK} \
+    --num-experts ${NUM_EXPERTS} \
+    --moe-layer-freq ${MOE_LAYER_FREQ} \
+    --moe-first-k-dense-replace ${MOE_FIRST_K_DENSE_REPLACE} \
     --moe-aux-loss-coeff 0.001 \
+    --moe-z-loss-coeff 0.0001 \
     --moe-shared-expert-intermediate-size $((${MOE_INTERMEDIATE_SIZE} * ${NUM_SHARED_EXPERTS} )) \
     --expert-model-parallel-size ${EP} \
     --q-lora-rank ${Q_LORA_RANK} \
@@ -322,7 +371,7 @@ if [ $DISPATCHER_TYPE = alltoall_seq ]; then
 elif [ $DISPATCHER_TYPE = alltoall ]; then
     moe_options=" ${moe_options}  --moe-token-dispatcher-type alltoall --moe-shared-expert-overlap "
 elif [ $DISPATCHER_TYPE = flex_deepep ]; then
-    moe_options=" ${moe_options} --moe-token-dispatcher-type flex --moe-enable-deepep "
+    moe_options=" ${moe_options} --moe-token-dispatcher-type flex --moe-enable-deepep --moe-shared-expert-overlap "
 else
 echo "Unsupported dispatcher type: ${DISPATCHER_TYPE}"
 exit 1
@@ -330,7 +379,7 @@ fi
 
 ROUTER_SCORE_FUNC=${ROUTER_SCORE_FUNC:-pre_softmax}
 if [ $ROUTER_SCORE_FUNC = sigmod ]; then
-    moe_options=" ${moe_options}  --moe-router-score-function sigmoid  "
+    moe_options=" ${moe_options}  --moe-router-score-function sigmoid "
 elif [ $ROUTER_SCORE_FUNC = softmax ]; then
     moe_options=" ${moe_options}  --moe-router-score-function softmax "
 elif [ $ROUTER_SCORE_FUNC = pre_softmax ]; then
@@ -352,14 +401,15 @@ fi
 TP_COMM_OVERLAP=$(( ($TP > 1) ? 1 : 0 ))
 comm_overlap_option="\
     --overlap-grad-reduce \
-    --overlap-param-gather"
- 
+    --overlap-param-gather \
+"
+#    --no-align-param-gather \
+#    --no-scatter-gather-tensors-in-pipeline \
 
 if [ $TP_COMM_OVERLAP -eq 1 ]; then
-    comm_overlap_option="\
+    comm_overlap_option=" ${comm_overlap_option} \
         --tp-comm-overlap \
-        --overlap-grad-reduce \
-        --overlap-param-gather"
+    "
 fi
 
 if [ $AC = full ]; then
@@ -377,22 +427,22 @@ elif [ $AC = sel ]; then
         --recompute-granularity selective \
         --recompute-modules ${RECOMPUTE_MODULES:-"core_attn moe_act layernorm mla_up_proj mlp moe"} \
     "
-    if [[ ${MOE_PERMUTE_CHECKPOINT:-none} != none ]]; then
-        activation_checkpoint_options=" ${activation_checkpoint_options} \
-            --moe-perm-checkpoint ${MOE_PERMUTE_CHECKPOINT} 
-        "
-    fi
-elif [ $AC = permckpt ]; then
-    activation_checkpoint_options=" \
-        --recompute-granularity selective \
-        --recompute-beside-moe \
-        --recompute-modules moe \
-        --moe-perm-checkpoint ${MOE_PERMUTE_CHECKPOINT:-half} \
-    "
-elif [ $AC = moeckpt ]; then
-    activation_checkpoint_options=" \
-        --recompute-beside-moe \
-    "
+elif [ $AC = custom ]; then
+    activation_checkpoint_options=""
+    export ENABLE_CUSTOM_RECOMPUTE=true 
+    export RECOMPUTE_MOE=${RECOMPUTE_MOE:-true}
+    export RECOMPUTE_MLP=${RECOMPUTE_MLP:-true}
+    export RECOMPUTE_ATTN=${RECOMPUTE_ATTN:-true}
+    export RECOMPUTE_ROUTER=${RECOMPUTE_ROUTER:-true}
+    export RECOMPUTE_PERMUTATION=${RECOMPUTE_PERMUTATION:-true}
+    export RECOMPUTE_EXPERTS=${RECOMPUTE_EXPERTS:-true}
+    export RECOMPUTE_UNPERMUTATION=${RECOMPUTE_UNPERMUTATION:-true}
+    export RECOMPUTE_SHARED_EXPERTS=${RECOMPUTE_SHARED_EXPERTS:-true}
+    export RECOMPUTE_EXPERT_FC1=${RECOMPUTE_EXPERT_FC1:-true}
+    export RECOMPUTE_EXPERT_BIAS_ACT=${RECOMPUTE_EXPERT_BIAS_ACT:-true}
+    export RECOMPUTE_EXPERT_FC2=${RECOMPUTE_EXPERT_FC2:-true}
+    export RECOMPUTE_ATTN_CORE=${RECOMPUTE_ATTN_CORE:-true}
+    export RECOMPUTE_ATTN_UPPROJ=${RECOMPUTE_ATTN_UPPROJ:-true}
 elif [ $AC = none ]; then
     activation_checkpoint_options=" \
     "
@@ -419,17 +469,20 @@ elif [ $PR = bf16 ]; then
     pr_options=" \
         --bf16"
 elif [ $PR = fp8 ]; then
-    pr_options=" \
-        --bf16"
-    export USE_BLOCK_FP8=true
-    export SAVE_MEMORY=true 
-#    pr_options=" \
-#        --bf16 \
-#        --fp8-format hybrid \
-#        --fp8-recipe delayed \
-#        --fp8-param-gather \
-#        --fp8-amax-compute-algo max \
-#        --fp8-amax-history-len 1024"
+   pr_options=" \
+        --bf16 \
+        --fp8-format hybrid  \
+        --fp8-recipe deepgemm \
+        --no-fp8-wgrad \
+        --moe-router-padding-for-fp8 \
+    "
+        #--fp8-param-gather \
+    export FP8_OUTER=${FP8_OUTER:-true}
+    export FP8_MLP=${FP8_MLP:-true}
+    export FP8_ATTENTION=${FP8_ATTENTION:-true}
+    export FP8_MOE=${FP8_MOE:-true}
+    export FP8_COMM_P2P=${FP8_COMM_P2P:-true}
+    export FP8_COMM_DEEPEP=${FP8_COMM_DEEPEP:-true}
 fi
 
 if [ $DO = true ]; then
@@ -579,7 +632,7 @@ megatron_options="  \
         --tensor-model-parallel-size ${TP} \
         --pipeline-model-parallel-size ${PP} \
         --context-parallel-size ${CP} \
-        --tokenizer-type 021Tokenizer \
+        --tokenizer-type ${TOKENIZER_TYPE:-021Tokenizer} \
         --tokenizer-model $TOKENIZER_PATH \
         --vocab-file $TOKENIZER_PATH/tokenizer.model \
         --swiglu \
@@ -587,7 +640,6 @@ megatron_options="  \
         --norm-epsilon ${RMS_NORM_EPS} \
         --use-rotary-position-embeddings \
         --no-bias-swiglu-fusion \
-        --no-rope-fusion \
         --position-embedding-type rope \
         --untie-embeddings-and-output-weights \
         --disable-bias-linear \
@@ -598,7 +650,9 @@ megatron_options="  \
         --qk-layernorm \
         --moe-router-dtype fp32 \
         --moe-permute-fusion \
+        --moe-topk-router-fusion \
         --multi-latent-attention"
+        #--no-rope-fusion \
         # --patch-tokenizer-type DeepSeekV2Tokenizer \
         # --rotary-seq-len-interpolation-factor 1 增加
 
@@ -610,15 +664,15 @@ megatron_options="  \
 #动态bs
 ENABLE_RAMPUP_BS=${ENABLE_RAMPUP_BS:-false}
 if  [[ $ENABLE_RAMPUP_BS = false ]]; then
-    LR_WARMUP_ITERS=2000
+    LR_WARMUP_ITERS=${LR_WARMUP_ITERS:-2000}
     LR_DECAY_ITERS=$(( ${TRAIN_TOKENS} /  ${GLOBAL_BATCH_SIZE} / ${SEQ_LEN} ))
     megatron_options=" ${megatron_options} \
         --lr-decay-iters ${LR_DECAY_ITERS} \
         --lr-warmup-iters ${LR_WARMUP_ITERS} \
         --train-iters ${TRAIN_ITERS} "
 else
-    warm_step=2000
-    GLOBAL_BATCH_SIZE_avg=5840
+    warm_step=${LR_WARMUP_ITERS:-2000}
+    GLOBAL_BATCH_SIZE_avg=1920
     TRAIN_SAMPLES=$(( ${TRAIN_TOKENS} / ${SEQ_LEN} ))
     LR_WARMUP_SAMPLES=$((${warm_step} * ${GLOBAL_BATCH_SIZE_avg} ))
     LR_DECAY_SAMPLES=$(( ${TRAIN_TOKENS} /  ${SEQ_LEN} ))
@@ -626,7 +680,7 @@ else
         --lr-decay-samples ${LR_DECAY_SAMPLES} \
         --lr-warmup-samples ${LR_WARMUP_SAMPLES} \
         --train-samples ${TRAIN_SAMPLES} \
-        --rampup-batch-size 1920 1920 54931640 "
+        --rampup-batch-size 1920 960 54931640 "
 fi
 
 # Turn on PyTorchProfiler in DSW
@@ -669,12 +723,10 @@ if [[ ${USE_FSDP:-false} = true ]] ; then
 fi
 
 # Precision Aware Optimizer
-OFFLOAD_OPTIMIZER=${OFFLOAD_OPTIMIZER:-false}
 PAO_LEVEL=${PAO:-none}
 if [[ $PAO_LEVEL = none ]]; then
     new_options=" ${new_options} \
     "
-    OFFLOAD_OPTIMIZER=false
 elif [[ $PAO_LEVEL = moments ]]; then
     new_options=" ${new_options} \
         --use-precision-aware-optimizer \
@@ -700,10 +752,16 @@ else
     echo "PAO_LEVEL=${PAO_LEVEL} is not a valid option. Valid options include: none, moments, grads, weights"
     exit 1
 fi
+
+OFFLOAD_OPTIMIZER=${OFFLOAD_OPTIMIZER:-false}
 if [[ $OFFLOAD_OPTIMIZER = true ]]; then
     new_options=" ${new_options} \
+        --use-precision-aware-optimizer \
         --optimizer-cpu-offload \
+        --overlap-cpu-optimizer-d2h-h2d \
+        --use-torch-optimizer-for-cpu-offload \
     "
+
 fi
 
 # 开启12LHSD的atten计算方法,打印MFU
@@ -725,9 +783,36 @@ if [[ ${CHECK_NAN:-true} = false ]]; then
     new_options=" ${new_options} --no-check-for-nan-in-loss-and-grad"
 fi
 
-if [[ ${FP8_COMM:-false} = true ]]; then
-    new_options=" ${new_options} --fp8-comm "
-    export FP8_COMM_DEEPEP=true
+# 开启流水线并行调度plan和executer分离
+if [[ ${PLAN_EXEC_SPLIT:-false} = true ]]; then
+    new_options=" ${new_options} --plan-exec-split"
+    SCHEDULE_TYPE=${SCHEDULE_TYPE:-1f1b}
+    new_options=" ${new_options} --schedule-type ${SCHEDULE_TYPE} "
+fi
+
+# 开启调度可视化--保存可视化数据
+if [[ ${SCHEDULE_VISUAL:-false} = true ]]; then
+    rm -rf ${TENSORBOARD_DIR}/Timecond
+    new_options=" ${new_options} --schedule-visualble-path ${TENSORBOARD_DIR}/Timecond --schedule-visual-iter-start ${SCHEDULE_VISUAL_ITER_START:-30}  --schedule-visual-iter-end ${SCHEDULE_VISUAL_ITER_END:-35}"
+    if [[ ${NODE_RANK} = 0 ]]; then
+        echo "Schedule visualization start !!!"
+        nohup bash schedule_visual.sh ${MEGATRON_PATH} ${TENSORBOARD_DIR} ${SCHEDULE_VISUAL_ITER_END:-35} &
+    fi
+fi
+
+if [[ ${ENABLE_TIMING_LOG:-false} = true ]]; then
+    megatron_options=" ${megatron_options} \
+        --timing-log-level 2 \
+        --timing-log-option minmax \
+    "
+fi
+
+if [[ ${MANUAL_GC:-0} -gt 0 ]]; then
+    megatron_options=" ${megatron_options} --manual-gc --manual-gc-interval ${MANUAL_GC} "
+fi
+
+if [[ ${MTP_NUM_LAYERS:-0} -gt 0 ]]; then
+    megatron_options=" ${megatron_options} --mtp-num-layers ${MTP_NUM_LAYERS} "
 fi
 
 run_cmd="torchrun $DISTRIBUTED_ARGS ${MEGATRON_PATH}/pretrain_gpt.py

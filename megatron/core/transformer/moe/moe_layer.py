@@ -7,7 +7,7 @@ from typing import Optional, Union
 
 import torch
 
-from megatron.core import tensor_parallel
+from megatron.core import tensor_parallel, parallel_state
 from megatron.core.process_groups_config import ModelCommProcessGroups
 from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.moe.legacy_a2a_token_dispatcher import (  # type: ignore
@@ -23,8 +23,12 @@ from megatron.core.transformer.moe.token_dispatcher import (
 )
 from megatron.core.transformer.spec_utils import ModuleSpec, build_module
 from megatron.core.transformer.transformer_config import TransformerConfig
+from megatron.core.fp8_utils import get_fp8_context
+from megatron.core.enums import Fp8Recipe
+from contextlib import nullcontext
+from megatron.core.extensions.transformer_engine import te_checkpoint
+from megatron.core.custom_rs import custom_recompute, conditional_checkpoint
 
-FP8_CTX_MOE = os.getenv('FP8_CTX_MOE', '0') == '1'
 
 @dataclass
 class MoESubmodules:
@@ -110,7 +114,6 @@ class MoELayer(BaseMoELayer):
         self.moe_layer_recompute = (
             config.recompute_granularity == 'selective' and "moe" in config.recompute_modules
         )
-        self.moe_perm_checkpoint = config.moe_perm_checkpoint
 
         # Initialize router
         self.router = TopKRouter(config=self.config, model_comm_pgs=model_comm_pgs)
@@ -175,47 +178,28 @@ class MoELayer(BaseMoELayer):
         # process MoE
         def custom_forward(hidden_states):
             probs, routing_map = self.router(hidden_states)
+
             (dispatched_input, tokens_per_expert, permuted_probs) = (
                 self.token_dispatcher.token_permutation(hidden_states, probs, routing_map)
             )
-            expert_output, mlp_bias = self.experts(
-                dispatched_input, tokens_per_expert, permuted_probs
-            )
+            experts_fp8_context = get_fp8_context(self.config, layer_type='moe')
+            with experts_fp8_context:
+                expert_output, mlp_bias = self.experts(
+                    dispatched_input, tokens_per_expert, permuted_probs
+                )
             output, mlp_bias = self.token_dispatcher.token_unpermutation(expert_output, mlp_bias)
             if self.use_shared_expert and not self.shared_expert_overlap:
                 # if shared_expert_overlap is True, the expert calculation happens in
                 # the token_dispatcher to overlap communications and computations
-                output = output + self.shared_experts(hidden_states)
+                shared_experts_fp8_context = get_fp8_context(self.config, layer_type='moe')
+                with shared_experts_fp8_context:
+                    output = output + self.shared_experts(hidden_states)
             return output, mlp_bias
 
-        def custom_forward_perm_checkpoint(hidden_states):
-            probs, routing_map = self.router(hidden_states)
-            (dispatched_input, tokens_per_expert, permuted_probs) = self.token_dispatcher.token_permutation(
-                hidden_states, probs, routing_map
-            )
-            if FP8_CTX_MOE:
-                expert_output, mlp_bias = tensor_parallel.fp8_checkpoint(self.experts, False, dispatched_input, tokens_per_expert, permuted_probs)
-            else:
-                expert_output, mlp_bias = tensor_parallel.checkpoint(self.experts, False, dispatched_input, tokens_per_expert, permuted_probs)
-            output, mlp_bias = self.token_dispatcher.token_unpermutation(expert_output, mlp_bias)
-            if self.use_shared_expert and not self.shared_expert_overlap:
-                # if shared_expert_overlap is True, the expert calculation happens in
-                # the token_dispatcher to overlap communications and computations
-                if FP8_CTX_MOE:
-                    output = output + tensor_parallel.fp8_checkpoint(self.shared_experts, False, hidden_states)
-                else:
-                    output = output + tensor_parallel.checkpoint(self.shared_experts, False, hidden_states)
-            return output, mlp_bias
-
-        if self.moe_layer_recompute:
-            if self.moe_perm_checkpoint == 'full' or (self.moe_perm_checkpoint == 'half' and (self.layer_number > 24 or self.layer_number % 2 == 0)):
-                output, mlp_bias = custom_forward_perm_checkpoint(hidden_states)
-            else:
-                if FP8_CTX_MOE:
-                    output, mlp_bias = tensor_parallel.fp8_checkpoint(custom_forward, False, hidden_states)
-                else:
-                    output, mlp_bias = tensor_parallel.checkpoint(custom_forward, False, hidden_states)
+        MOE_CKPT_LAYER = int(os.getenv('MOE_CKPT_LAYER', '0'))
+        if self.moe_layer_recompute or self.layer_number < MOE_CKPT_LAYER:
+            output, mlp_bias = conditional_checkpoint('moe', True, custom_forward, hidden_states)
         else:
-            output, mlp_bias = custom_forward(hidden_states)
+            output, mlp_bias = conditional_checkpoint('moe', False, custom_forward, hidden_states)
 
         return output, mlp_bias

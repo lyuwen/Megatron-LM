@@ -20,6 +20,7 @@ from megatron.core.dist_checkpointing.mapping import (
     ShardedTensorFactory,
 )
 from megatron.core.dist_checkpointing.utils import replace_prefix_for_sharding
+from megatron.core.fp8_utils import get_fp8_align_size
 from megatron.core.fusions.fused_bias_swiglu import weighted_bias_swiglu_impl
 from megatron.core.jit import jit_fuser
 from megatron.core.tensor_parallel.layers import (
@@ -37,6 +38,7 @@ from megatron.core.transformer.utils import (
     make_sharded_object_for_checkpoint,
     sharded_state_dict_default,
 )
+from megatron.core.custom_rs import custom_recompute, conditional_checkpoint
 
 import os
 
@@ -244,6 +246,7 @@ class GroupedMLP(MegatronModule):
 
         self.register_load_state_dict_post_hook(remove_extra_states_check)
 
+    @custom_recompute('experts')
     def forward(
         self,
         permuted_local_hidden_states: torch.Tensor,
@@ -730,15 +733,12 @@ class TEGroupedMLP(MegatronModule):
             tp_group=parallel_state.get_expert_tensor_parallel_group(),
         )
 
-        #if self.config.fp8:
-        #    assert HAVE_TE, "FP8 requires TE."
-        #    self.fp8_padding = Fp8Padding(self.num_local_experts)
-        #    self.fp8_unpadding = Fp8Unpadding(self.num_local_experts)
-        if USE_BLOCK_FP8:
+        if self.config.fp8:
             assert HAVE_TE, "FP8 requires TE."
-            self.fp8_padding = Fp8Padding(self.num_local_experts, align_size=128)
-            self.fp8_unpadding = Fp8Unpadding(self.num_local_experts, align_size=128)
+            self.fp8_padding = Fp8Padding(self.num_local_experts, 128)
+            self.fp8_unpadding = Fp8Unpadding(self.num_local_experts, 128)
 
+    @custom_recompute('experts')
     def forward(
         self,
         permuted_local_hidden_states: torch.Tensor,
@@ -757,8 +757,7 @@ class TEGroupedMLP(MegatronModule):
             output (torch.Tensor): The output of the local experts.
         """
         tokens_per_expert = tokens_per_expert.tolist()
-        #if self.config.fp8:
-        if USE_BLOCK_FP8:
+        if self.config.fp8:
             actual_tokens_per_expert = tokens_per_expert
             permuted_local_hidden_states, tokens_per_expert = self.fp8_padding(
                 permuted_local_hidden_states, tokens_per_expert
@@ -779,10 +778,16 @@ class TEGroupedMLP(MegatronModule):
             # Probs already applied, so reset to 1.
             permuted_probs = torch.ones_like(permuted_probs)
 
-        intermediate_parallel, bias_parallel = self.linear_fc1(
-            permuted_local_hidden_states, tokens_per_expert
+        # FC1层：带重计算控制
+        intermediate_parallel, bias_parallel = conditional_checkpoint(
+            'expert_fc1', 
+            False,
+            self.linear_fc1,
+            permuted_local_hidden_states, 
+            tokens_per_expert
         )
 
+        @custom_recompute('expert_bias_act')
         def bias_act_func(intermediate_parallel, bias_parallel, permuted_probs):
             if self.config.bias_activation_fusion:
                 if self.activation_func == F.silu and self.config.gated_linear_unit:
@@ -828,17 +833,28 @@ class TEGroupedMLP(MegatronModule):
             intermediate_parallel = self.activation_checkpoint.checkpoint(
                 bias_act_func, intermediate_parallel, bias_parallel, permuted_probs
             )
-            output, output_bias = self.linear_fc2(intermediate_parallel, tokens_per_expert)
+            # FC2层：带重计算控制
+            output, output_bias = conditional_checkpoint(
+                'expert_fc2',
+                False,
+                self.linear_fc2,
+                intermediate_parallel, tokens_per_expert
+            )
             self.activation_checkpoint.discard_output_and_register_recompute(output)
         else:
             intermediate_parallel = bias_act_func(
                 intermediate_parallel, bias_parallel, permuted_probs
             )
-            output, output_bias = self.linear_fc2(intermediate_parallel, tokens_per_expert)
+            # FC2层：带重计算控制
+            output, output_bias = conditional_checkpoint(
+                'expert_fc2',
+                False,
+                self.linear_fc2,
+                intermediate_parallel, tokens_per_expert
+            )
 
         # upad and concat the output
-        #if self.config.fp8:
-        if USE_BLOCK_FP8:
+        if self.config.fp8:
             output = self.fp8_unpadding(output, actual_tokens_per_expert)
 
         return output, output_bias
@@ -914,9 +930,9 @@ class SequentialMLP(MegatronModule):
             self.local_experts.append(expert)
 
     def _pad_tensor_for_fp8(self, hidden, probs):
-        """Padding tensor shape to multiples of 16."""
+        """Padding tensor shape to multiples of 16/32."""
         actual_num_tokens = hidden.shape[0]
-        divisor = 16
+        divisor = get_fp8_align_size(self.config.fp8_recipe)
         padded_num_tokens = ceil(actual_num_tokens / divisor) * divisor - actual_num_tokens
         if padded_num_tokens > 0:
             pad_tensor = torch.zeros(
@@ -927,6 +943,7 @@ class SequentialMLP(MegatronModule):
             probs = torch.cat((probs, pad_probs), dim=0)
         return hidden, probs
 
+    @custom_recompute('experts')
     def forward(
         self,
         permuted_local_hidden_states: torch.Tensor,
