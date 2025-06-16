@@ -28,7 +28,7 @@ class TransformerConfig(ModelParallelConfig):
     moe_layer_pattern : List = None
     """Moe layer pattern for dense or expert layer, where 0 means dense layer ,
     1 means expert layer"""
-
+    
     num_layers: int = 0
     """Number of transformer layers in a transformer block."""
 
@@ -315,12 +315,6 @@ class TransformerConfig(ModelParallelConfig):
     """Number of layers at the end of the model to keep in BF16 precision when
     first_last_layers_bf16 is True."""
 
-    v3_fp8_linear: bool = False
-    """When set to True, use the FP8 computation of standard Linear."""
-
-    v3_fp8_grouped_linear: bool = False
-    """When set to True, use the FP8 computation of Grouped Linear."""
-
     ####################
     # MoE related
     ####################
@@ -477,13 +471,6 @@ class TransformerConfig(ModelParallelConfig):
 
     moe_layer_recompute: bool = False
     """Memory optimization: checkpointing moe_layer to save actiavtion memory."""
-
-    moe_perm_checkpoint: str = 'none'
-    """Use checkpointing for permutation of MoE layer.
-    Options are 'full', 'half', 'none'."""
-
-    recompute_beside_moe: bool = False
-    """Recompute the operations beside the MoE layer."""
 
     moe_permute_fusion: bool = False
     """Fuse token rearrangement ops during token dispatching."""

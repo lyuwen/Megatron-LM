@@ -649,18 +649,14 @@ def topk_softmax_with_capacity(
             scores, top_indices = compute_topk(logits, topk, num_groups, group_topk)
             probs = torch.softmax(scores, dim=-1, dtype=torch.float32).type_as(logits)
     elif score_function == "sigmoid":
-        logits_fp32 = logits.float()  # use fp32 for stability
-        if use_pre_softmax:
-            logits_fp32 = torch.sigmoid(logits_fp32)
+        scores = torch.sigmoid(logits.float()).type_as(logits)
         if expert_bias is not None:
-            logits_fp32 = logits_fp32 + expert_bias
-        logits_fp32, top_indices = compute_topk(logits_fp32, topk, num_groups, group_topk)
-        if use_pre_softmax:
-            scores = logits_fp32.type_as(logits)
+            scores_for_routing = scores + expert_bias
+            _, top_indices = compute_topk(scores_for_routing, topk, num_groups, group_topk)
+            scores = torch.gather(scores, dim=1, index=top_indices).type_as(logits)
         else:
-            scores = torch.sigmoid(logits_fp32).type_as(logits)
+            scores, top_indices = compute_topk(scores, topk, num_groups, group_topk)
         probs = scores / (scores.sum(dim=-1, keepdim=True) + 1e-20) if topk > 1 else scores
-
     else:
         raise ValueError(f"Invalid score_function: {score_function}")
 
@@ -708,7 +704,6 @@ def save_to_aux_losses_tracker(
     loss: torch.Tensor,
     layer_number: int,
     num_layers: int,
-    layer_pattern: List,
     reduce_group: torch.distributed.ProcessGroup = None,
     avg_group: torch.distributed.ProcessGroup = None,
 ):
@@ -730,7 +725,6 @@ def save_to_aux_losses_tracker(
         tracker[name] = {}
         tracker[name]["values"] = torch.zeros(num_layers, device=loss.device)
     tracker[name]["values"][layer_number - 1] += loss.detach()  # Aggregate the loss for the layer.
-    tracker[name]["layer_pattern"] = layer_pattern
     tracker[name]["reduce_group"] = reduce_group
     tracker[name]["avg_group"] = avg_group
 
@@ -741,7 +735,6 @@ def save_to_tokens_experts_info_tracker(
     layer_number: int,
     num_layers: int,
     num_experts: int,
-    layer_pattern: List,
     reduce_group: torch.distributed.ProcessGroup = None,
     avg_group: torch.distributed.ProcessGroup = None,
 ):
@@ -758,12 +751,11 @@ def save_to_tokens_experts_info_tracker(
     # Skip logging if layer_number is None.
     if layer_number is None:
         return
-    tracker = parallel_state.get_moe_layer_wise_logging_tracker()
+    tracker = get_moe_layer_wise_logging_tracker()
     if name not in tracker:
         tracker[name] = {}
         tracker[name]["values"] = torch.zeros((num_layers,num_experts), device=tokens_expert.device, dtype=torch.int64)
     tracker[name]["values"][layer_number - 1] += tokens_expert
-    tracker[name]["layer_pattern"] = layer_pattern
     tracker[name]["reduce_group"] = reduce_group
     tracker[name]["avg_group"] = avg_group
 
@@ -773,7 +765,6 @@ def clear_aux_losses_tracker():
     tracker = get_moe_layer_wise_logging_tracker()
     for name in tracker:
         tracker[name]["values"].zero_()
-        tracker[name]["layer_pattern"]= None
         tracker[name]["reduce_group"] = None
         tracker[name]["avg_group"] = None
 
@@ -845,12 +836,14 @@ def track_moe_metrics(
     # Get number of MoE layers
     if moe_layer_freq is None:
         num_moe_layers = num_layers
+        moe_layer_pattern = [1 for _ in range(num_layers)]
     elif isinstance(moe_layer_freq, int):
         assert isinstance(num_layers, int)
         moe_layer_pattern = [1 if (i % moe_layer_freq == 0) else 0 for i in range(num_layers)]
         num_moe_layers = sum(moe_layer_pattern)
     elif isinstance(moe_layer_freq, list):
         num_moe_layers = sum(moe_layer_freq)
+        moe_layer_pattern = moe_layer_freq
     else:
         raise ValueError(f"Invalid moe_layer_freq: {moe_layer_freq}")
 
@@ -859,7 +852,7 @@ def track_moe_metrics(
         aux_losses = {k: v['values'].float() * loss_scale for k, v in tracker.items() if k.endswith("loss")}
         for name, loss_list in aux_losses.items():
             # fix the loss list here, only record the moe_layer, can fix aux loss in both tensorboard and print log
-            loss_list = loss_list[torch.tensor(tracker[name]["layer_pattern"])>0]
+            loss_list = loss_list[torch.tensor(moe_layer_pattern)>0]
             if total_loss_dict is not None:
                 if name not in total_loss_dict:
                     total_loss_dict[name] = loss_list.sum() / num_moe_layers
@@ -889,7 +882,7 @@ def track_moe_metrics(
                     )
         # asynchronously logging the token experts info
         if "tokens each experts" in tracker:
-            temp_tracker = {"values": tracker["tokens each experts"]["values"].cpu(),"layer_pattern":tracker["tokens each experts"]["layer_pattern"]}
+            temp_tracker = {"values": tracker["tokens each experts"]["values"].cpu(),"layer_pattern": moe_layer_pattern}
             thread = threading.Thread(target=track_moe_experts_tokens, args=(temp_tracker, writer, iteration))
             thread.start()
 

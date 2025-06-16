@@ -341,7 +341,7 @@ if HAVE_TE:
     from megatron.core import parallel_state
     from megatron.core.extensions.transformer_engine import TEDelayedScaling
 
-    def get_fp8_context(config: TransformerConfig, layer_no: int = -1, is_init: bool = False, is_gl: bool = False):
+    def get_fp8_context(config: TransformerConfig, layer_no: int = -1, is_init: bool = False, layer_type: str = 'outer'):
         """Return fp8 context manager.
 
         Arguments:
@@ -349,7 +349,6 @@ if HAVE_TE:
             layer_no (int): *Global* layer index (including layers on other
                 pipeline-parallel ranks).
             is_init (bool): Whether the context is fp8_model_init (True) or fp8_autocast (False).
-            is_gl (bool): Whether the context is used for transformer engine's group linear (True)
 
         Returns:
             FP8 context.
@@ -357,6 +356,27 @@ if HAVE_TE:
             We return nullcontext() when: a) not using fp8 to train, b) layer_no is a layer
             that needs to be trained in bf16.
         """
+        if not is_init:
+            import os
+            if layer_type == 'mlp':
+                enable_mlp_fp8 = os.getenv('FP8_MLP', 'true') == 'true'
+                if not enable_mlp_fp8:
+                    return nullcontext()
+            elif layer_type == 'attention':
+                enable_attention_fp8 = os.getenv('FP8_ATTENTION', 'true') == 'true'
+                if not enable_attention_fp8:
+                    return nullcontext()
+            elif layer_type == 'moe':
+                enable_moe_fp8 = os.getenv('FP8_MOE', 'true') == 'true'
+                if not enable_moe_fp8:
+                    return nullcontext()
+            elif layer_type == 'outer':
+                enable_outer_fp8 = os.getenv('FP8_OUTER', 'true') == 'true'
+                if not enable_outer_fp8:
+                    return nullcontext()
+            else:
+                raise ValueError(f"Invalid layer type: {layer_type}")
+
         num_bf16_layers_at_start = (
             config.num_layers_at_start_in_bf16 if config.first_last_layers_bf16 else 0
         )
@@ -388,11 +408,19 @@ if HAVE_TE:
             # Select fp8 recipe (TE version >= 2.1.0).
             fp8_recipe = None
             if is_te_min_version("2.1.0"):
-                if is_gl and is_te_min_version("2.3.0.dev0"):
+                if config.fp8_recipe == Fp8Recipe.deepgemm and is_te_min_version("2.3.0.dev0"):
                     fp8_format = transformer_engine.common.recipe.Format.E4M3
-                    fp8_recipe = transformer_engine.common.recipe.Float8BlockScaling(
-                        fp8_format=fp8_format
-                    )
+                    if layer_type != 'moe':  # Msun
+                        fp8_recipe = TEDelayedScaling(
+                            config=config,
+                            fp8_format=fp8_format,
+                            override_linear_precision=(False, False, not config.fp8_wgrad),
+                        )
+                    else:
+                        fp8_recipe = transformer_engine.common.recipe.Float8ZJScaling(
+                            fp8_format=fp8_format,
+                            fp8_wgrad=config.fp8_wgrad,
+                        )
                 elif config.fp8_recipe == Fp8Recipe.delayed:
                     fp8_recipe = TEDelayedScaling(
                         config=config,
@@ -467,6 +495,6 @@ if HAVE_TE:
 
 else:
 
-    def get_fp8_context(config: TransformerConfig, layer_no: int = -1, is_init: bool = False):
+    def get_fp8_context(config: TransformerConfig, layer_no: int = -1, is_init: bool = False, layer_type: str = 'outer'):
         """Returns dummy fp8 context manager since TE is not available."""
         return nullcontext()

@@ -1070,18 +1070,6 @@ def core_transformer_config_from_args(args, config_class=None):
         kw_args['cp_comm_type'] = args.cp_comm_type[0]
     if args.is_hybrid_model:
         kw_args['is_hybrid_model'] = args.is_hybrid_model
-    #add mzy, recored the moe layer pattern info if model is MOE architecture
-    if args.num_experts:
-        if isinstance(args.moe_layer_freq, int):
-            moe_layer_pattern = [
-                1 if (i % args.moe_layer_freq == 0) else 0 for i in range(args.num_layers)
-            ]
-        elif isinstance(args.moe_layer_freq, list):
-            moe_layer_pattern = args.moe_layer_freq
-        if args.moe_first_k_dense_replace is not None:
-            for i in range(args.moe_first_k_dense_replace):
-                moe_layer_pattern[i] = 0
-        kw_args['moe_layer_pattern'] = moe_layer_pattern
     # Return config.
     return config_class(**kw_args)
 
@@ -1095,7 +1083,7 @@ def _add_transformer_engine_args(parser):
                        dest='fp8')
     # per tensor current scaling recipe selection
     group.add_argument('--fp8-recipe', default='delayed',
-                       choices=['tensorwise', 'delayed', 'mxfp8', 'blockwise'],
+                       choices=['tensorwise', 'delayed', 'mxfp8', 'blockwise', 'deepgemm'],
                        help='Which fp8 recipe to use for FP8 tensors in the forward and backward pass',
                        dest='fp8_recipe')
     # delayed scaling only configs
@@ -1132,13 +1120,6 @@ def _add_transformer_engine_args(parser):
                             'Required for CUDA graphs support.')
     group.add_argument('--inference-rng-tracker', action='store_true', default=False,
                        help='Use a random number generator configured for inference.')
-    
-    group.add_argument('--v3-fp8-linear', action='store_true', default=False,
-                       help="Using fp8 in TE Linear")
-    group.add_argument('--v3-fp8-grouped-linear', action='store_true', default=False,
-                       help="Using fp8 in TE Grouped Linear")
-    group.add_argument('--fp8-comm', action='store_true', default=False,
-                       help='Use fp8 stream in P2P comm and A2A comm.')
     return parser
 
 def _add_inference_args(parser):
@@ -2684,10 +2665,6 @@ def _add_moe_args(parser):
                        help='Pads the input for each expert to match the expert capacity length, effective only after the --moe-expert-capacity-factor is set.')
     group.add_argument('--moe-token-drop-policy', type=str, default='probs', choices=['probs', 'position'],
                        help='The policy to drop tokens. Can be either "probs" or "position". If "probs", the tokens with the lowest probabilities will be dropped. If "position", tokens at the end of each batch will be dropped.')
-    group.add_argument('--moe-perm-checkpoint', type=str, default='none', choices=['full', 'half', 'none'],
-                       help='Use checkpointing for permutation of MoE layer. Options are "full", "half", "none".')
-    group.add_argument('--recompute-beside-moe', action='store_true',
-                       help='Recompute the operations beside the MoE layer.')
     #
     group.add_argument('--moe-warmup-router', type=int, default=-1,
                        help='Number of steps to apply router warmup randomness.')

@@ -27,6 +27,8 @@ from megatron.core.sequence_length_scheduler import get_iteration
 
 from megatron.core.fusions.fused_topk_routing import fused_topk_softmax_without_capacity
 
+from megatron.core.custom_rs import custom_recompute
+
 class Router(ABC, MegatronModule):
     """Base Router class"""
 
@@ -356,7 +358,6 @@ class TopKRouter(Router):
                 aux_loss / moe_aux_loss_coeff,
                 self.layer_number,
                 self.config.num_layers,
-                layer_pattern = self.config.moe_layer_pattern,
                 reduce_group=sequence_partition_group,
                 avg_group=mpu.get_data_parallel_group()
             )
@@ -380,7 +381,6 @@ class TopKRouter(Router):
                     device_loss,
                     self.layer_number,
                     self.config.num_layers,
-                    layer_pattern = self.config.moe_layer_pattern,
                     reduce_group=sequence_partition_group,
                     avg_group=mpu.get_data_parallel_group()
                 )
@@ -389,7 +389,6 @@ class TopKRouter(Router):
                     communication_loss,
                     self.layer_number,
                     self.config.num_layers,
-                    layer_pattern = self.config.moe_layer_pattern,
                     reduce_group=sequence_partition_group,
                     avg_group=mpu.get_data_parallel_group()
                 )
@@ -440,7 +439,6 @@ class TopKRouter(Router):
                     z_loss / moe_z_loss_coeff,
                     self.layer_number,
                     self.config.num_layers,
-                    layer_pattern=self.config.moe_layer_pattern,
                     avg_group=mpu.get_data_parallel_group()
             )
         return logits
@@ -518,6 +516,7 @@ class TopKRouter(Router):
 
         return scores, routing_map
 
+    @custom_recompute('router')
     def forward(self, input: torch.Tensor):
         """
         Forward pass of the router.
@@ -543,10 +542,10 @@ class TopKRouter(Router):
         #
 
         scores, routing_map = self.routing(logits)
-        if self.training and self.config.show_moe_experts_tokens and not torch.is_grad_enabled():
+        if self.training and self.config.show_moe_experts_tokens and torch.is_grad_enabled():
             tokens_per_expert = routing_map.sum(dim=0)
             save_to_tokens_experts_info_tracker("tokens each experts", tokens_per_expert, self.layer_number,
-                                                self.config.num_layers, self.num_experts, self.config.moe_layer_pattern,
-                                               mpu.get_data_parallel_group())
+                                                self.config.num_layers, self.num_experts,
+                                                reduce_group=mpu.get_data_parallel_group())
 
         return scores, routing_map

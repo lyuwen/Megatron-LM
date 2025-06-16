@@ -27,6 +27,8 @@ from megatron.core.transformer.moe.moe_utils import (
 )
 from megatron.core.transformer.moe.shared_experts import SharedExpertMLP
 from megatron.core.transformer.transformer_config import TransformerConfig
+from megatron.core.fp8_utils import get_fp8_context
+from megatron.core.custom_rs import custom_recompute
 
 """ We use the following notation throughout this file:
      H: hidden size
@@ -139,6 +141,7 @@ class MoEAllGatherTokenDispatcher(MoETokenDispatcher):
         # device token permutation is enabled and **AllGahter** is performed.
         self.global_local_map = None
 
+    @custom_recompute('permutation')
     def token_permutation(
         self, hidden_states: torch.Tensor, probs: torch.Tensor, routing_map: torch.Tensor
     ):
@@ -210,6 +213,7 @@ class MoEAllGatherTokenDispatcher(MoETokenDispatcher):
 
         return permuted_local_hidden_states, tokens_per_expert, self.local_probs
 
+    @custom_recompute('unpermutation')
     def token_unpermutation(self, hidden_states: torch.Tensor, bias: torch.Tensor = None):
         """
         Reverse process of `dispatch()` which permutes the output of local
@@ -460,6 +464,7 @@ class MoEAlltoAllTokenDispatcher(MoETokenDispatcher):
         ), "cuda_sync_point must be after cuda_dtoh_point."
         return num_tokens_per_local_expert
 
+    @custom_recompute('permutation')
     def token_permutation(
         self, hidden_states: torch.Tensor, probs: torch.Tensor, routing_map: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -586,6 +591,7 @@ class MoEAlltoAllTokenDispatcher(MoETokenDispatcher):
 
         return global_input_tokens, tokens_per_expert, global_probs
 
+    @custom_recompute('unpermutation')
     def token_unpermutation(
         self, hidden_states: torch.Tensor, bias: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
@@ -1044,6 +1050,7 @@ class MoEFlexTokenDispatcher(MoETokenDispatcher):
         ).contiguous()
         return routing_map, probs
 
+    @custom_recompute('permutation')
     def token_permutation(
         self, hidden_states: torch.Tensor, probs: torch.Tensor, routing_map: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -1055,7 +1062,9 @@ class MoEFlexTokenDispatcher(MoETokenDispatcher):
 
         self._comm_manager.setup_metadata(routing_map, probs)
         if self.shared_experts is not None:
-            self.shared_experts.pre_forward_comm(hidden_states.view(self.hidden_shape))
+            shared_experts_fp8_context = get_fp8_context(self.config, layer_type='mlp')
+            with shared_experts_fp8_context:
+                self.shared_experts.pre_forward_comm(hidden_states.view(self.hidden_shape))
         hidden_states= self._comm_manager.dispatch(hidden_states)
         global_input_tokens, permuted_probs = (
             self._comm_manager.get_permuted_hidden_states_by_experts(hidden_states)
@@ -1064,6 +1073,7 @@ class MoEFlexTokenDispatcher(MoETokenDispatcher):
 
         return global_input_tokens, tokens_per_expert, permuted_probs
 
+    @custom_recompute('unpermutation')
     def token_unpermutation(
         self, hidden_states: torch.Tensor, bias: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
@@ -1071,9 +1081,11 @@ class MoEFlexTokenDispatcher(MoETokenDispatcher):
         hidden_states = self._comm_manager.get_restored_hidden_states_by_experts(hidden_states)
         hidden_states= self._comm_manager.combine(hidden_states)
         if self.shared_experts is not None:
-            self.shared_experts.linear_fc1_forward_and_act()
-            self.shared_experts.linear_fc2_forward()
-            self.shared_experts.post_forward_comm()
+            shared_experts_fp8_context = get_fp8_context(self.config, layer_type='mlp')
+            with shared_experts_fp8_context:
+                self.shared_experts.linear_fc1_forward_and_act()
+                self.shared_experts.linear_fc2_forward()
+                self.shared_experts.post_forward_comm()
             shared_expert_output = self.shared_experts.get_output()
         hidden_states = hidden_states.view(self.hidden_shape)
         if self.shared_experts is not None:

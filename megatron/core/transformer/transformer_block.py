@@ -4,6 +4,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import List, Optional, Union
 
+import os
 import torch
 from torch import Tensor
 
@@ -535,8 +536,8 @@ class TransformerBlock(MegatronModule):
         # if we are using other fp8 recipes, then the context manager enter&exit are free
         # we can wrap fp8_context within the for loop over layers, so that we can fine-grained
         # control which layer will be fp8 or bf16
-        use_outer_fp8_context = self.config.fp8 and (self.config.fp8_recipe == Fp8Recipe.delayed or self.config.fp8_recipe == Fp8Recipe.tensorwise)
-        outer_fp8_context = get_fp8_context(self.config) if use_outer_fp8_context else nullcontext()
+        use_outer_fp8_context = self.config.fp8 and (self.config.fp8_recipe == Fp8Recipe.delayed or self.config.fp8_recipe == Fp8Recipe.tensorwise or self.config.fp8_recipe == Fp8Recipe.deepgemm)
+        outer_fp8_context = get_fp8_context(self.config, layer_type='outer') if use_outer_fp8_context else nullcontext()
         use_inner_fp8_context = False
 
         with rng_context, outer_fp8_context:
