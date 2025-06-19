@@ -10,6 +10,20 @@ from matplotlib.colors import to_rgba
 from pathlib import Path
 
 
+def format_consumed_tokens(tokens):
+    """格式化consumed tokens的显示"""
+    if tokens >= 1e12:
+        return f'{tokens/1e12:.1f}T'
+    elif tokens >= 1e9:
+        return f'{tokens/1e9:.1f}B'
+    elif tokens >= 1e6:
+        return f'{tokens/1e6:.1f}M'
+    elif tokens >= 1e3:
+        return f'{tokens/1e3:.1f}K'
+    else:
+        return f'{int(tokens)}'
+
+
 def parse_log_line(line):
     """解析日志行，提取迭代次数、elapsed time、token throughput、mfu和lm loss"""
     # 匹配新的日志格式
@@ -19,6 +33,10 @@ def parse_log_line(line):
     lm_loss_match = re.search(r'lm loss: ([\d.]+E[+-]\d+)', line)
     # 尝试匹配直接提供的MFU值，兼容两种格式：MFU: X.X% 或 某前缀MFU: X.X%
     mfu_match = re.search(r'(?:(\w+))?MFU: ([\d.]+)%', line)
+    # 尝试匹配consumed tokens (支持逗号分隔的数字)
+    consumed_tokens_match = re.search(r'consumed tokens:\s*([\d,]+)', line)
+    # 尝试匹配global batch size
+    global_batch_size_match = re.search(r'global batch size: (\d+)', line)
     
     if not (iteration_match and elapsed_time_match and token_throughput_match):
         return None
@@ -45,6 +63,25 @@ def parse_log_line(line):
         mfu_type = mfu_match.group(1) or ""  # 如果group(1)为None，则使用空字符串
         result['mfu_type'] = mfu_type  # 记录MFU的类型
     
+    # 如果找到consumed tokens，则添加到结果中
+    if consumed_tokens_match:
+        consumed_str = consumed_tokens_match.group(1)
+        # 移除逗号并转换为数字
+        consumed_str_clean = consumed_str.replace(',', '')
+        # 处理K, M, B后缀
+        if consumed_str_clean.endswith('K'):
+            result['consumed_tokens'] = float(consumed_str_clean[:-1]) * 1e3
+        elif consumed_str_clean.endswith('M'):
+            result['consumed_tokens'] = float(consumed_str_clean[:-1]) * 1e6
+        elif consumed_str_clean.endswith('B'):
+            result['consumed_tokens'] = float(consumed_str_clean[:-1]) * 1e9
+        else:
+            result['consumed_tokens'] = float(consumed_str_clean)
+    
+    # 如果找到global batch size，则添加到结果中
+    if global_batch_size_match:
+        result['global_batch_size'] = int(global_batch_size_match.group(1))
+    
     # 如果找到lm_loss，则添加到结果中
     if lm_loss_match:
         result['lm_loss'] = float(lm_loss_match.group(1))
@@ -68,12 +105,14 @@ def moving_average(data, window_size=50):
     return np.convolve(data, weights, mode='valid')
 
 
-def parse_log_file(file_path, show_lm_loss=False):
+def parse_log_file(file_path, show_lm_loss=False, global_batch_size=None):
     """解析日志文件，提取迭代次数、MFU值和lm loss值"""
     iterations = []
+    consumed_tokens = []
     mfu_values = []
     lm_loss_values = [] if show_lm_loss else None
     mfu_source = None  # 用于记录MFU的来源：'direct' 或 'calculated'
+    detected_global_batch_size = None
     
     with open(file_path, 'r') as f:
         for line in f:
@@ -90,7 +129,25 @@ def parse_log_file(file_path, show_lm_loss=False):
                     if mfu_source is None:
                         mfu_source = 'calculated'
                 
+                # 尝试获取global_batch_size
+                if 'global_batch_size' in parsed and detected_global_batch_size is None:
+                    detected_global_batch_size = parsed['global_batch_size']
+                
+                # 计算consumed tokens
+                if 'consumed_tokens' in parsed:
+                    # 如果日志中直接有consumed tokens，直接使用
+                    consumed_token_value = parsed['consumed_tokens']
+                else:
+                    # 否则通过iteration * global_batch_size计算
+                    batch_size = global_batch_size or detected_global_batch_size
+                    if batch_size:
+                        consumed_token_value = parsed['iteration'] * batch_size
+                    else:
+                        # 如果没有batch size信息，使用iteration作为备选（会在后面提示用户）
+                        consumed_token_value = parsed['iteration']
+                
                 iterations.append(parsed['iteration'])
+                consumed_tokens.append(consumed_token_value)
                 mfu_values.append(mfu)
                 
                 if show_lm_loss and 'lm_loss' in parsed:
@@ -98,10 +155,15 @@ def parse_log_file(file_path, show_lm_loss=False):
     
     print(f"文件 {file_path} 中的MFU来源: {mfu_source}")
     
+    # 检查是否成功计算了consumed tokens
+    has_consumed_tokens = any('consumed_tokens' in (parse_log_line(line) or {}) for line in open(file_path, 'r'))
+    if not global_batch_size and not detected_global_batch_size and not has_consumed_tokens:
+        print(f"警告: 文件 {file_path} 中未找到global_batch_size或consumed_tokens信息，X轴将显示为iteration数值")
+    
     if show_lm_loss:
-        return iterations, mfu_values, lm_loss_values
+        return consumed_tokens, mfu_values, lm_loss_values
     else:
-        return iterations, mfu_values
+        return consumed_tokens, mfu_values
 
 
 def calculate_ema(data, alpha=0.9):
@@ -115,12 +177,12 @@ def calculate_ema(data, alpha=0.9):
     return ema
 
 
-def plot_mfu_curves(file_paths, title, show_lm_loss=False, show_mfu=True, lm_loss_ylim=None, show_loss_ema=False):
+def plot_mfu_curves(file_paths, title, show_lm_loss=False, show_mfu=True, lm_loss_ylim=None, show_loss_ema=False, global_batch_size=None):
     """绘制多个文件的MFU曲线和lm loss曲线"""
     fig, ax1 = plt.subplots(figsize=(12, 8))
     
-    # 创建第二个y轴（如果需要显示lm_loss）
-    ax2 = ax1.twinx() if show_lm_loss else None
+    # ax1用于显示lm loss（左侧），不需要第二个坐标轴
+    ax2 = None
     
     # 根据文件名前缀（_分割的第一部分）对文件进行分组
     file_groups = {}
@@ -149,45 +211,23 @@ def plot_mfu_curves(file_paths, title, show_lm_loss=False, show_mfu=True, lm_los
             
             # 解析日志文件
             if show_lm_loss:
-                iterations, mfu_values, lm_loss_values = parse_log_file(file_path, show_lm_loss=True)
+                consumed_tokens, mfu_values, lm_loss_values = parse_log_file(file_path, show_lm_loss=True, global_batch_size=global_batch_size)
             else:
-                iterations, mfu_values = parse_log_file(file_path, show_lm_loss=False)
+                consumed_tokens, mfu_values = parse_log_file(file_path, show_lm_loss=False, global_batch_size=global_batch_size)
             
-            if not iterations:
+            if not consumed_tokens:
                 print(f"警告: 文件 {file_path} 中未找到有效数据")
                 continue
             
             # 获取文件名作为图例
             file_name = Path(file_path).name
             
-            # 绘制MFU曲线（在第一个y轴）
-            if show_mfu:
-                # 将MFU值转换为百分比
-                mfu_values_percent = [mfu * 100 for mfu in mfu_values]
-                line1 = ax1.plot(iterations, mfu_values_percent, color=color, linewidth=2, label=f'MFU: {file_name}')
-                
-                # 找出最高点并标注
-                if mfu_values_percent:
-                    max_index = np.argmax(mfu_values_percent)
-                    max_iteration = iterations[max_index]
-                    max_mfu = mfu_values_percent[max_index]
-                    
-                    # 每隔50轮标注一次MFU值
-                    for idx, (iter_num, mfu_val) in enumerate(zip(iterations, mfu_values_percent)):
-                        if iter_num % 250 == 0:
-                            ax1.annotate(f'{mfu_val:.1f}%', 
-                                        xy=(iter_num, mfu_val),
-                                        xytext=(0, 10),  # 文本偏移量（向上偏移）
-                                        textcoords='offset points',
-                                        color=color,
-                                        fontsize=8)
-            
-            # 绘制lm loss曲线（在第二个y轴，如果需要）
-            if show_lm_loss and lm_loss_values and len(lm_loss_values) == len(iterations):
+            # 绘制lm loss曲线（在左侧y轴）
+            if show_lm_loss and lm_loss_values and len(lm_loss_values) == len(consumed_tokens):
                 # 使用相同颜色但透明度更低
                 loss_color = to_rgba(base_color, alpha * (0.3 if show_loss_ema else 0.5))
                 # 只在显示EMA时不显示原始loss的图例
-                line2 = ax2.plot(iterations, lm_loss_values, color=loss_color, linewidth=1.5, linestyle='--', 
+                line2 = ax1.plot(consumed_tokens, lm_loss_values, color=loss_color, linewidth=1.5, linestyle='--', 
                                label=f'Loss: {file_name}' if not show_loss_ema else None)
                 
                 # 如果启用了loss EMA，绘制EMA曲线
@@ -195,46 +235,44 @@ def plot_mfu_curves(file_paths, title, show_lm_loss=False, show_mfu=True, lm_los
                     loss_ema_values = calculate_ema(lm_loss_values)
                     # 使用相同颜色但更深的线条绘制EMA
                     loss_ema_color = to_rgba(base_color, min(alpha * 0.5 + 0.3, 1.0))
-                    ax2.plot(iterations, loss_ema_values, color=loss_ema_color, linewidth=1.0, 
+                    ax1.plot(consumed_tokens, loss_ema_values, color=loss_ema_color, linewidth=1.0, 
                             label=f'Loss: {file_name}', linestyle='-')
                 
-                # 如果显示lm_loss，每隔50轮标注一次lm_loss值
-                for idx, (iter_num, lm_loss_val) in enumerate(zip(iterations, lm_loss_values)):
-                    if iter_num % 250 == 0:
-                        ax2.annotate(f'{lm_loss_val:.4f}', 
-                                    xy=(iter_num, lm_loss_val),
-                                    xytext=(0, -10),  # 文本偏移量（向下偏移）
-                                    textcoords='offset points',
-                                    color=loss_color,
-                                    fontsize=8)
+                                # 在lm_loss的最低点标注一次数值
+                if lm_loss_values:
+                    min_loss_idx = np.argmin(lm_loss_values)
+                    min_loss_value = lm_loss_values[min_loss_idx]
+                    min_loss_tokens = consumed_tokens[min_loss_idx]
+                    ax1.annotate(f'Min: {min_loss_value:.4f}', 
+                                xy=(min_loss_tokens, min_loss_value),
+                                xytext=(10, 10),  # 文本偏移量（向右上偏移）
+                                textcoords='offset points',
+                                color=loss_color,
+                                fontsize=9,
+                                bbox=dict(boxstyle="round,pad=0.3", facecolor='white', alpha=0.8, edgecolor=loss_color))
+                                #arrowprops=dict(arrowstyle='->', connectionstyle='arc3,rad=0', color=loss_color))
         
         group_index += 1
     
-    # 设置第一个y轴（MFU）
-    if show_mfu:
-        ax1.set_xlabel('Iteration')
-        ax1.set_ylabel('MFU (%)')
-        ax1.set_ylim(0.0, 35.0)  # 改为百分比范围
-        # 设置y轴刻度格式为百分比
-        ax1.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'{x:.0f}%'))
+    # 设置坐标轴
+    ax1.set_xlabel('Consumed Tokens')
+    if show_lm_loss:
+        ax1.set_ylabel('LM Loss')
+        if lm_loss_ylim:
+            ax1.set_ylim(lm_loss_ylim)
         ax1.grid(True, linestyle='--', alpha=0.7)
     
-    # 设置第二个y轴（lm loss，如果需要）
-    if show_lm_loss and ax2:
-        ax2.set_ylabel('LM Loss')
-        if lm_loss_ylim:
-            ax2.set_ylim(lm_loss_ylim)
+    # 格式化x轴标签
+    import matplotlib.ticker as ticker
+    def format_func(x, pos):
+        return format_consumed_tokens(x)
+    ax1.xaxis.set_major_formatter(ticker.FuncFormatter(format_func))
     
     # 设置标题
     plt.title(title)
     
-    # 合并两个轴的图例
-    if show_lm_loss and ax2:
-        lines1, labels1 = ax1.get_legend_handles_labels()
-        lines2, labels2 = ax2.get_legend_handles_labels()
-        ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper right')
-    else:
-        ax1.legend(loc='upper right')
+    # 设置图例
+    ax1.legend(loc='upper right')
     
     # 保存图像
     plt.savefig('mfu_comparison.png', dpi=300, bbox_inches='tight')
@@ -255,13 +293,16 @@ def main():
                         help='设置lm-loss的y轴范围，例如：--lm-loss-ylim 0.5 2.0')
     parser.add_argument('--show-loss-ema', action='store_true', default=False,
                         help='是否显示loss的指数移动平均曲线（默认不显示）')
+    parser.add_argument('--global-batch-size', type=int, 
+                        help='全局批次大小，用于计算consumed tokens。如果不提供，程序会尝试从日志中自动检测')
     args = parser.parse_args()
     
     plot_mfu_curves(args.files, args.title, 
                     show_lm_loss=args.show_lm_loss, 
                     show_mfu=not args.no_show_mfu,
                     lm_loss_ylim=args.lm_loss_ylim,
-                    show_loss_ema=args.show_loss_ema)
+                    show_loss_ema=args.show_loss_ema,
+                    global_batch_size=args.global_batch_size)
 
 
 if __name__ == "__main__":
