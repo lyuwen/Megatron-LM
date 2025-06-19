@@ -249,7 +249,7 @@ def plot_mfu_curves(file_paths, title, show_lm_loss=False, show_mfu=True, lm_los
                                 textcoords='offset points',
                                 color=loss_color,
                                 fontsize=9,
-                                bbox=dict(boxstyle="round,pad=0.3", facecolor='white', alpha=0.8, edgecolor=loss_color))
+                                bbox=dict(boxstyle="round,pad=0.3", facecolor='white', alpha=0.8, edgecolor=loss_color)plot_mfu.py)
                                 #arrowprops=dict(arrowstyle='->', connectionstyle='arc3,rad=0', color=loss_color))
         
         group_index += 1
