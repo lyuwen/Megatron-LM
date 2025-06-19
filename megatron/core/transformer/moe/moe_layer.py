@@ -28,6 +28,7 @@ from megatron.core.enums import Fp8Recipe
 from contextlib import nullcontext
 from megatron.core.extensions.transformer_engine import te_checkpoint
 from megatron.core.custom_rs import custom_recompute, conditional_checkpoint
+from megatron.core.enums import Fp8Recipe
 
 
 @dataclass
@@ -153,12 +154,14 @@ class MoELayer(BaseMoELayer):
             )
 
         # Initialize experts
-        self.experts = build_module(
-            self.submodules.experts,
-            self.num_local_experts,
-            self.config,
-            model_comm_pgs=model_comm_pgs,
-        )
+        fp8_init_context = get_fp8_context(config=self.config, is_init=True, layer_type='moe') if self.config.fp8_recipe == Fp8Recipe.deepgemm else nullcontext() 
+        with fp8_init_context:
+            self.experts = build_module(
+                self.submodules.experts,
+                self.num_local_experts,
+                self.config,
+                model_comm_pgs=model_comm_pgs,
+            )
 
         # Initialize shared experts
         if self.use_shared_expert:
