@@ -307,6 +307,7 @@ def permute(
     num_out_tokens: Optional[int] = None,
     fused: bool = False,
     drop_and_pad: bool = False,
+    pad_offsets: Optional[torch.Tensor] = None,
 ):
     """Permute the tokens and probs based on the mask.
     Tokens with the same designated expert will be grouped together.
@@ -340,7 +341,7 @@ def permute(
             raise ValueError(
                 "fused_permute_with_probs is not available. Please install TE >= 2.1.0."
             )
-        return fused_permute_with_probs(tokens, probs, routing_map, num_out_tokens=num_out_tokens)
+        return fused_permute_with_probs(tokens, probs, routing_map, num_out_tokens=num_out_tokens, pad_offsets=pad_offsets)
 
     num_tokens, hidden = tokens.shape
     num_experts = routing_map.shape[1]
@@ -387,6 +388,7 @@ def unpermute(
     routing_map: torch.Tensor = None,
     fused: bool = False,
     drop_and_pad: bool = False,
+    pad_offsets: Optional[torch.Tensor] = None,
 ):
     """
     Restore the original order of tokens after permutation. If probs are provided, it
@@ -416,7 +418,8 @@ def unpermute(
         if not HAVE_TE or fused_unpermute is None:
             raise ValueError("fused_unpermute is not available. Please install TE >= 2.1.0.")
         return fused_unpermute(
-            permuted_tokens, sorted_indices, merging_probs=probs, restore_shape=restore_shape
+            permuted_tokens, sorted_indices, merging_probs=probs, restore_shape=restore_shape,
+            pad_offsets=pad_offsets
         )
 
     _, hidden = restore_shape
