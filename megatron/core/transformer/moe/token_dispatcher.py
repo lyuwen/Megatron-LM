@@ -40,7 +40,7 @@ from megatron.core.custom_rs import custom_recompute
      num_local_tokens: S/TP*B
      num_global_tokens: num_local_tokens*TP*EP
 """
-FUSION_PERM_PAD = os.getenv('FUSION_PERM_PAD', '0') == '1' or os.getenv('FUSION_PERM_PAD', 'false') == 'true'
+FP8_FUSION_PERM_PAD = os.getenv('FP8_FUSION_PERM_PAD', '0') == '1' or os.getenv('FP8_FUSION_PERM_PAD', 'false') == 'true'
 
 class MoETokenDispatcher:
     """
@@ -666,7 +666,6 @@ class MoEAlltoAllTokenDispatcher(MoETokenDispatcher):
             routing_map=self.routing_map,
             fused=self.config.moe_permute_fusion,
             drop_and_pad=self.drop_and_pad,
-            pad_offsets=self.pad_offsets if FUSION_PERM_PAD else None,
         )
 
         # Reshape the output tensor
@@ -981,7 +980,7 @@ class _DeepepManager(_DispatchManager):
         self.hidden_shape_before_permute = hidden_states.shape
         assert self.dispatched_probs.dtype == torch.float32, "DeepEP only supports float32 probs"
 
-        if FUSION_PERM_PAD:
+        if FP8_FUSION_PERM_PAD:
             self.pad_offsets, self.tokens_per_expert = self._cumpute_permute_pad_offsets(
                 self.tokens_per_expert
             )
