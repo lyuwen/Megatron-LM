@@ -946,7 +946,7 @@ class _DeepepManager(_DispatchManager):
         计算每个expert的padding偏移量
         """
         pad_multiple = get_fp8_align_size(self.config.fp8_recipe)
-        print(f'wwwwwwwwww pad_multiple={pad_multiple}')
+        #print(f'wwwwwwwwww pad_multiple={pad_multiple}')
 
         target_tokens_per_expert = (
             torch.ceil(tokens_per_expert / pad_multiple) * pad_multiple
