@@ -4,6 +4,8 @@ import os
 import functools
 from typing import Callable
 
+FP8_CTX = os.getenv('FP8_CTX', 'false').lower() == 'true'
+
 class RecomputeController:
     """重计算控制器，管理全局的重计算策略"""
     
@@ -61,25 +63,18 @@ class RecomputeController:
 recompute_controller = RecomputeController()
 
 def custom_recompute(component_name: str):
-    """
-    重计算装饰器，根据环境变量和组件名称决定是否启用重计算
-    
-    Args:
-        component_name: 组件名称，用于查找对应的环境变量开关
-    
-    Usage:
-        @custom_recompute('experts')
-        def experts_forward(self, *args):
-            return self.experts(*args)
-            
-        # 调用时按环境变量决定是否重计算
-        result = experts_forward(...)
-    """
     def decorator(func: Callable) -> Callable:
         @functools.wraps(func)
         def wrapper(*args):
             return conditional_checkpoint(component_name, False, func, *args)
-        
+        return wrapper
+    return decorator
+
+def custom_recompute_for_member_func(component_name: str): # member function has self as the first argument, so we need to filter it before conditional_checkpoint
+    def decorator(func: Callable) -> Callable:
+        @functools.wraps(func)
+        def wrapper(*args):
+            return conditional_checkpoint(component_name, False, func, args[1:])
         return wrapper
     return decorator
 
@@ -108,10 +103,14 @@ def conditional_checkpoint(component_name: str, force_recompute: bool, func: Cal
     from megatron.core import tensor_parallel, parallel_state
     from megatron.core.extensions.transformer_engine import te_checkpoint
 
-    return te_checkpoint(
-        func,
-        *args,
-        distribute_saved_activations=False,
-        get_rng_state_tracker=tensor_parallel.random.get_cuda_rng_tracker,
-        tp_group=parallel_state.get_tensor_model_parallel_group(),
-    ) 
+    if FP8_CTX and component_name in ['experts']:
+        from megatron.core.tensor_parallel.random import fp8_checkpoint
+        return fp8_checkpoint(func, False, *args)
+    else:
+        return te_checkpoint(
+            func,
+            *args,
+            distribute_saved_activations=False,
+            get_rng_state_tracker=tensor_parallel.random.get_cuda_rng_tracker,
+            tp_group=parallel_state.get_tensor_model_parallel_group(),
+        ) 

@@ -246,7 +246,6 @@ class GroupedMLP(MegatronModule):
 
         self.register_load_state_dict_post_hook(remove_extra_states_check)
 
-    @custom_recompute('experts')
     def forward(
         self,
         permuted_local_hidden_states: torch.Tensor,
@@ -738,7 +737,6 @@ class TEGroupedMLP(MegatronModule):
             self.fp8_padding = Fp8Padding(self.num_local_experts, 128)
             self.fp8_unpadding = Fp8Unpadding(self.num_local_experts, 128)
 
-    @custom_recompute('experts')
     def forward(
         self,
         permuted_local_hidden_states: torch.Tensor,
@@ -943,7 +941,6 @@ class SequentialMLP(MegatronModule):
             probs = torch.cat((probs, pad_probs), dim=0)
         return hidden, probs
 
-    @custom_recompute('experts')
     def forward(
         self,
         permuted_local_hidden_states: torch.Tensor,
