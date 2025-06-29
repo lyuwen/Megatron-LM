@@ -21,7 +21,6 @@ from megatron.core.transformer.mlp import MLP, MLPSubmodules
 from megatron.core.transformer.moe.moe_utils import ModelCommProcessGroups
 from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core.utils import is_torch_min_version, make_sharded_tensor_for_checkpoint
-from megatron.core.custom_rs import custom_recompute
 
 
 class SharedExpertMLP(MLP):
@@ -88,7 +87,6 @@ class SharedExpertMLP(MLP):
             if self.stream is None:
                 self.stream = torch.cuda.Stream()
 
-    @custom_recompute('shared_experts')
     def forward(self, hidden_states):
         """Forward function"""
         output, _ = super().forward(hidden_states)
