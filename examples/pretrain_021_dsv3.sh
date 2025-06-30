@@ -24,9 +24,9 @@ PR=${PR:-bf16}
 PP=${PP:-1} # 6
 EP=${EP:-1} # 8
 FL=${FLASH_ATTENTION:-true} # true
-TP=1
+TP=${TP:-1}
 CP=${CP:-1}
-SP=false
+SP=${SP:-false}
 DO=true
 SFT=false
 ### PARALLEL / BOOL OPTION ###
