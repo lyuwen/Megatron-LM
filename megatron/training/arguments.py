@@ -2639,6 +2639,10 @@ def _add_moe_args(parser):
                        'dropless training with FP8 precision when num_local_experts > 1. This is a more '
                        'efficient way to pad for FP8 which eliminates the explicit padding in the '
                        'GroupedMLP layer.')
+    group.add_argument('--moe-permute-padding-for-fp8', action='store_true',
+                       help='Pad during token permutation and unpad during unpermutation to ensure expert token counts '
+                       'meet FP8 alignment requirements (16/32/128-byte boundaries). This integrated approach eliminates '
+                       'explicit padding/unpadding in GroupedMLP layers, improving performance and memory efficiency.')
     group.add_argument('--moe-aux-loss-coeff', type=float, default=0.0,
                        help='Scaling coefficient for the aux loss: a starting value of 1e-2 is recommended.')
     group.add_argument('--moe-device-balance-loss-coeff', type=float, default=0.0,
