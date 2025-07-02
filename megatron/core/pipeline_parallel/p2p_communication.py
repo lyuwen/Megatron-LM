@@ -4,7 +4,7 @@ from typing import List, Optional, Tuple, Union
 import os
 
 import torch
-
+import math
 from megatron import core
 from megatron.core import ModelParallelConfig
 from megatron.core.parallel_state import (
@@ -357,7 +357,7 @@ def _communicate_fp8(
     def create_fp8_scale_recv_prev():
         # deepgemm recipe use TMA-aligned dequant, should be col major
         return torch.empty(
-            (recv_prev_shape[-1]//128, recv_next_shape[0]),
+            (recv_prev_shape[-1]//128, math.prod(recv_prev_shape[:-1])),
             requires_grad=False,
             device=torch.cuda.current_device(),
             dtype=torch.float,
@@ -366,7 +366,7 @@ def _communicate_fp8(
     def create_fp8_scale_recv_next():
         # deepgemm recipe use TMA-aligned dequant, should be col major
         return torch.empty(
-            (recv_next_shape[-1]//128, recv_next_shape[0]),
+            (recv_next_shape[-1]//128, math.prod(recv_next_shape[:-1])),
             requires_grad=False,
             device=torch.cuda.current_device(),
             dtype=torch.float,
