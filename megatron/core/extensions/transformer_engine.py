@@ -1459,6 +1459,17 @@ except ImportError:
 
 try:
 
+    from transformer_engine.pytorch.permutation import (
+        moe_permute_and_pad_with_probs,
+    )
+    fused_permute_and_pad_with_probs = moe_permute_and_pad_with_probs
+
+except ImportError:
+
+    fused_permute_and_pad_with_probs = None
+
+try:
+
     from transformer_engine.pytorch.cross_entropy import parallel_cross_entropy
 
     def te_parallel_cross_entropy(

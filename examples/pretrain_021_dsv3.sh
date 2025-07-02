@@ -474,6 +474,7 @@ elif [ $PR = fp8 ]; then
         --fp8-format hybrid  \
         --fp8-recipe deepgemm \
         --no-fp8-wgrad \
+        --moe-permute-padding-for-fp8 \
     "
         #--fp8-param-gather \
         #--moe-router-padding-for-fp8 \
