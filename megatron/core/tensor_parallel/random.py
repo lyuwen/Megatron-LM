@@ -32,8 +32,8 @@ except ModuleNotFoundError:
 
 if HAVE_TE:
     try:
-        from transformer_engine.pytorch.tensor.float8_tensor import Float8CurrentScalingQuantizer
-        from transformer_engine.pytorch.tensor._internal.float8_tensor_base import Float8TensorBase
+        #from transformer_engine.pytorch.tensor.float8_tensor import Float8CurrentScalingQuantizer
+        from transformer_engine.pytorch.tensor.float8_zj_tensor import Float8ZJQuantizer
 
         HAVE_FP8 = True
     except ImportError:
@@ -513,13 +513,13 @@ class FP8CheckpointFunction(torch.autograd.Function):
             else:
                 try:
                     # 创建量化器
-                    quantizer = Float8CurrentScalingQuantizer(
+                    quantizer = Float8ZJQuantizer(
                         fp8_dtype=tex.DType.kFloat8E4M3,
-                        device="cuda",
                         rowwise=True,
                         columnwise=False,
-                        force_pow_2_scales=True,
                         amax_epsilon=0.0,
+                        force_pow_2_scales=True,
+                        block_scaling_dim=1,
                     )
                     
                     # 量化输入

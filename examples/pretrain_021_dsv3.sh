@@ -24,9 +24,9 @@ PR=${PR:-bf16}
 PP=${PP:-1} # 6
 EP=${EP:-1} # 8
 FL=${FLASH_ATTENTION:-true} # true
-TP=1
-CP=1
-SP=false
+TP=${TP:-1}
+CP=${CP:-1}
+SP=${SP:-false}
 DO=true
 SFT=false
 ### PARALLEL / BOOL OPTION ###
@@ -358,7 +358,7 @@ fi
 
 if [[ ${ROUTER_BIAS:-false} = true ]]; then
 moe_options=" ${moe_options} --moe-router-enable-expert-bias \
-            --moe-router-bias-update-rate 1e-3"
+            --moe-router-bias-update-rate ${ROUTER_BIAS_UPDATE_RATE:-1e-3}"
 fi
 
 if [[ ${BIAS_MEAN:-false} = true ]]; then
@@ -474,9 +474,10 @@ elif [ $PR = fp8 ]; then
         --fp8-format hybrid  \
         --fp8-recipe deepgemm \
         --no-fp8-wgrad \
-        --moe-router-padding-for-fp8 \
+        --moe-permute-padding-for-fp8 \
     "
         #--fp8-param-gather \
+        #--moe-router-padding-for-fp8 \
     export FP8_OUTER=${FP8_OUTER:-true}
     export FP8_MLP=${FP8_MLP:-true}
     export FP8_ATTENTION=${FP8_ATTENTION:-true}
@@ -639,7 +640,6 @@ megatron_options="  \
         --normalization RMSNorm \
         --norm-epsilon ${RMS_NORM_EPS} \
         --use-rotary-position-embeddings \
-        --no-bias-swiglu-fusion \
         --position-embedding-type rope \
         --untie-embeddings-and-output-weights \
         --disable-bias-linear \
@@ -652,6 +652,7 @@ megatron_options="  \
         --moe-permute-fusion \
         --moe-topk-router-fusion \
         --multi-latent-attention"
+        #--no-bias-swiglu-fusion \
         #--no-rope-fusion \
         # --patch-tokenizer-type DeepSeekV2Tokenizer \
         # --rotary-seq-len-interpolation-factor 1 增加
@@ -670,17 +671,22 @@ if  [[ $ENABLE_RAMPUP_BS = false ]]; then
         --lr-decay-iters ${LR_DECAY_ITERS} \
         --lr-warmup-iters ${LR_WARMUP_ITERS} \
         --train-iters ${TRAIN_ITERS} "
+elif [[ $ENABLE_RAMPUP_BS = fix_lr ]]; then
+    megatron_options=" ${megatron_options} \
+        --train-iters ${TRAIN_ITERS} "
 else
     warm_step=${LR_WARMUP_ITERS:-2000}
     GLOBAL_BATCH_SIZE_avg=1920
     TRAIN_SAMPLES=$(( ${TRAIN_TOKENS} / ${SEQ_LEN} ))
     LR_WARMUP_SAMPLES=$((${warm_step} * ${GLOBAL_BATCH_SIZE_avg} ))
     LR_DECAY_SAMPLES=$(( ${TRAIN_TOKENS} /  ${SEQ_LEN} ))
+    DEFAULT_RAMPUP_BATCH_SIZE="1920 960 54931640"
+    RAMPUP_BATCH_SIZE=${RAMPUP_BATCH_SIZE:-${DEFAULT_RAMPUP_BATCH_SIZE}}
     megatron_options=" ${megatron_options} \
         --lr-decay-samples ${LR_DECAY_SAMPLES} \
         --lr-warmup-samples ${LR_WARMUP_SAMPLES} \
         --train-samples ${TRAIN_SAMPLES} \
-        --rampup-batch-size 1920 960 54931640 "
+        --rampup-batch-size ${RAMPUP_BATCH_SIZE} "
 fi
 
 # Turn on PyTorchProfiler in DSW
@@ -736,10 +742,10 @@ elif [[ $PAO_LEVEL = moments ]]; then
 elif [[ $PAO_LEVEL = grads ]]; then
     new_options=" ${new_options} \
         --use-precision-aware-optimizer \
-        --exp-avg-dtype fp16 \
-        --exp-avg-sq-dtype fp16 \
         --main-grads-dtype bf16 \
     "
+        #--exp-avg-dtype fp16 \
+        #--exp-avg-sq-dtype fp16 \
 elif [[ $PAO_LEVEL = weights ]]; then
     new_options=" ${new_options} \
         --use-precision-aware-optimizer \
@@ -761,7 +767,6 @@ if [[ $OFFLOAD_OPTIMIZER = true ]]; then
         --overlap-cpu-optimizer-d2h-h2d \
         --use-torch-optimizer-for-cpu-offload \
     "
-
 fi
 
 # 开启12LHSD的atten计算方法,打印MFU

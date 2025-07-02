@@ -27,7 +27,8 @@ from megatron.core.fp8_utils import get_fp8_context
 from megatron.core.enums import Fp8Recipe
 from contextlib import nullcontext
 from megatron.core.extensions.transformer_engine import te_checkpoint
-from megatron.core.custom_rs import custom_recompute, conditional_checkpoint
+from megatron.core.custom_rs import conditional_checkpoint
+from megatron.core.enums import Fp8Recipe
 
 
 @dataclass
@@ -153,12 +154,14 @@ class MoELayer(BaseMoELayer):
             )
 
         # Initialize experts
-        self.experts = build_module(
-            self.submodules.experts,
-            self.num_local_experts,
-            self.config,
-            model_comm_pgs=model_comm_pgs,
-        )
+        fp8_init_context = get_fp8_context(config=self.config, is_init=True, layer_type='moe') if self.config.fp8_recipe == Fp8Recipe.deepgemm else nullcontext() 
+        with fp8_init_context:
+            self.experts = build_module(
+                self.submodules.experts,
+                self.num_local_experts,
+                self.config,
+                model_comm_pgs=model_comm_pgs,
+            )
 
         # Initialize shared experts
         if self.use_shared_expert:
@@ -184,16 +187,14 @@ class MoELayer(BaseMoELayer):
             )
             experts_fp8_context = get_fp8_context(self.config, layer_type='moe')
             with experts_fp8_context:
-                expert_output, mlp_bias = self.experts(
-                    dispatched_input, tokens_per_expert, permuted_probs
-                )
+                expert_output, mlp_bias = conditional_checkpoint('experts', False, self.experts, dispatched_input, tokens_per_expert, permuted_probs)
             output, mlp_bias = self.token_dispatcher.token_unpermutation(expert_output, mlp_bias)
             if self.use_shared_expert and not self.shared_expert_overlap:
                 # if shared_expert_overlap is True, the expert calculation happens in
                 # the token_dispatcher to overlap communications and computations
                 shared_experts_fp8_context = get_fp8_context(self.config, layer_type='moe')
                 with shared_experts_fp8_context:
-                    output = output + self.shared_experts(hidden_states)
+                    output = output + conditional_checkpoint('shared_experts', False, self.shared_experts, hidden_states)
             return output, mlp_bias
 
         MOE_CKPT_LAYER = int(os.getenv('MOE_CKPT_LAYER', '0'))

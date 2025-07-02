@@ -132,8 +132,8 @@ class MultiLatentAttention(Attention):
             attention_type=self.attention_type,
             softmax_scale=self.softmax_scale,
             k_channels=self.q_head_dim,
-            v_channels=self.q_head_dim if self.config.attention_backend == AttnBackend.flash else self.config.v_head_dim,
-            # v_channels=self.config.v_head_dim,
+            #v_channels=self.q_head_dim if self.config.attention_backend == AttnBackend.flash else self.config.v_head_dim,
+            v_channels=self.config.v_head_dim,
             cp_comm_type=cp_comm_type,
             model_comm_pgs=self.model_comm_pgs,
         )
@@ -210,8 +210,8 @@ class MultiLatentAttention(Attention):
         # core attention computation
         # ==================================
         # LFu: Pad value_states in MLA when attention backend is Flash Attention
-        if self.q_head_dim != self.config.v_head_dim and self.config.attention_backend == AttnBackend.flash:
-            value = F.pad(value, [0, self.q_head_dim - self.config.v_head_dim])
+        #if self.q_head_dim != self.config.v_head_dim and self.config.attention_backend == AttnBackend.flash:
+        #    value = F.pad(value, [0, self.q_head_dim - self.config.v_head_dim])
         # Need corresponding TE change
         if (self.checkpoint_core_attention or recompute_controller.should_recompute('attn_core')) and self.training:
             core_attn_out = self._checkpointed_attention_forward(
@@ -227,13 +227,13 @@ class MultiLatentAttention(Attention):
                 attn_mask_type=attn_mask_type,
             )
         # LFu: Remove padding
-        if self.q_head_dim != self.config.v_head_dim and self.config.attention_backend == AttnBackend.flash:
-            q_len, bsz, _ = hidden_states.size()
-            # raise ValueError(f"{hidden_states.size()=}, {core_attn_out.shape=}")
-            # n = nh // self.config.v_head_dim
-            core_attn_out = core_attn_out.reshape((q_len, bsz, self.config.num_attention_heads, self.q_head_dim))
-            core_attn_out = core_attn_out[:, :, :, : self.config.v_head_dim]
-            core_attn_out = core_attn_out.reshape((q_len, bsz, self.config.num_attention_heads * self.config.v_head_dim))
+#        if self.q_head_dim != self.config.v_head_dim and self.config.attention_backend == AttnBackend.flash:
+#            q_len, bsz, _ = hidden_states.size()
+#            # raise ValueError(f"{hidden_states.size()=}, {core_attn_out.shape=}")
+#            # n = nh // self.config.v_head_dim
+#            core_attn_out = core_attn_out.reshape((q_len, bsz, self.config.num_attention_heads, self.q_head_dim))
+#            core_attn_out = core_attn_out[:, :, :, : self.config.v_head_dim]
+#            core_attn_out = core_attn_out.reshape((q_len, bsz, self.config.num_attention_heads * self.config.v_head_dim))
 
         if packed_seq_params is not None and packed_seq_params.qkv_format == 'thd':
             # reshape to same output shape as unpacked case

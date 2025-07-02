@@ -3,6 +3,7 @@
 import logging
 from abc import ABC, abstractmethod
 from typing import List, Optional, Tuple
+import os
 
 import torch
 
@@ -39,7 +40,6 @@ from megatron.core.custom_rs import custom_recompute
      num_local_tokens: S/TP*B
      num_global_tokens: num_local_tokens*TP*EP
 """
-
 
 class MoETokenDispatcher:
     """
@@ -820,6 +820,7 @@ class _DeepepManager(_DispatchManager):
         self.router_dtype = config.moe_router_dtype
         self.capacity_factor = config.moe_expert_capacity_factor
         self.permute_fusion = config.moe_permute_fusion
+        self.pad_offsets = None
 
         # Metadata
         self.token_indices: Optional[torch.Tensor] = None
@@ -955,13 +956,30 @@ class _DeepepManager(_DispatchManager):
 
         self.hidden_shape_before_permute = hidden_states.shape
         assert self.dispatched_probs.dtype == torch.float32, "DeepEP only supports float32 probs"
-        hidden_states, permuted_probs, self.reversed_mapping_for_combine = permute(
-            hidden_states,
-            self.dispatched_routing_map,
-            probs=self.dispatched_probs,
-            num_out_tokens=self.tokens_per_expert.sum().item(),
-            fused=self.permute_fusion,
-        )
+
+        if self.config.moe_permute_padding_for_fp8:
+            (
+                hidden_states,
+                permuted_probs,
+                self.reversed_mapping_for_combine,
+                self.pad_offsets,
+                self.tokens_per_expert
+            ) = permute(
+                hidden_states,
+                self.dispatched_routing_map,
+                probs=self.dispatched_probs,
+                fused=self.permute_fusion,
+                tokens_per_expert=self.tokens_per_expert,
+                align_size=get_fp8_align_size(self.config.fp8_recipe),
+            )
+        else:
+            hidden_states, permuted_probs, self.reversed_mapping_for_combine = permute(
+                hidden_states,
+                self.dispatched_routing_map,
+                probs=self.dispatched_probs,
+                num_out_tokens=self.tokens_per_expert.sum().item(),
+                fused=self.permute_fusion,
+            )
         if self.router_dtype == "fp64":
             permuted_probs = permuted_probs.to(torch.float64)
         return hidden_states, permuted_probs
@@ -973,6 +991,7 @@ class _DeepepManager(_DispatchManager):
             restore_shape=self.hidden_shape_before_permute,
             routing_map=self.dispatched_routing_map,
             fused=self.permute_fusion,
+            pad_offsets=self.pad_offsets if self.config.moe_permute_padding_for_fp8 else None,
         )
         return hidden_states
 
