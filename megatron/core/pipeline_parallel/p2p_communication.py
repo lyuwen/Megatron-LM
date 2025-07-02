@@ -4,7 +4,7 @@ from typing import List, Optional, Tuple, Union
 import os
 
 import torch
-
+import math
 from megatron import core
 from megatron.core import ModelParallelConfig
 from megatron.core.parallel_state import (
@@ -355,29 +355,37 @@ def _communicate_fp8(
         reqs = {}
 
     def create_fp8_scale_recv_prev():
+        # deepgemm recipe use TMA-aligned dequant, should be col major
         return torch.empty(
-            (1,),
+            (recv_prev_shape[-1]//128, math.prod(recv_prev_shape[:-1])),
             requires_grad=False,
             device=torch.cuda.current_device(),
             dtype=torch.float,
-        )
+        ).T
 
     def create_fp8_scale_recv_next():
+        # deepgemm recipe use TMA-aligned dequant, should be col major
         return torch.empty(
-            (1,),
+            (recv_next_shape[-1]//128, math.prod(recv_next_shape[:-1])),
             requires_grad=False,
             device=torch.cuda.current_device(),
             dtype=torch.float,
-        )
+        ).T
 
     # Step1 : Fp8 quantize
     fp8_tensor_send_prev = None
     fp8_tensor_send_next = None
     fp8_scale_send_prev = None
     fp8_scale_send_next = None
+    origin_send_prev_shape = None
+    origin_send_next_shape = None
     if tensor_send_prev is not None:
+        origin_send_prev_shape = tensor_send_prev.size()
+        tensor_send_prev = tensor_send_prev.view(-1, tensor_send_prev.shape[-1])
         fp8_tensor_send_prev, fp8_scale_send_prev = Fp8Quantize(tensor_send_prev)
     if tensor_send_next is not None:
+        origin_send_next_shape = tensor_send_next.size()
+        tensor_send_next = tensor_send_next.view(-1, tensor_send_next.shape[-1])
         fp8_tensor_send_next, fp8_scale_send_next = Fp8Quantize(tensor_send_next)
 
     fp8_scale_recv_prev_func = None
@@ -457,9 +465,13 @@ def _communicate_fp8(
     tensor_recv_next_list = []
     for i, tensor in enumerate(fp8_tensor_recv_prev_list):
         tensor_recv_prev = Fp8Dequantize(tensor, fp8_scale_recv_prev_list[i], config.pipeline_dtype)
+        if origin_send_prev_shape is not None:
+            tensor_recv_prev = tensor_recv_prev.view(origin_send_prev_shape)
         tensor_recv_prev_list.append(tensor_recv_prev)
     for i, tensor in enumerate(fp8_tensor_recv_next_list):
         tensor_recv_next = Fp8Dequantize(tensor, fp8_scale_recv_next_list[i], config.pipeline_dtype)
+        if origin_send_next_shape is not None:
+            tensor_recv_next = tensor_recv_next.view(origin_send_next_shape)
         tensor_recv_next_list.append(tensor_recv_next)
 
     if (
@@ -538,7 +550,7 @@ def _communicate(
         - tensor_recv_next: torch.Tensor if recv_next is True, None otherwise.
 
     """
-    
+
     # Interim solution: Directly invoke the FP8 approach
     if FP8_COMM_P2P:
         return _communicate_fp8(
