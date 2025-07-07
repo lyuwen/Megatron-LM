@@ -295,6 +295,9 @@ class TransformerConfig(ModelParallelConfig):
     """When set to False, override FP8 config options and do the wgrad computation
     in higher precision."""
 
+    no_fp8_gemm: bool = False
+    """When set to True, override FP8 config options and skip the GEMM computation"""
+
     fp8_dot_product_attention: bool = False
     """When set to True, use the FP8 implementation of Dot Product Attention."""
 
