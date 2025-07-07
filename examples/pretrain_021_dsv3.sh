@@ -650,8 +650,8 @@ megatron_options="  \
         --qk-layernorm \
         --moe-router-dtype fp32 \
         --moe-permute-fusion \
-        --moe-topk-router-fusion \
         --multi-latent-attention"
+        #--moe-topk-router-fusion \ # Msun temporarily disable becasue of NaN issue
         #--no-bias-swiglu-fusion \
         #--no-rope-fusion \
         # --patch-tokenizer-type DeepSeekV2Tokenizer \

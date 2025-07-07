@@ -154,14 +154,12 @@ class MoELayer(BaseMoELayer):
             )
 
         # Initialize experts
-        fp8_init_context = get_fp8_context(config=self.config, is_init=True, layer_type='moe') if self.config.fp8_recipe == Fp8Recipe.deepgemm else nullcontext() 
-        with fp8_init_context:
-            self.experts = build_module(
-                self.submodules.experts,
-                self.num_local_experts,
-                self.config,
-                model_comm_pgs=model_comm_pgs,
-            )
+        self.experts = build_module(
+            self.submodules.experts,
+            self.num_local_experts,
+            self.config,
+            model_comm_pgs=model_comm_pgs,
+        )
 
         # Initialize shared experts
         if self.use_shared_expert:
