@@ -25,7 +25,19 @@ from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core import mpu
 from megatron.core.sequence_length_scheduler import get_iteration
 
-from megatron.core.fusions.fused_topk_routing import fused_topk_softmax_without_capacity
+from megatron.core.extensions.transformer_engine import (
+    fused_topk_with_score_function,
+    fused_compute_score_for_moe_aux_loss,
+    fused_moe_aux_loss,
+    HAVE_TE_ROUTER,
+)
+
+# Import triton implementation
+try:
+    from megatron.core.fusions.fused_topk_routing import fused_topk_softmax_without_capacity
+    HAVE_TRITON_ROUTER = True
+except ImportError:
+    HAVE_TRITON_ROUTER = False
 
 from megatron.core.custom_rs import custom_recompute
 
@@ -160,6 +172,30 @@ class TopKRouter(Router):
             if self.expert_bias.dtype != torch.float32:
                 self.expert_bias.data = self.expert_bias.data.to(torch.float32)
 
+    def _should_use_te_fusion(self):
+        """Check if we should use Transformer Engine fusion."""
+        return (
+            HAVE_TE_ROUTER
+            and self.config.te_topk_router_fusion
+            and self.config.moe_expert_capacity_factor is None
+        )
+
+    def _should_use_triton_fusion(self):
+        """Check if we should use Triton fusion."""
+        return (
+            HAVE_TRITON_ROUTER
+            and self.config.moe_topk_router_fusion
+            and self.config.moe_expert_capacity_factor is None
+        )
+
+    def _should_use_te_aux_loss(self):
+        """Check if we should use Transformer Engine aux loss fusion."""
+        return (
+            HAVE_TE_ROUTER
+            and (self.config.te_topk_router_fusion or self.config.moe_topk_router_fusion)
+            and self.config.moe_expert_capacity_factor is None
+        )
+
     def sinkhorn_load_balancing(self, logits: torch.Tensor):
         """Apply sinkhorn routing to the logits tensor.
 
@@ -202,6 +238,15 @@ class TopKRouter(Router):
         Returns:
             torch.Tensor: The normalized routing scores.
         """
+        if self._should_use_te_aux_loss():
+            # TE fused分支，直接用TE kernel
+            _, scores = fused_compute_score_for_moe_aux_loss(
+                logits=logits,
+                topk=self.topk,
+                score_function=self.score_function,
+            )
+            return scores
+        # fallback到原始实现
         if self.score_function == "softmax":
             scores = torch.softmax(logits, dim=-1, dtype=torch.float32)
         elif self.score_function == "sigmoid":
@@ -223,8 +268,21 @@ class TopKRouter(Router):
             probs (torch.Tensor): The probabilities of token to experts assignment.
             routing_map (torch.Tensor): The mask of token to experts assignment.
         """
-        if (self.config.moe_topk_router_fusion
-            and self.config.moe_expert_capacity_factor == None):
+        if self._should_use_te_fusion():
+            probs, routing_map = fused_topk_with_score_function(
+                logits=logits,
+                topk=self.topk,
+                use_pre_softmax=self.config.moe_router_pre_softmax,
+                num_groups=self.config.moe_router_num_groups,
+                group_topk=self.config.moe_router_group_topk,
+                scaling_factor=self.config.moe_router_topk_scaling_factor,
+                score_function=self.score_function,
+                expert_bias=self.expert_bias,
+            )
+            # Compute tokens_per_expert from routing_map
+            tokens_per_expert = routing_map.sum(dim=0)
+        elif self._should_use_triton_fusion():
+            # Use triton implementation
             probs, routing_map, tokens_per_expert = fused_topk_softmax_without_capacity(
                 logits,
                 self.topk,
@@ -283,8 +341,21 @@ class TopKRouter(Router):
             routing_map (torch.Tensor): The mask of token to experts assignment.
         """
 
-        if (self.config.moe_topk_router_fusion
-            and self.config.moe_expert_capacity_factor == None):
+        if self._should_use_te_fusion():
+            probs, routing_map = fused_topk_with_score_function(
+                logits=logits,
+                topk=self.topk,
+                use_pre_softmax=self.config.moe_router_pre_softmax,
+                num_groups=self.config.moe_router_num_groups,
+                group_topk=self.config.moe_router_group_topk,
+                scaling_factor=self.config.moe_router_topk_scaling_factor,
+                score_function=self.score_function,
+                expert_bias=self.expert_bias,
+            )
+            # Compute tokens_per_expert from routing_map
+            tokens_per_expert = routing_map.sum(dim=0)
+        elif self._should_use_triton_fusion():
+            # Use triton implementation
             probs, routing_map, tokens_per_expert = fused_topk_softmax_without_capacity(
                 logits,
                 self.topk,
@@ -347,9 +418,22 @@ class TopKRouter(Router):
         elif self.tp_cp_group.size() > 1:
             sequence_partition_group = self.tp_cp_group
 
-        aux_loss = load_balancing_loss_func(
-            moe_aux_loss_coeff=moe_aux_loss_coeff, sequence_partition_group=sequence_partition_group
-        )
+        # TE fused router分支，tokens_per_expert需为int32且在CUDA
+        if self._should_use_te_aux_loss():
+            tokens_per_expert = activation.sum(dim=0)
+            tokens_per_expert = tokens_per_expert.to(dtype=torch.int32, device=activation.device)
+            aux_loss = fused_moe_aux_loss(
+                probs=activation,
+                tokens_per_expert=tokens_per_expert,
+                total_num_tokens=activation.shape[0],
+                num_experts=activation.shape[1],
+                topk=self.topk,
+                coeff=moe_aux_loss_coeff,
+            )
+        else:
+            aux_loss = load_balancing_loss_func(
+                moe_aux_loss_coeff=moe_aux_loss_coeff, sequence_partition_group=sequence_partition_group
+            )
 
         # LFu: disable loss aggregationg during the recompute forward pass
         if self.training and torch.is_grad_enabled():
@@ -493,20 +577,48 @@ class TopKRouter(Router):
             scores, routing_map = self.seq_aux_loss_load_balancing(logits, bsz, seq_length)
         elif self.routing_type == "none":
             # A naive top-k routing without load balancing
-            scores, routing_map, _ = topk_softmax_with_capacity(
-                logits,
-                self.topk,
-                capacity_factor=self.config.moe_expert_capacity_factor,
-                pad_to_capacity=self.config.moe_pad_expert_input_to_capacity,
-                drop_policy=self.config.moe_token_drop_policy,
-                use_pre_softmax=self.config.moe_router_pre_softmax,
-                num_groups=self.config.moe_router_num_groups,
-                group_topk=self.config.moe_router_group_topk,
-                scaling_factor=self.config.moe_router_topk_scaling_factor,
-                deterministic_mode=self.config.deterministic_mode,
-                score_function=self.score_function,
-                expert_bias=self.expert_bias,
-            )
+            if self._should_use_te_fusion():
+                scores, routing_map = fused_topk_with_score_function(
+                    logits=logits,
+                    topk=self.topk,
+                    use_pre_softmax=self.config.moe_router_pre_softmax,
+                    num_groups=self.config.moe_router_num_groups,
+                    group_topk=self.config.moe_router_group_topk,
+                    scaling_factor=self.config.moe_router_topk_scaling_factor,
+                    score_function=self.score_function,
+                    expert_bias=self.expert_bias,
+                )
+            elif self._should_use_triton_fusion():
+                # Use triton implementation
+                scores, routing_map, _ = fused_topk_softmax_without_capacity(
+                    logits,
+                    self.topk,
+                    capacity_factor=self.config.moe_expert_capacity_factor,
+                    pad_to_capacity=self.config.moe_pad_expert_input_to_capacity,
+                    drop_policy=self.config.moe_token_drop_policy,
+                    use_pre_softmax=self.config.moe_router_pre_softmax,
+                    num_groups=self.config.moe_router_num_groups,
+                    group_topk=self.config.moe_router_group_topk,
+                    scaling_factor=self.config.moe_router_topk_scaling_factor,
+                    deterministic_mode=self.config.deterministic_mode,
+                    score_function=self.score_function,
+                    expert_bias=self.expert_bias,
+                )
+            else:
+                scores, routing_map, _ = topk_softmax_with_capacity(
+                    logits,
+                    self.topk,
+                    capacity_factor=self.config.moe_expert_capacity_factor,
+                    pad_to_capacity=self.config.moe_pad_expert_input_to_capacity,
+                    drop_policy=self.config.moe_token_drop_policy,
+                    use_pre_softmax=self.config.moe_router_pre_softmax,
+                    num_groups=self.config.moe_router_num_groups,
+                    group_topk=self.config.moe_router_group_topk,
+                    scaling_factor=self.config.moe_router_topk_scaling_factor,
+                    deterministic_mode=self.config.deterministic_mode,
+                    score_function=self.score_function,
+                    expert_bias=self.expert_bias,
+                )
         else:
             raise ValueError(f"Unsupported MoE routing type: {self.routing_type}")
         # Prevent extra local tokens accumulation on evaluation or activation recomputation
