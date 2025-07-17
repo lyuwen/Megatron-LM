@@ -430,7 +430,9 @@ class MLASelfAttention(MultiLatentAttention):
             #     q_compressed: [s, b, q_lora_rank / TP]
             # elif linear_q_down_proj is Linear:
             #     q_compressed: [s / TP, b, q_lora_rank]
-            q_compressed, _ = self.linear_q_down_proj(hidden_states)
+            linear_fp8_context = get_fp8_context(self.config, layer_type='attention')
+            with linear_fp8_context:
+                q_compressed, _ = self.linear_q_down_proj(hidden_states)
 
             # When output is sharded (ColumnParallelLinear), two things are needed to be
             # identical to a normal Linear.
@@ -491,7 +493,10 @@ class MLASelfAttention(MultiLatentAttention):
             if self.config.q_lora_rank is not None:
                 # q_compressed: [num_tokens, q_lora_rank]
                 # q: [num_tokens, n * (qk_head_dim + qk_pos_emb_head_dim)]
-                q, _ = self.linear_q_up_proj(q_compressed)
+                linear_fp8_context = get_fp8_context(self.config, layer_type='attention')  # Zhiyi
+                with linear_fp8_context:
+                    q, _ = self.linear_q_up_proj(q_compressed)
+                # q, _ = self.linear_q_up_proj(q_compressed)
                 q_compressed = self.q_layernorm(q_compressed)
             else:
                 # q_compressed: [num_tokens, hidden_size]
@@ -505,7 +510,9 @@ class MLASelfAttention(MultiLatentAttention):
 
             kv_compressed = self.kv_layernorm(kv_compressed)
             # kv: [num_tokens, n * (qk_head_dim + v_head_dim)]
-            kv, _ = self.linear_kv_up_proj(kv_compressed)
+            linear_fp8_context = get_fp8_context(self.config, layer_type='attention')  # Zhiyi
+            with linear_fp8_context:
+                kv, _ = self.linear_kv_up_proj(kv_compressed)
 
             # kv: [num_tokens, n, (qk_head_dim + v_head_dim)]
             kv = kv.view(
