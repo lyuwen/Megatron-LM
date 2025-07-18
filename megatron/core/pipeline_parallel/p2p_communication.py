@@ -431,22 +431,20 @@ def _communicate_fp8(
             config
         )
     def create_fp8_scale_recv_prev():
-        # deepgemm recipe use TMA-aligned dequant, should be col major
         return torch.empty(
-            (recv_fp8_scale_prev_shape[-1], math.prod(recv_fp8_scale_prev_shape[:-1])),
+            (math.prod(recv_fp8_scale_prev_shape[:-1]), recv_fp8_scale_prev_shape[-1]),
             requires_grad=False,
             device=torch.cuda.current_device(),
             dtype=torch.float,
-        ).T
+        )
 
     def create_fp8_scale_recv_next():
-        # deepgemm recipe use TMA-aligned dequant, should be col major
         return torch.empty(
-            (recv_fp8_scale_next_shape[-1], math.prod(recv_fp8_scale_next_shape[:-1])),
+            (math.prod(recv_fp8_scale_next_shape[:-1]), recv_fp8_scale_next_shape[-1]),
             requires_grad=False,
             device=torch.cuda.current_device(),
             dtype=torch.float,
-        ).T
+        )
 
     fp8_scale_recv_prev_func = None
     fp8_scale_recv_next_func = None
