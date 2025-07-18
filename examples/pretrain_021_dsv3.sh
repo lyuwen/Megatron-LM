@@ -622,7 +622,6 @@ megatron_options="  \
         --seq-length ${SEQ_LEN} \
         --max-position-embeddings ${MAX_POSITION_EMBEDDINGS} \
         --log-interval 1 \
-        --record-memory-history \
         --log-throughput \
         --eval-interval 10000000 \
         --eval-iters 10 \
