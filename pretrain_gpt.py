@@ -172,6 +172,8 @@ def model_provider(
             rotary_base=args.rotary_base,
             rope_scaling=args.use_rope_scaling,
             mtp_block_spec=mtp_block_spec,
+            use_fused_lce=args.use_fused_lce,
+            logits_split_chunks=args.logits_split_chunks
         )
         if args.num_experts is not None:
             print_rank_0("-" * 18 + " Model  Summary " + "-" * 18)

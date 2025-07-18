@@ -821,6 +821,13 @@ if [[ ${MTP_NUM_LAYERS:-0} -gt 0 ]]; then
     megatron_options=" ${megatron_options} --mtp-num-layers ${MTP_NUM_LAYERS} "
 fi
 
+if [[ ${USE_FUSED_LCE:-false} = true ]]; then
+    megatron_options=" ${megatron_options} \
+        --use-fused-lce 
+        --logits-split-chunks ${LOGITS_SPLIT_CHUNKS:-8}\
+    "
+fi
+
 run_cmd="torchrun $DISTRIBUTED_ARGS ${MEGATRON_PATH}/pretrain_gpt.py
  ${megatron_options} ${dataset_option} ${pr_options} ${load_options} ${te_options} ${activation_checkpoint_options} \
  ${do_options} ${fl_options} ${sp_options} ${moe_options} ${offload_option} ${sft_option} ${vp_options} \
