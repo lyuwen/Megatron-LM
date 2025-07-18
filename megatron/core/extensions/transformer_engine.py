@@ -54,6 +54,17 @@ except ImportError:
     print("ZJ-Transformer-Engine not installed, skipping import")
     HAVE_FP8 = False
 
+try:
+    from transformer_engine.pytorch.router import (
+        fused_topk_with_score_function,
+        fused_compute_score_for_moe_aux_loss,
+        fused_moe_aux_loss,
+    )
+    HAVE_TE_ROUTER = True
+except ImportError:
+    print("Transformer-Engine router functions not available, skipping import")
+    HAVE_TE_ROUTER = False
+
 def _get_extra_te_kwargs(config: TransformerConfig):
     extra_transformer_engine_kwargs = {"params_dtype": config.params_dtype}
 
