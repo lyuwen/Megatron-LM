@@ -413,9 +413,10 @@ if HAVE_TE:
                 if config.fp8_recipe == Fp8Recipe.deepgemm and is_te_min_version("2.3.0.dev0"):
                     fp8_format = transformer_engine.common.recipe.Format.E4M3
                     if layer_type == 'moe':  # Zhiyi
+                        fp8_wgrad = not config.no_fp8_gemm and config.fp8_wgrad
                         fp8_recipe = transformer_engine.common.recipe.Float8ZJScaling(
                             fp8_format=fp8_format,
-                            fp8_wgrad=config.fp8_wgrad,
+                            override_linear_precision=(config.no_fp8_gemm, config.no_fp8_gemm, not fp8_wgrad),
                         )
                     else:
                         fp8_recipe = TEDelayedScaling(

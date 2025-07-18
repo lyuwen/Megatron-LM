@@ -1491,6 +1491,7 @@ def Fp8Quantize(tensor: torch.Tensor) -> (torch.Tensor, torch.Tensor):
         block_scaling_dim = 1,
     )
     quantizer.internal = True
+    quantizer.with_TMA = False
     quantized_tensor = quantizer(tensor)
     return quantized_tensor._rowwise_data, quantized_tensor._rowwise_scale_inv
 
@@ -1505,6 +1506,6 @@ def Fp8Dequantize(tensor: torch.Tensor, scale: torch.Tensor, dtype=torch.bfloat1
         is_2D_scaled=False,
         requires_grad=False,
     )
-    dequantized_tensor = fp8_tensor.dequantize(dtype=dtype)
+    dequantized_tensor = fp8_tensor.dequantize(dtype=dtype, with_TMA=False)
     dequantized_tensor.requires_grad_(True)
     return dequantized_tensor
