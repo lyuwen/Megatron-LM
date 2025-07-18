@@ -176,14 +176,6 @@ class TopKRouter(Router):
         """Check if we should use Transformer Engine fusion."""
         return (
             HAVE_TE_ROUTER
-            and self.config.te_topk_router_fusion
-            and self.config.moe_expert_capacity_factor is None
-        )
-
-    def _should_use_triton_fusion(self):
-        """Check if we should use Triton fusion."""
-        return (
-            HAVE_TRITON_ROUTER
             and self.config.moe_topk_router_fusion
             and self.config.moe_expert_capacity_factor is None
         )
@@ -192,7 +184,7 @@ class TopKRouter(Router):
         """Check if we should use Transformer Engine aux loss fusion."""
         return (
             HAVE_TE_ROUTER
-            and (self.config.te_topk_router_fusion or self.config.moe_topk_router_fusion)
+            and self.config.moe_topk_router_fusion
             and self.config.moe_expert_capacity_factor is None
         )
 
@@ -281,22 +273,6 @@ class TopKRouter(Router):
             )
             # Compute tokens_per_expert from routing_map
             tokens_per_expert = routing_map.sum(dim=0)
-        elif self._should_use_triton_fusion():
-            # Use triton implementation
-            probs, routing_map, tokens_per_expert = fused_topk_softmax_without_capacity(
-                logits,
-                self.topk,
-                capacity_factor=self.config.moe_expert_capacity_factor,
-                pad_to_capacity=self.config.moe_pad_expert_input_to_capacity,
-                drop_policy=self.config.moe_token_drop_policy,
-                use_pre_softmax=self.config.moe_router_pre_softmax,
-                num_groups=self.config.moe_router_num_groups,
-                group_topk=self.config.moe_router_group_topk,
-                scaling_factor=self.config.moe_router_topk_scaling_factor,
-                deterministic_mode=self.config.deterministic_mode,
-                score_function=self.score_function,
-                expert_bias=self.expert_bias,
-            )
         else:
             probs, routing_map, tokens_per_expert = topk_softmax_with_capacity(
                 logits,
@@ -354,22 +330,6 @@ class TopKRouter(Router):
             )
             # Compute tokens_per_expert from routing_map
             tokens_per_expert = routing_map.sum(dim=0)
-        elif self._should_use_triton_fusion():
-            # Use triton implementation
-            probs, routing_map, tokens_per_expert = fused_topk_softmax_without_capacity(
-                logits,
-                self.topk,
-                capacity_factor=self.config.moe_expert_capacity_factor,
-                pad_to_capacity=self.config.moe_pad_expert_input_to_capacity,
-                drop_policy=self.config.moe_token_drop_policy,
-                use_pre_softmax=self.config.moe_router_pre_softmax,
-                num_groups=self.config.moe_router_num_groups,
-                group_topk=self.config.moe_router_group_topk,
-                scaling_factor=self.config.moe_router_topk_scaling_factor,
-                deterministic_mode=self.config.deterministic_mode,
-                score_function=self.score_function,
-                expert_bias=self.expert_bias,
-            )
         else:
             probs, routing_map, tokens_per_expert = topk_softmax_with_capacity(
                 logits,
@@ -585,22 +545,6 @@ class TopKRouter(Router):
                     num_groups=self.config.moe_router_num_groups,
                     group_topk=self.config.moe_router_group_topk,
                     scaling_factor=self.config.moe_router_topk_scaling_factor,
-                    score_function=self.score_function,
-                    expert_bias=self.expert_bias,
-                )
-            elif self._should_use_triton_fusion():
-                # Use triton implementation
-                scores, routing_map, _ = fused_topk_softmax_without_capacity(
-                    logits,
-                    self.topk,
-                    capacity_factor=self.config.moe_expert_capacity_factor,
-                    pad_to_capacity=self.config.moe_pad_expert_input_to_capacity,
-                    drop_policy=self.config.moe_token_drop_policy,
-                    use_pre_softmax=self.config.moe_router_pre_softmax,
-                    num_groups=self.config.moe_router_num_groups,
-                    group_topk=self.config.moe_router_group_topk,
-                    scaling_factor=self.config.moe_router_topk_scaling_factor,
-                    deterministic_mode=self.config.deterministic_mode,
                     score_function=self.score_function,
                     expert_bias=self.expert_bias,
                 )

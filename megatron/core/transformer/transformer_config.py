@@ -496,9 +496,6 @@ class TransformerConfig(ModelParallelConfig):
     moe_topk_router_fusion: bool = False
     """Fuse seq aux loss ops during topk router."""
 
-    te_topk_router_fusion: bool = False
-    """Use Transformer Engine fused op in topk router."""
-
     ##################
     # Context Parallel
     ##################

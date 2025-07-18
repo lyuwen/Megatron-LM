@@ -2677,9 +2677,6 @@ def _add_moe_args(parser):
     group.add_argument('--moe-topk-router-fusion', action="store_true",
                        help='experimental use trion fusion op in topk router, '
                        'moe-router-pre-softmax must be set to true, moe-expert-capacity-factor must be set to None must be set to true')
-    group.add_argument('--te-topk-router-fusion', action="store_true",
-                       help='use Transformer Engine fused op in topk router, '
-                       'moe-router-pre-softmax must be set to true, moe-expert-capacity-factor must be set to None')
 
     return parser
 
