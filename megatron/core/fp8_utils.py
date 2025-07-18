@@ -422,17 +422,11 @@ if HAVE_TE:
                         fp8_recipe = TEDelayedScaling(
                             config=config,
                             fp8_format=fp8_format,
-                            override_linear_precision=(False, False, not config.fp8_wgrad),
                         )
-                    # fp8_recipe = transformer_engine.common.recipe.Float8ZJScaling(
-                    #     fp8_format=fp8_format,
-                    #     fp8_wgrad=config.fp8_wgrad,
-                    # )
                 elif config.fp8_recipe == Fp8Recipe.delayed:
                     fp8_recipe = TEDelayedScaling(
                         config=config,
                         fp8_format=fp8_format,
-                        override_linear_precision=(False, False, not config.fp8_wgrad),
                     )
                 elif config.fp8_recipe == Fp8Recipe.tensorwise and is_te_min_version("2.2.0.dev0"):
                     fp8_recipe = transformer_engine.common.recipe.Float8CurrentScaling(
