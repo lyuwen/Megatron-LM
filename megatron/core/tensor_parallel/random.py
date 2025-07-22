@@ -5,7 +5,7 @@
 
 import contextlib
 import logging
-from typing import Union
+from typing import Optional, Union
 
 import torch
 from torch import _C
@@ -24,21 +24,12 @@ from .utils import gather_split_1d_tensor, split_tensor_into_1d_equal_chunks
 
 try:
     import transformer_engine  # pylint: disable=unused-import
-    import transformer_engine_torch as tex
+    from transformer_engine.pytorch.distributed import activation_recompute_forward
+    from transformer_engine.pytorch.fp8 import FP8GlobalStateManager, fp8_autocast
 
     HAVE_TE = True
 except ModuleNotFoundError:
     HAVE_TE = False
-
-if HAVE_TE:
-    try:
-        #from transformer_engine.pytorch.tensor.float8_tensor import Float8CurrentScalingQuantizer
-        from transformer_engine.pytorch.tensor.float8_zj_tensor import Float8ZJQuantizer
-
-        HAVE_FP8 = True
-    except ImportError:
-        print("ZJ-Transformer-Engine not installed, skipping import")
-        HAVE_FP8 = False
 
 
 # Default name for the model parallel rng tracker.
@@ -337,9 +328,10 @@ def model_parallel_cuda_manual_seed(
     te_rng_tracker: bool = False,
     inference_rng_tracker: bool = False,
     use_cudagraphable_rng: bool = False,
-    tp_rank: int = None,
-    ep_rank: int = None,
-    etp_rank: int = None,
+    tp_rank: Optional[int] = None,
+    ep_rank: Optional[int] = None,
+    etp_rank: Optional[int] = None,
+    force_reset_rng: bool = False,
 ):
     """Initialize model parallel cuda seed.
 
@@ -370,7 +362,9 @@ def model_parallel_cuda_manual_seed(
     # Data parallel gets the original seed.
     data_parallel_seed = seed
 
-    initialize_rng_tracker(te_rng_tracker, inference_rng_tracker, use_cudagraphable_rng)
+    initialize_rng_tracker(
+        te_rng_tracker, inference_rng_tracker, use_cudagraphable_rng, force_reset=force_reset_rng
+    )
     _CUDA_RNG_STATE_TRACKER.reset()
     # Set the default state.
     torch.cuda.manual_seed(data_parallel_seed)
@@ -494,129 +488,10 @@ class CheckpointFunction(torch.autograd.Function):
         return (None, None) + grads
 
 
-class FP8CheckpointFunction(torch.autograd.Function):
-    # pylint: disable=missing-function-docstring
-    @staticmethod
-    def forward(ctx, run_function, distribute_saved_activations, *args):
-        """Forward pass."""
-        ctx.run_function = run_function
-        ctx.distribute_saved_activations = distribute_saved_activations
-        ctx.rng_states = _get_all_rng_states()
-        
-        # 尝试FP8量化
-        with torch.no_grad():
-            if args[0] is None or args[0].numel() == 0:
-                # 空张量直接使用，不做量化
-                inp_for_forward = args[0]
-                ctx.used_fp8 = False
-                # 不保存任何额外副本
-            else:
-                try:
-                    # 创建量化器
-                    quantizer = Float8ZJQuantizer(
-                        fp8_dtype=tex.DType.kFloat8E4M3,
-                        rowwise=True,
-                        columnwise=False,
-                        amax_epsilon=0.0,
-                        force_pow_2_scales=True,
-                        block_scaling_dim=1,
-                    )
-                    
-                    # 量化输入
-                    ctx.fp8_tensor = quantizer(args[0])
-                    ctx.fp8_tensor.raw_dtype = args[0].dtype
-                    
-                    # 使用反量化张量进行计算，但不存储它
-                    inp_for_forward = ctx.fp8_tensor.dequantize(dtype=ctx.fp8_tensor.dtype)
-                    ctx.used_fp8 = True
-                    
-                    # 重要：此处可以删除原始输入的引用，节省内存
-                    # 但需要确保其他地方不再需要原始输入
-                except RuntimeError:
-                    # 量化失败就直接使用原始输入
-                    inp_for_forward = args[0]
-                    ctx.used_fp8 = False
-                    # 注意：这里不额外保存原始输入
-                    # 依赖于PyTorch的autograd机制自动保存需要的张量
-
-        # 运行前向传播
-        with torch.no_grad():
-            outputs = run_function(inp_for_forward, *args[1:])
-        
-        # 保存模型并行相关信息
-        if distribute_saved_activations:
-            ctx.input_0_shape = args[0].data.shape
-            safely_set_viewless_tensor_data(
-                args[0], split_tensor_into_1d_equal_chunks(args[0].data, new_buffer=True)
-            )
-        
-        # 只保存其他输入参数，不保存第一个输入
-        ctx.save_for_backward(*args[1:])
-        
-        return outputs
-
-    # pylint: disable=missing-function-docstring
-    @staticmethod
-    def backward(ctx, *args):
-        """Backward pass."""
-        if not torch.autograd._is_checkpoint_valid():
-            raise RuntimeError(
-                "Checkpointing is not compatible with .grad(), "
-                "please use .backward() if possible"
-            )
-        
-        # 获取保存的张量，这些不包括第一个输入
-        other_inputs = ctx.saved_tensors
-        
-        # 确定第一个输入的来源
-        with torch.no_grad():
-            if hasattr(ctx, 'used_fp8') and ctx.used_fp8 and hasattr(ctx, 'fp8_tensor'):
-                # 如果使用了FP8，反量化获得第一个输入
-                first_input = ctx.fp8_tensor.dequantize(dtype=ctx.fp8_tensor.raw_dtype)
-                # 立即删除fp8_tensor，减少内存占用
-                del ctx.fp8_tensor
-            else:
-                # 这种情况应该很少见，因为我们在forward中并没有保存original_input
-                # 可能需要一个备用方案来重建输入
-                raise RuntimeError("FP8量化失败且没有保存原始输入，无法进行反向传播")
-        
-        # 组合所有输入
-        inputs = (first_input,) + other_inputs
-        
-        # 处理分布式情况
-        if ctx.distribute_saved_activations:
-            safely_set_viewless_tensor_data(
-                inputs[0], gather_split_1d_tensor(inputs[0].data).view(ctx.input_0_shape)
-            )
-        
-        # 重新计算前向传播，用于反向传播
-        with _fork_rng():
-            _set_all_rng_states(*ctx.rng_states)
-            detached_inputs = detach_variable(inputs)
-            with torch.enable_grad():
-                outputs = ctx.run_function(*detached_inputs)
-                
-        # 处理输出和反向传播
-        if isinstance(outputs, torch.Tensor):
-            outputs = (outputs,)
-        
-        outputs, gradient_args = zip(
-            *filter(lambda x: torch.is_tensor(x[0]) and x[0].requires_grad, zip(outputs, args))
-        )
-        torch.autograd.backward(outputs, gradient_args)
-        grads = tuple(inp.grad if isinstance(inp, torch.Tensor) else inp for inp in detached_inputs)
-        return (None, None) + grads
-
-
 def checkpoint(function, distribute_saved_activations, *args):
     """Checkpoint a model or part of the model.
     This has been directly copied from torch.utils.checkpoint."""
     return CheckpointFunction.apply(function, distribute_saved_activations, *args)
-    #return FP8CheckpointFunction.apply(function, distribute_saved_activations, *args)
-
-
-def fp8_checkpoint(function, distribute_saved_activations, *args):
-    return FP8CheckpointFunction.apply(function, distribute_saved_activations, *args)
 
 
 class CheckpointWithoutOutputFunction(torch.autograd.Function):
@@ -628,7 +503,17 @@ class CheckpointWithoutOutputFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, run_function, checkpoint_without_output_obj, *args):
         """Forward pass."""
-        with torch.no_grad():
+        if checkpoint_without_output_obj.fp8:
+            fp8 = FP8GlobalStateManager.is_fp8_enabled()
+            ctx.fp8 = fp8
+            ctx.fp8_recipe = FP8GlobalStateManager.get_fp8_recipe() if fp8 else None
+            fwd_ctx = activation_recompute_forward(activation_recompute=True, recompute_phase=False)
+        else:
+            ctx.fp8 = False
+            ctx.fp8_recipe = None
+            fwd_ctx = contextlib.nullcontext()
+
+        with torch.no_grad(), fwd_ctx:
             outputs = run_function(*args)
         ctx.save_for_backward(*detach_variable(args))
         # the CheckpointWithoutOutput object is passed in, then it can access the saved input
@@ -658,7 +543,8 @@ class CheckpointWithoutOutput(object):
     backward pass to reduce the memory usage.
     """
 
-    def __init__(self):
+    def __init__(self, fp8=False):
+        self.fp8 = fp8 is not None
         self.run_function = None
         self.fwd_cpu_rng_state = None
         self.fwd_cuda_rng_state = None
@@ -689,7 +575,16 @@ class CheckpointWithoutOutput(object):
         with _fork_rng():
             _set_all_rng_states(*self.rng_states)
 
-            with torch.enable_grad():
+            if self.fp8:
+                recompute_ctx = activation_recompute_forward(
+                    activation_recompute=True, recompute_phase=True
+                )
+                fp8_ctx = fp8_autocast(enabled=self.ctx.fp8, fp8_recipe=self.ctx.fp8_recipe)
+            else:
+                recompute_ctx = contextlib.nullcontext()
+                fp8_ctx = contextlib.nullcontext()
+
+            with torch.enable_grad(), fp8_ctx, recompute_ctx:
                 outputs = self.run_function(*self.ctx.saved_tensors)
 
         self.run_function = None

@@ -25,9 +25,7 @@ class RecomputeController:
             'unpermutation': os.getenv('RECOMPUTE_UNPERMUTATION', 'true').lower() == 'true',
             'shared_experts': os.getenv('RECOMPUTE_SHARED_EXPERTS', 'true').lower() == 'true',
             
-            'expert_fc1': os.getenv('RECOMPUTE_EXPERT_FC1', 'true').lower() == 'true',
             'expert_bias_act': os.getenv('RECOMPUTE_EXPERT_BIAS_ACT', 'true').lower() == 'true',
-            'expert_fc2': os.getenv('RECOMPUTE_EXPERT_FC2', 'true').lower() == 'true',
 
             'attn_core': os.getenv('RECOMPUTE_ATTN_CORE', 'true').lower() == 'true',
             'attn_upproj': os.getenv('RECOMPUTE_ATTN_UPPROJ', 'true').lower() == 'true',
@@ -43,14 +41,10 @@ class RecomputeController:
             self.component_switches['experts'] = False
             self.component_switches['unpermutation'] = False
             self.component_switches['shared_experts'] = False
-            self.component_switches['expert_fc1'] = False
             self.component_switches['expert_bias_act'] = False
-            self.component_switches['expert_fc2'] = False
 
         if self.component_switches['experts']:
-            self.component_switches['expert_fc1'] = False
             self.component_switches['expert_bias_act'] = False
-            self.component_switches['expert_fc2'] = False
     
     def should_recompute(self, component_name: str) -> bool:
         """判断指定组件是否应该启用重计算"""
@@ -103,14 +97,10 @@ def conditional_checkpoint(component_name: str, force_recompute: bool, func: Cal
     from megatron.core import tensor_parallel, parallel_state
     from megatron.core.extensions.transformer_engine import te_checkpoint
 
-    if FP8_CTX and component_name in ['experts']:
-        from megatron.core.tensor_parallel.random import fp8_checkpoint
-        return fp8_checkpoint(func, False, *args)
-    else:
-        return te_checkpoint(
-            func,
-            *args,
-            distribute_saved_activations=False,
-            get_rng_state_tracker=tensor_parallel.random.get_cuda_rng_tracker,
-            tp_group=parallel_state.get_tensor_model_parallel_group(),
-        ) 
+    return te_checkpoint(
+        func,
+        *args,
+        distribute_saved_activations=False,
+        get_rng_state_tracker=tensor_parallel.random.get_cuda_rng_tracker,
+        tp_group=parallel_state.get_tensor_model_parallel_group(),
+    ) 
