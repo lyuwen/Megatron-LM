@@ -134,7 +134,7 @@ def parse_log_file(file_path, show_lm_loss=False, global_batch_size=None):
                     detected_global_batch_size = parsed['global_batch_size']
                 
                 # 计算consumed tokens
-                if 'consumed_tokens' in parsed:
+                if False: #'consumed_tokens' in parsed:
                     # 如果日志中直接有consumed tokens，直接使用
                     consumed_token_value = parsed['consumed_tokens']
                 else:

@@ -532,6 +532,9 @@ elif [ $PR = fp8 ]; then
     export FP8_MOE=${FP8_MOE:-true}
     export FP8_COMM_P2P=${FP8_COMM_P2P:-true}
     export FP8_COMM_DEEPEP=${FP8_COMM_DEEPEP:-true}
+    if [ ${FP8_PARAM_GATHER:-false} = true ]; then
+        pr_options=" ${pr_options} --fp8-param-gather "
+    fi
 fi
 
 if [ $DO = true ]; then
@@ -598,6 +601,15 @@ if [[ ${DEBUG_PRETRAIN_CHECKPOINT_PATH:-none} != none ]]; then
         --no-load-rng \
         --no-save-optim \
         --no-save-rng \
+        "
+elif [[ ${CPT_PRETRAIN_CHECKPOINT_PATH:-none} != none ]]; then
+    PRETRAIN_CHECKPOINT_PATH=$CPT_PRETRAIN_CHECKPOINT_PATH
+    ckpt_options=" ${ckpt_options} \
+        --auto-detect-ckpt-format \
+        --reset-dataloader \
+        --reset-iterations \
+        --no-load-optim \
+        --no-load-rng \
         "
 fi
 
