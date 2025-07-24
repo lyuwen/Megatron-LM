@@ -93,7 +93,7 @@ class MultiLatentAttention(Attention):
         self.recompute_up_proj = (
             self.config.recompute_granularity == 'selective'
             and "mla_up_proj" in self.config.recompute_modules
-        )
+        ) or recompute_controller.should_recompute('attn_upproj')
         self.qkv_up_checkpoint = None
 
         mscale = _yarn_get_mscale(self.config.rotary_scaling_factor, self.config.mscale)
@@ -213,7 +213,7 @@ class MultiLatentAttention(Attention):
         #if self.q_head_dim != self.config.v_head_dim and self.config.attention_backend == AttnBackend.flash:
         #    value = F.pad(value, [0, self.q_head_dim - self.config.v_head_dim])
         # Need corresponding TE change
-        if (self.checkpoint_core_attention or recompute_controller.should_recompute('attn_core')) and self.training:
+        if self.checkpoint_core_attention and self.training:
             core_attn_out = self._checkpointed_attention_forward(
                 query, key, value, attention_mask, packed_seq_params=packed_seq_params
             )
@@ -604,7 +604,7 @@ class MLASelfAttention(MultiLatentAttention):
             value = value.contiguous()
             return query, key, value
 
-        if self.recompute_up_proj or recompute_controller.should_recompute('attn_upproj'):
+        if self.recompute_up_proj:
             #self.qkv_up_checkpoint = tensor_parallel.CheckpointWithoutOutput(fp8=self.config.fp8)
             self.qkv_up_checkpoint = tensor_parallel.CheckpointWithoutOutput()
             query, key, value = self.qkv_up_checkpoint.checkpoint(

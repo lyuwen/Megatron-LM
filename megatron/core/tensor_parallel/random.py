@@ -31,6 +31,15 @@ try:
 except ModuleNotFoundError:
     HAVE_TE = False
 
+try:
+    from OpenMixOpl.triton import (
+        act_quant_B_ptr as act_quant,
+        act_dequant_B_ptr as act_dequant
+    )
+    HAVE_OPENMIXOPL = True
+except ModuleNotFoundError:
+    HAVE_OPENMIXOPL = False
+
 
 # Default name for the model parallel rng tracker.
 _MODEL_PARALLEL_RNG_TRACKER_NAME = 'model-parallel-rng'
@@ -501,7 +510,7 @@ class CheckpointWithoutOutputFunction(torch.autograd.Function):
     """
 
     @staticmethod
-    def forward(ctx, run_function, checkpoint_without_output_obj, *args):
+    def forward(ctx, run_function, checkpoint_without_output_obj, use_fp8_quantization=False, *args):
         """Forward pass."""
         if checkpoint_without_output_obj.fp8:
             fp8 = FP8GlobalStateManager.is_fp8_enabled()
@@ -513,9 +522,23 @@ class CheckpointWithoutOutputFunction(torch.autograd.Function):
             ctx.fp8_recipe = None
             fwd_ctx = contextlib.nullcontext()
 
+        ctx.use_fp8_quantization = use_fp8_quantization and HAVE_OPENMIXOPL
+
         with torch.no_grad(), fwd_ctx:
             outputs = run_function(*args)
-        ctx.save_for_backward(*detach_variable(args))
+        
+        # Quantize tensors if enabled and OpenMixOpl is available
+        if ctx.use_fp8_quantization:
+            quantized_args = []
+            for arg in detach_variable(args):
+                if isinstance(arg, torch.Tensor):
+                    quantized_args.append(act_quant(arg))
+                else:
+                    quantized_args.append(arg)
+            ctx.save_for_backward(*quantized_args)
+        else:
+            ctx.save_for_backward(*detach_variable(args))
+            
         # the CheckpointWithoutOutput object is passed in, then it can access the saved input
         # tensors later for recomputation
         checkpoint_without_output_obj.ctx = ctx
@@ -525,11 +548,22 @@ class CheckpointWithoutOutputFunction(torch.autograd.Function):
     def backward(ctx, *args):
         """Backward pass."""
         inputs = ctx.saved_tensors
+        
+        # Dequantize tensors if they were quantized
+        if ctx.use_fp8_quantization:
+            dequantized_inputs = []
+            for input_tensor in inputs:
+                if isinstance(input_tensor, tuple) and len(input_tensor) == 2:  # quantized tensor format
+                    dequantized_inputs.append(act_dequant(*input_tensor))
+                else:
+                    dequantized_inputs.append(input_tensor)
+            inputs = dequantized_inputs
+        
         outputs = ctx.outputs
         torch.autograd.backward(outputs, args)
         ctx.outputs = None
         grads = tuple(inp.grad if isinstance(inp, torch.Tensor) else inp for inp in inputs)
-        return (None, None) + grads
+        return (None, None, None) + grads
 
 
 class CheckpointWithoutOutput(object):
@@ -543,8 +577,9 @@ class CheckpointWithoutOutput(object):
     backward pass to reduce the memory usage.
     """
 
-    def __init__(self, fp8=False):
+    def __init__(self, fp8=False, use_fp8_quantization=False):
         self.fp8 = fp8 is not None
+        self.use_fp8_quantization = use_fp8_quantization and HAVE_OPENMIXOPL
         self.run_function = None
         self.fwd_cpu_rng_state = None
         self.fwd_cuda_rng_state = None
@@ -558,7 +593,7 @@ class CheckpointWithoutOutput(object):
 
         self.rng_states = _get_all_rng_states()
 
-        outputs = CheckpointWithoutOutputFunction.apply(run_function, self, *args)
+        outputs = CheckpointWithoutOutputFunction.apply(run_function, self, self.use_fp8_quantization, *args)
         self.outputs = outputs
         if isinstance(self.outputs, torch.Tensor):
             self.outputs = (self.outputs,)
@@ -584,8 +619,20 @@ class CheckpointWithoutOutput(object):
                 recompute_ctx = contextlib.nullcontext()
                 fp8_ctx = contextlib.nullcontext()
 
+            # Dequantize tensors if they were quantized
+            if self.use_fp8_quantization:
+                dequantized_inputs = []
+                for input_tensor in self.ctx.saved_tensors:
+                    if isinstance(input_tensor, tuple) and len(input_tensor) == 2:  # quantized tensor format
+                        dequantized_inputs.append(act_dequant(*input_tensor))
+                    else:
+                        dequantized_inputs.append(input_tensor)
+                inputs_for_recompute = dequantized_inputs
+            else:
+                inputs_for_recompute = self.ctx.saved_tensors
+                
             with torch.enable_grad(), fp8_ctx, recompute_ctx:
-                outputs = self.run_function(*self.ctx.saved_tensors)
+                outputs = self.run_function(*inputs_for_recompute)
 
         self.run_function = None
         self.rng_states = None

@@ -248,7 +248,7 @@ class GroupedMLP(MegatronModule):
     ):
         """Forward step of the GroupedMLP."""
         if self.activation_recompute:
-            self.activation_checkpoint = tensor_parallel.CheckpointWithoutOutput()
+            self.activation_checkpoint = tensor_parallel.CheckpointWithoutOutput(use_fp8_quantization=True)
 
         if self.config.moe_apply_probs_on_input:
             assert (
@@ -815,7 +815,7 @@ class TEGroupedMLP(MegatronModule):
             return intermediate_parallel
 
         if self.activation_recompute:
-            self.activation_checkpoint = tensor_parallel.CheckpointWithoutOutput()
+            self.activation_checkpoint = tensor_parallel.CheckpointWithoutOutput(use_fp8_quantization=True)
             intermediate_parallel = self.activation_checkpoint.checkpoint(
                 bias_act_func, intermediate_parallel, bias_parallel, permuted_probs
             )

@@ -26,6 +26,7 @@ from megatron.core.process_groups_config import ModelCommProcessGroups
 from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.spec_utils import ModuleSpec, build_module
 from megatron.core.utils import deprecate_inference_params, divide, is_fa_min_version
+from megatron.core.custom_rs import recompute_controller, conditional_checkpoint
 
 from .enums import AttnMaskType
 from .transformer_config import TransformerConfig
@@ -144,7 +145,7 @@ class Attention(MegatronModule, ABC):
         self.checkpoint_core_attention = (
             self.config.recompute_granularity == 'selective'
             and "core_attn" in self.config.recompute_modules
-        )
+        ) or recompute_controller.should_recompute('attn_core')
 
         # Output.
         self.linear_proj = build_module(
