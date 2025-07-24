@@ -225,7 +225,7 @@ QK_NOPE_HEAD_DIM=${QK_NOPE_HEAD_DIM:-128}
 QK_ROPE_HEAD_DIM=64
 V_HEAD_DIM=128
 ROPE_THETA=10000
-SCALE_FACTOR=${SCALE_FACTOR:-40}
+SCALE_FACTOR=${SCALE_FACTOR:-1}
 NUM_EXPERTS=${NUM_EXPERTS:-160}
 ROUTER_TOPK=${ROUTER_TOPK:-6}
 NUM_SHARED_EXPERTS=${NUM_SHARED_EXPERTS:-2}
@@ -239,7 +239,8 @@ moe_options=" \
     --num-experts ${NUM_EXPERTS} \
     --moe-layer-freq ${MOE_LAYER_FREQ} \
     --moe-first-k-dense-replace ${MOE_FIRST_K_DENSE_REPLACE} \
-    --moe-aux-loss-coeff 0.001 \
+    --moe-aux-loss-coeff 0.0005 \
+    --moe-z-loss-coeff 0 \
     --moe-shared-expert-intermediate-size $((${MOE_INTERMEDIATE_SIZE} * ${NUM_SHARED_EXPERTS} )) \
     --expert-model-parallel-size ${EP} \
     --q-lora-rank ${Q_LORA_RANK} \
@@ -420,6 +421,9 @@ elif [ $DISPATCHER_TYPE = alltoall ]; then
     moe_options=" ${moe_options}  --moe-token-dispatcher-type alltoall --moe-shared-expert-overlap "
 elif [ $DISPATCHER_TYPE = flex_deepep ]; then
     moe_options=" ${moe_options} --moe-token-dispatcher-type flex --moe-enable-deepep " # --moe-shared-expert-overlap "
+    if [ ${MOE_SHARED_EXPERT_OVERLAP:-false} = true ]; then
+        moe_options=" ${moe_options} --moe-shared-expert-overlap "
+    fi
 else
 echo "Unsupported dispatcher type: ${DISPATCHER_TYPE}"
 exit 1
@@ -710,8 +714,8 @@ megatron_options="  \
         --qk-layernorm \
         --moe-router-dtype fp32 \
         --moe-permute-fusion \
-        --moe-topk-router-fusion \
         --multi-latent-attention"
+        #--moe-topk-router-fusion \
         #--no-bias-swiglu-fusion \
         #--no-rope-fusion \
         # --patch-tokenizer-type DeepSeekV2Tokenizer \
