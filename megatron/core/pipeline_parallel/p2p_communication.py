@@ -4,7 +4,7 @@ from typing import List, Optional, Tuple, Union
 import os
 
 import torch
-import math
+
 from megatron import core
 from megatron.core import ModelParallelConfig
 from megatron.core.parallel_state import (
@@ -273,30 +273,53 @@ def _communicate_fp8(
         - tensor_recv_next: torch.Tensor if recv_next is True, None otherwise.
     """
     # wait_on_reqs = True
+    tensor_recv_prev_func = None
+    tensor_recv_next_func = None
 
+    if not config.variable_seq_lengths:
+        recv_prev_shape = tensor_shape
+        recv_next_shape = tensor_shape
+    else:
+        recv_prev_shape, recv_next_shape = _communicate_shapes(
+            tensor_send_next, tensor_send_prev, recv_prev, recv_next, config
+        )
 
-    # Step1 : Fp8 quantize
-    fp8_tensor_send_prev = None
-    fp8_tensor_send_next = None
-    fp8_scale_send_prev = None
-    fp8_scale_send_next = None
-    if tensor_send_prev is not None:
-        # 3d tensor to 2d tensor
-        _, micro_batch_size, hidden_size = tensor_send_prev.shape
-        tensor_send_prev = tensor_send_prev.view(-1, hidden_size)
-        fp8_tensor_send_prev, fp8_scale_send_prev = Fp8Quantize(tensor_send_prev)
-        # 2d tensor to 3d tensor
-        fp8_tensor_send_prev = fp8_tensor_send_prev.view(-1, micro_batch_size, fp8_tensor_send_prev.shape[-1])
-        fp8_scale_send_prev = fp8_scale_send_prev.view(-1, micro_batch_size, fp8_scale_send_prev.shape[-1])
-    if tensor_send_next is not None:
-        _, micro_batch_size, hidden_size = tensor_send_next.shape
-        tensor_send_next = tensor_send_next.view(-1, hidden_size)
-        fp8_tensor_send_next, fp8_scale_send_next = Fp8Quantize(tensor_send_next)
-        fp8_tensor_send_next = fp8_tensor_send_next.view(-1, micro_batch_size, fp8_tensor_send_next.shape[-1])
-        fp8_scale_send_next = fp8_scale_send_next.view(-1, micro_batch_size, fp8_scale_send_next.shape[-1])
+    def create_tensor_recv_prev():
+        return torch.empty(
+            recv_prev_shape,
+            requires_grad=False,
+            device=torch.cuda.current_device(),
+            dtype=torch.uint8,
+        )
 
+    def create_tensor_recv_next():
+        return torch.empty(
+            recv_next_shape,
+            requires_grad=False,
+            device=torch.cuda.current_device(),
+            dtype=torch.uint8
+        )
 
-    # Prepare settings
+    if recv_prev:
+        if config.pipeline_dtype is None:
+            raise RuntimeError("pipeline_dtype must be provided if recv_prev is True")
+        if tensor_shape is None:
+            raise RuntimeError(
+                "tensor_shape must be specified if recv_prev is True. "
+                "Common tensor_shape is (seq_length, micro_batch_size, hidden_size)"
+            )
+        tensor_recv_prev_func = create_tensor_recv_prev
+
+    if recv_next:
+        if config.pipeline_dtype is None:
+            raise RuntimeError("dtype must be provided if recv_next is True")
+        if tensor_shape is None:
+            raise RuntimeError(
+                "tensor_shape must be specified if recv_next is True. "
+                "Common tensor_shape is (seq_length, micro_batch_size, hidden_size)"
+            )
+        tensor_recv_next_func = create_tensor_recv_next
+
     # Send tensors in both the forward and backward directions as appropriate.
     if config.use_ring_exchange_p2p:
 
@@ -331,108 +354,9 @@ def _communicate_fp8(
     else:
         reqs = {}
 
-
-    # Step2-1: send fp8 tensor
-    if not config.variable_seq_lengths:
-        recv_prev_shape = tensor_shape
-        recv_next_shape = tensor_shape
-    else:
-        recv_prev_shape, recv_next_shape = _communicate_shapes(
-            fp8_tensor_send_next,
-            fp8_tensor_send_prev,
-            recv_prev,
-            recv_next,
-            config
-        )
-
-    tensor_recv_prev_func = None
-    tensor_recv_next_func = None
-
-    def create_tensor_recv_prev():
-        return torch.empty(
-            (math.prod(recv_prev_shape[:-1]), recv_prev_shape[-1]),
-            requires_grad=False,
-            device=torch.cuda.current_device(),
-            dtype=torch.uint8,
-        )
-
-    def create_tensor_recv_next():
-        return torch.empty(
-            (math.prod(recv_next_shape[:-1]), recv_next_shape[-1]),
-            requires_grad=False,
-            device=torch.cuda.current_device(),
-            dtype=torch.uint8
-        )
-
-    if recv_prev:
-        if config.pipeline_dtype is None:
-            raise RuntimeError("pipeline_dtype must be provided if recv_prev is True")
-        if tensor_shape is None:
-            raise RuntimeError(
-                "tensor_shape must be specified if recv_prev is True. "
-                "Common tensor_shape is (seq_length, micro_batch_size, hidden_size)"
-            )
-        tensor_recv_prev_func = create_tensor_recv_prev
-
-    if recv_next:
-        if config.pipeline_dtype is None:
-            raise RuntimeError("dtype must be provided if recv_next is True")
-        if tensor_shape is None:
-            raise RuntimeError(
-                "tensor_shape must be specified if recv_next is True. "
-                "Common tensor_shape is (seq_length, micro_batch_size, hidden_size)"
-            )
-        tensor_recv_next_func = create_tensor_recv_next
-
-    fp8_tensor_recv_prev_list = []
-    fp8_tensor_recv_next_list = []
-    for group, nr, pr in zip(pp_group, next_rank, prev_rank):
-        if tensor_recv_prev_func is not None:
-            fp8_tensor_recv_prev = tensor_recv_prev_func()
-            fp8_tensor_recv_prev_list.append(fp8_tensor_recv_prev)
-        else:
-            fp8_tensor_recv_prev = None
-
-        if tensor_recv_next_func is not None:
-            fp8_tensor_recv_next = tensor_recv_next_func()
-            fp8_tensor_recv_next_list.append(fp8_tensor_recv_next)
-        else:
-            fp8_tensor_recv_next = None
-
-        p2p_reqs = p2p_func(
-            tensor_send_prev=fp8_tensor_send_prev,
-            tensor_recv_prev=fp8_tensor_recv_prev,
-            tensor_send_next=fp8_tensor_send_next,
-            tensor_recv_next=fp8_tensor_recv_next,
-            group=group,
-            prev_pipeline_rank=pr,
-            next_pipeline_rank=nr,
-        )
-        if isinstance(p2p_reqs, list):
-            reqs.extend(p2p_reqs)
-        else:
-            reqs.update(p2p_reqs)
-
-
-    # Step2-2: send fp8 scale
-    if not config.variable_seq_lengths:
-        if tensor_shape is None:
-            recv_fp8_scale_prev_shape = None
-            recv_fp8_scale_next_shape = None
-        else:
-            recv_fp8_scale_prev_shape = (*tensor_shape[:-1], (tensor_shape[-1] + 128 - 1) // 128)
-            recv_fp8_scale_next_shape = recv_fp8_scale_prev_shape
-    else:
-        recv_fp8_scale_prev_shape, recv_fp8_scale_next_shape = _communicate_shapes(
-            fp8_scale_send_next,
-            fp8_scale_send_prev,
-            recv_prev,
-            recv_next,
-            config
-        )
     def create_fp8_scale_recv_prev():
         return torch.empty(
-            (math.prod(recv_fp8_scale_prev_shape[:-1]), recv_fp8_scale_prev_shape[-1]),
+            (1,),
             requires_grad=False,
             device=torch.cuda.current_device(),
             dtype=torch.float,
@@ -440,11 +364,21 @@ def _communicate_fp8(
 
     def create_fp8_scale_recv_next():
         return torch.empty(
-            (math.prod(recv_fp8_scale_next_shape[:-1]), recv_fp8_scale_next_shape[-1]),
+            (1,),
             requires_grad=False,
             device=torch.cuda.current_device(),
             dtype=torch.float,
         )
+
+    # Step1 : Fp8 quantize
+    fp8_tensor_send_prev = None
+    fp8_tensor_send_next = None
+    fp8_scale_send_prev = None
+    fp8_scale_send_next = None
+    if tensor_send_prev is not None:
+        fp8_tensor_send_prev, fp8_scale_send_prev = Fp8Quantize(tensor_send_prev)
+    if tensor_send_next is not None:
+        fp8_tensor_send_next, fp8_scale_send_next = Fp8Quantize(tensor_send_next)
 
     fp8_scale_recv_prev_func = None
     fp8_scale_recv_next_func = None
@@ -453,6 +387,7 @@ def _communicate_fp8(
     if recv_next:
         fp8_scale_recv_next_func = create_fp8_scale_recv_next
 
+    # Step2-1: send fp8 scale
     fp8_scale_recv_prev_list = []
     fp8_scale_recv_next_list = []
     for group, nr, pr in zip(pp_group, next_rank, prev_rank):
@@ -482,6 +417,36 @@ def _communicate_fp8(
         else:
             reqs.update(p2p_reqs)
 
+    # Step2-2: send fp8 tensor
+    fp8_tensor_recv_prev_list = []
+    fp8_tensor_recv_next_list = []
+    for group, nr, pr in zip(pp_group, next_rank, prev_rank):
+        if tensor_recv_prev_func is not None:
+            fp8_tensor_recv_prev = tensor_recv_prev_func()
+            fp8_tensor_recv_prev_list.append(fp8_tensor_recv_prev)
+        else:
+            fp8_tensor_recv_prev = None
+
+        if tensor_recv_next_func is not None:
+            fp8_tensor_recv_next = tensor_recv_next_func()
+            fp8_tensor_recv_next_list.append(fp8_tensor_recv_next)
+        else:
+            fp8_tensor_recv_next = None
+
+        p2p_reqs = p2p_func(
+            tensor_send_prev=fp8_tensor_send_prev,
+            tensor_recv_prev=fp8_tensor_recv_prev,
+            tensor_send_next=fp8_tensor_send_next,
+            tensor_recv_next=fp8_tensor_recv_next,
+            group=group,
+            prev_pipeline_rank=pr,
+            next_pipeline_rank=nr,
+        )
+        if isinstance(p2p_reqs, list):
+            reqs.extend(p2p_reqs)
+        else:
+            reqs.update(p2p_reqs)
+
     # if wait_on_reqs and len(reqs) > 0:
     for req in reqs if isinstance(reqs, list) else reqs.values():
         req.wait()
@@ -492,12 +457,9 @@ def _communicate_fp8(
     tensor_recv_next_list = []
     for i, tensor in enumerate(fp8_tensor_recv_prev_list):
         tensor_recv_prev = Fp8Dequantize(tensor, fp8_scale_recv_prev_list[i], config.pipeline_dtype)
-        # 2d tensor to 3d tensor
-        tensor_recv_prev = tensor_recv_prev.view(recv_prev_shape)
         tensor_recv_prev_list.append(tensor_recv_prev)
     for i, tensor in enumerate(fp8_tensor_recv_next_list):
         tensor_recv_next = Fp8Dequantize(tensor, fp8_scale_recv_next_list[i], config.pipeline_dtype)
-        tensor_recv_next = tensor_recv_next.view(recv_next_shape)
         tensor_recv_next_list.append(tensor_recv_next)
 
     if (
@@ -576,7 +538,7 @@ def _communicate(
         - tensor_recv_next: torch.Tensor if recv_next is True, None otherwise.
 
     """
-
+    
     # Interim solution: Directly invoke the FP8 approach
     if FP8_COMM_P2P:
         return _communicate_fp8(

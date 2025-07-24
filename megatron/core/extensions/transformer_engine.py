@@ -45,9 +45,10 @@ from megatron.core.utils import (
 )
 import transformer_engine_torch as tex
 try:
-    from transformer_engine.pytorch.tensor.float8_zj_tensor import (
-        Float8ZJQuantizer,
-        Float8ZJQTensorBase,
+    from transformer_engine.pytorch.tensor.float8_tensor import (
+        Float8Tensor,
+        Float8CurrentScalingQuantizer,
+        Float8TensorBase,
     )
     HAVE_FP8 = True
 except ImportError:
@@ -1493,30 +1494,31 @@ except ImportError:
 
     te_parallel_cross_entropy = None  # type: ignore[assignment, misc]
 
-
 def Fp8Quantize(tensor: torch.Tensor) -> (torch.Tensor, torch.Tensor):
-    quantizer = Float8ZJQuantizer(
+    quantizer = Float8CurrentScalingQuantizer(
         fp8_dtype = tex.DType.kFloat8E4M3,
+        device = torch.cuda.current_device(),
         rowwise = True,
         columnwise = False,
-        block_scaling_dim = 1,
+        force_pow_2_scales = True,
+        amax_epsilon = 0.0,
     )
     quantizer.internal = True
-    quantizer.with_TMA = False
     quantized_tensor = quantizer(tensor)
-    return quantized_tensor._rowwise_data, quantized_tensor._rowwise_scale_inv
+    return quantized_tensor._data, quantized_tensor._scale_inv
 
 def Fp8Dequantize(tensor: torch.Tensor, scale: torch.Tensor, dtype=torch.bfloat16) -> torch.Tensor:
-    fp8_tensor = Float8ZJQTensorBase(
-        rowwise_data=tensor,
-        rowwise_scale_inv=scale,
-        fp8_dtype=tex.DType.kFloat8E4M3,
-        columnwise_data=None,
-        columnwise_scale_inv=None,
-        quantizer=None,
-        is_2D_scaled=False,
-        requires_grad=False,
+
+    fp8_tensor = Float8TensorBase(
+        # shape = tensor.shape,
+        # dtype = dtype,
+        data = tensor,
+        fp8_scale_inv = scale,
+        fp8_dtype = tex.DType.kFloat8E4M3,
+        requires_grad = False,
+        data_transpose = None,
+        quantizer = None
     )
-    dequantized_tensor = fp8_tensor.dequantize(dtype=dtype, with_TMA=False)
+    dequantized_tensor = fp8_tensor.dequantize(dtype=dtype)
     dequantized_tensor.requires_grad_(True)
     return dequantized_tensor
