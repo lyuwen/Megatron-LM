@@ -379,21 +379,25 @@ class TopKRouter(Router):
             sequence_partition_group = self.tp_cp_group
 
         # TE fused router分支，tokens_per_expert需为int32且在CUDA
-        if self._should_use_te_aux_loss():
-            tokens_per_expert = activation.sum(dim=0)
-            tokens_per_expert = tokens_per_expert.to(dtype=torch.int32, device=activation.device)
-            aux_loss = fused_moe_aux_loss(
-                probs=activation,
-                tokens_per_expert=tokens_per_expert,
-                total_num_tokens=activation.shape[0],
-                num_experts=activation.shape[1],
-                topk=self.topk,
-                coeff=moe_aux_loss_coeff,
-            )
-        else:
-            aux_loss = load_balancing_loss_func(
-                moe_aux_loss_coeff=moe_aux_loss_coeff, sequence_partition_group=sequence_partition_group
-            )
+#        if self._should_use_te_aux_loss():
+#            tokens_per_expert = activation.sum(dim=0)
+#            tokens_per_expert = tokens_per_expert.to(dtype=torch.int32, device=activation.device)
+#            aux_loss = fused_moe_aux_loss(
+#                probs=activation,
+#                tokens_per_expert=tokens_per_expert,
+#                total_num_tokens=activation.shape[0],
+#                num_experts=activation.shape[1],
+#                topk=self.topk,
+#                coeff=moe_aux_loss_coeff,
+#            )
+#        else:
+#            aux_loss = load_balancing_loss_func(
+#                moe_aux_loss_coeff=moe_aux_loss_coeff, sequence_partition_group=sequence_partition_group
+#            )
+        # Note: the aux-loss fusion formula is different from deepseek
+        aux_loss = load_balancing_loss_func(
+            moe_aux_loss_coeff=moe_aux_loss_coeff, sequence_partition_group=sequence_partition_group
+        )
 
         # LFu: disable loss aggregationg during the recompute forward pass
         if self.training and torch.is_grad_enabled():
