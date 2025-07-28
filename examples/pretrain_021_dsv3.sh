@@ -531,8 +531,8 @@ elif [ $PR = fp8 ]; then
         #--fp8-param-gather \
         #--moe-router-padding-for-fp8 \
     export FP8_OUTER=${FP8_OUTER:-true}
-    export FP8_MLP=${FP8_MLP:-true}
-    export FP8_ATTENTION=${FP8_ATTENTION:-true}
+    export FP8_MLP=${FP8_MLP:-false}
+    export FP8_ATTENTION=${FP8_ATTENTION:-false}
     export FP8_MOE=${FP8_MOE:-true}
     export FP8_COMM_P2P=${FP8_COMM_P2P:-true}
     export FP8_COMM_DEEPEP=${FP8_COMM_DEEPEP:-true}
