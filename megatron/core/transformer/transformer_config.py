@@ -295,6 +295,9 @@ class TransformerConfig(ModelParallelConfig):
     """When set to False, override FP8 config options and do the wgrad computation
     in higher precision."""
 
+    no_fp8_gemm: bool = False
+    """When set to True, override FP8 config options and skip the GEMM computation"""
+
     fp8_dot_product_attention: bool = False
     """When set to True, use the FP8 implementation of Dot Product Attention."""
 
@@ -362,6 +365,12 @@ class TransformerConfig(ModelParallelConfig):
     """Whether to pad the routing_map to make sure the number of tokens each expert received
     is a multiple of 16/32 for FP8 precision. This can remove the explicit padding in the
     GroupedMLP layer."""
+
+    moe_permute_padding_for_fp8: Optional[bool] = False
+    """Whether to pad tokens during permutation and unpad during unpermutation to ensure
+    the number of tokens processed by each expert is a multiple of 16/32/128 for FP8 precision.
+    This integrated approach eliminates the explicit padding/unpadding in GroupedMLP layers,
+    providing better performance and memory efficiency than router-level padding."""
 
     moe_router_num_groups: Optional[int] = None
     """Number of groups to divide experts into for group-limited routing.
@@ -1041,6 +1050,21 @@ class TransformerConfig(ModelParallelConfig):
                 raise ValueError(
                     "allgather and alltoall_seq dispatcher does not support "
                     "moe_router_padding_for_fp8."
+                )
+
+        if self.moe_permute_padding_for_fp8:
+            if self.fp8 is None:
+                raise ValueError("fp8 must be specified when moe_permute_padding_for_fp8 is True.")
+
+            if self.moe_token_dispatcher_type not in ["flex"]:
+                raise ValueError(
+                    "only flex dispatcher does support moe_permute_padding_for_fp8."
+                )
+            from megatron.core.transformer.moe.moe_utils import fused_permute_and_pad_with_probs
+
+            if fused_permute_and_pad_with_probs is None:
+                raise ValueError(
+                    "fused_permute_and_pad_with_probs is not available. Please install TE >= 2.6.0."
                 )
 
         if (

@@ -27,7 +27,7 @@ from megatron.core.transformer.spec_utils import ModuleSpec
 from megatron.core.transformer.transformer_block import TransformerBlock
 from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core.utils import WrappedTensor, deprecate_inference_params
-
+from megatron.core.fusions.fused_linear_cross_entropy import FusedLinearCrossEntropyLoss
 
 class GPTModel(LanguageModule):
     """GPT Transformer language model.
@@ -92,6 +92,8 @@ class GPTModel(LanguageModule):
         scatter_embedding_sequence_parallel: bool = True,
         seq_len_interpolation_factor: Optional[float] = None,
         mtp_block_spec: Optional[ModuleSpec] = None,
+        use_fused_lce: bool = False,
+        logits_split_chunks: int = 8,
     ) -> None:
         super().__init__(config=config)
 
@@ -127,6 +129,8 @@ class GPTModel(LanguageModule):
         self.rotary_scaling = rope_scaling
         self.mtp_block_spec = mtp_block_spec
         self.mtp_process = mtp_block_spec is not None
+        self.use_fused_lce = use_fused_lce
+        self.logits_split_chunks = logits_split_chunks
 
         if self.pre_process or self.mtp_process:
             self.embedding = LanguageModelEmbedding(
@@ -194,20 +198,29 @@ class GPTModel(LanguageModule):
                 self.embedding_activation_buffer = None
                 self.grad_output_buffer = None
 
-            self.output_layer = tensor_parallel.ColumnParallelLinear(
-                config.hidden_size,
-                self.vocab_size,
-                config=config,
-                init_method=config.init_method,
-                bias=False,
-                skip_bias_add=False,
-                gather_output=not self.parallel_output,
-                skip_weight_param_allocation=self.pre_process
-                and self.share_embeddings_and_output_weights,
-                embedding_activation_buffer=self.embedding_activation_buffer,
-                grad_output_buffer=self.grad_output_buffer,
-                normalize=self.config.moe_apply_norm_head,
-            )
+            if self.use_fused_lce:
+                self.output_layer = FusedLinearCrossEntropyLoss(
+                    input_size=config.hidden_size,
+                    output_size=self.vocab_size,
+                    config=config,
+                    init_method=config.init_method,
+                    num_chunks=self.logits_split_chunks
+                )
+            else:
+                self.output_layer = tensor_parallel.ColumnParallelLinear(
+                    config.hidden_size,
+                    self.vocab_size,
+                    config=config,
+                    init_method=config.init_method,
+                    bias=False,
+                    skip_bias_add=False,
+                    gather_output=not self.parallel_output,
+                    skip_weight_param_allocation=self.pre_process
+                    and self.share_embeddings_and_output_weights,
+                    embedding_activation_buffer=self.embedding_activation_buffer,
+                    grad_output_buffer=self.grad_output_buffer,
+                    normalize=self.config.moe_apply_norm_head,
+                )
 
         if self.pre_process or self.post_process:
             self.setup_embeddings_and_output_layer()
@@ -387,6 +400,16 @@ class GPTModel(LanguageModule):
             and inference_context.materialize_only_last_token_logits
         ):
             hidden_states = hidden_states[-1:, :, :]
+
+        if self.use_fused_lce:
+            loss = self.output_layer(
+                x=hidden_states.permute(1, 0, 2),
+                target=labels,
+                weight=output_weight,
+                bias=None,
+            )
+            return loss
+
         logits, _ = self.output_layer(
             hidden_states, weight=output_weight, runtime_gather_output=runtime_gather_output
         )

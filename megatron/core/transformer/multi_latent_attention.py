@@ -93,7 +93,7 @@ class MultiLatentAttention(Attention):
         self.recompute_up_proj = (
             self.config.recompute_granularity == 'selective'
             and "mla_up_proj" in self.config.recompute_modules
-        )
+        ) or recompute_controller.should_recompute('attn_upproj')
         self.qkv_up_checkpoint = None
 
         mscale = _yarn_get_mscale(self.config.rotary_scaling_factor, self.config.mscale)
@@ -132,8 +132,8 @@ class MultiLatentAttention(Attention):
             attention_type=self.attention_type,
             softmax_scale=self.softmax_scale,
             k_channels=self.q_head_dim,
-            v_channels=self.q_head_dim if self.config.attention_backend == AttnBackend.flash else self.config.v_head_dim,
-            # v_channels=self.config.v_head_dim,
+            #v_channels=self.q_head_dim if self.config.attention_backend == AttnBackend.flash else self.config.v_head_dim,
+            v_channels=self.config.v_head_dim,
             cp_comm_type=cp_comm_type,
             model_comm_pgs=self.model_comm_pgs,
         )
@@ -210,10 +210,10 @@ class MultiLatentAttention(Attention):
         # core attention computation
         # ==================================
         # LFu: Pad value_states in MLA when attention backend is Flash Attention
-        if self.q_head_dim != self.config.v_head_dim and self.config.attention_backend == AttnBackend.flash:
-            value = F.pad(value, [0, self.q_head_dim - self.config.v_head_dim])
+        #if self.q_head_dim != self.config.v_head_dim and self.config.attention_backend == AttnBackend.flash:
+        #    value = F.pad(value, [0, self.q_head_dim - self.config.v_head_dim])
         # Need corresponding TE change
-        if (self.checkpoint_core_attention or recompute_controller.should_recompute('attn_core')) and self.training:
+        if self.checkpoint_core_attention and self.training:
             core_attn_out = self._checkpointed_attention_forward(
                 query, key, value, attention_mask, packed_seq_params=packed_seq_params
             )
@@ -227,13 +227,13 @@ class MultiLatentAttention(Attention):
                 attn_mask_type=attn_mask_type,
             )
         # LFu: Remove padding
-        if self.q_head_dim != self.config.v_head_dim and self.config.attention_backend == AttnBackend.flash:
-            q_len, bsz, _ = hidden_states.size()
-            # raise ValueError(f"{hidden_states.size()=}, {core_attn_out.shape=}")
-            # n = nh // self.config.v_head_dim
-            core_attn_out = core_attn_out.reshape((q_len, bsz, self.config.num_attention_heads, self.q_head_dim))
-            core_attn_out = core_attn_out[:, :, :, : self.config.v_head_dim]
-            core_attn_out = core_attn_out.reshape((q_len, bsz, self.config.num_attention_heads * self.config.v_head_dim))
+#        if self.q_head_dim != self.config.v_head_dim and self.config.attention_backend == AttnBackend.flash:
+#            q_len, bsz, _ = hidden_states.size()
+#            # raise ValueError(f"{hidden_states.size()=}, {core_attn_out.shape=}")
+#            # n = nh // self.config.v_head_dim
+#            core_attn_out = core_attn_out.reshape((q_len, bsz, self.config.num_attention_heads, self.q_head_dim))
+#            core_attn_out = core_attn_out[:, :, :, : self.config.v_head_dim]
+#            core_attn_out = core_attn_out.reshape((q_len, bsz, self.config.num_attention_heads * self.config.v_head_dim))
 
         if packed_seq_params is not None and packed_seq_params.qkv_format == 'thd':
             # reshape to same output shape as unpacked case
@@ -430,7 +430,9 @@ class MLASelfAttention(MultiLatentAttention):
             #     q_compressed: [s, b, q_lora_rank / TP]
             # elif linear_q_down_proj is Linear:
             #     q_compressed: [s / TP, b, q_lora_rank]
-            q_compressed, _ = self.linear_q_down_proj(hidden_states)
+            linear_fp8_context = get_fp8_context(self.config, layer_type='attention')
+            with linear_fp8_context:
+                q_compressed, _ = self.linear_q_down_proj(hidden_states)
 
             # When output is sharded (ColumnParallelLinear), two things are needed to be
             # identical to a normal Linear.
@@ -491,7 +493,10 @@ class MLASelfAttention(MultiLatentAttention):
             if self.config.q_lora_rank is not None:
                 # q_compressed: [num_tokens, q_lora_rank]
                 # q: [num_tokens, n * (qk_head_dim + qk_pos_emb_head_dim)]
-                q, _ = self.linear_q_up_proj(q_compressed)
+                linear_fp8_context = get_fp8_context(self.config, layer_type='attention')  # Zhiyi
+                with linear_fp8_context:
+                    q, _ = self.linear_q_up_proj(q_compressed)
+                # q, _ = self.linear_q_up_proj(q_compressed)
                 q_compressed = self.q_layernorm(q_compressed)
             else:
                 # q_compressed: [num_tokens, hidden_size]
@@ -505,7 +510,9 @@ class MLASelfAttention(MultiLatentAttention):
 
             kv_compressed = self.kv_layernorm(kv_compressed)
             # kv: [num_tokens, n * (qk_head_dim + v_head_dim)]
-            kv, _ = self.linear_kv_up_proj(kv_compressed)
+            linear_fp8_context = get_fp8_context(self.config, layer_type='attention')  # Zhiyi
+            with linear_fp8_context:
+                kv, _ = self.linear_kv_up_proj(kv_compressed)
 
             # kv: [num_tokens, n, (qk_head_dim + v_head_dim)]
             kv = kv.view(
@@ -597,7 +604,7 @@ class MLASelfAttention(MultiLatentAttention):
             value = value.contiguous()
             return query, key, value
 
-        if self.recompute_up_proj or recompute_controller.should_recompute('attn_upproj'):
+        if self.recompute_up_proj:
             #self.qkv_up_checkpoint = tensor_parallel.CheckpointWithoutOutput(fp8=self.config.fp8)
             self.qkv_up_checkpoint = tensor_parallel.CheckpointWithoutOutput()
             query, key, value = self.qkv_up_checkpoint.checkpoint(

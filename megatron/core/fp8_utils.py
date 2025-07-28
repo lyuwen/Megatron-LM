@@ -48,6 +48,8 @@ def get_fp8_align_size(fp8_recipe: Fp8Recipe) -> int:
     """Get the alignment size required for fp8 GEMM."""
     if fp8_recipe == Fp8Recipe.mxfp8:
         return 32
+    elif fp8_recipe == Fp8Recipe.deepgemm:
+        return 128
     else:
         return 16
 
@@ -410,22 +412,21 @@ if HAVE_TE:
             if is_te_min_version("2.1.0"):
                 if config.fp8_recipe == Fp8Recipe.deepgemm and is_te_min_version("2.3.0.dev0"):
                     fp8_format = transformer_engine.common.recipe.Format.E4M3
-                    if layer_type != 'moe':  # Msun
+                    if layer_type == 'moe' or config.fp8_param:
+                        fp8_wgrad = not config.no_fp8_gemm and config.fp8_wgrad
+                        fp8_recipe = transformer_engine.common.recipe.Float8ZJScaling(
+                            fp8_format=fp8_format,
+                            override_linear_precision=(config.no_fp8_gemm, config.no_fp8_gemm, not fp8_wgrad),
+                        )
+                    else:
                         fp8_recipe = TEDelayedScaling(
                             config=config,
                             fp8_format=fp8_format,
-                            override_linear_precision=(False, False, not config.fp8_wgrad),
-                        )
-                    else:
-                        fp8_recipe = transformer_engine.common.recipe.Float8ZJScaling(
-                            fp8_format=fp8_format,
-                            fp8_wgrad=config.fp8_wgrad,
                         )
                 elif config.fp8_recipe == Fp8Recipe.delayed:
                     fp8_recipe = TEDelayedScaling(
                         config=config,
                         fp8_format=fp8_format,
-                        override_linear_precision=(False, False, not config.fp8_wgrad),
                     )
                 elif config.fp8_recipe == Fp8Recipe.tensorwise and is_te_min_version("2.2.0.dev0"):
                     fp8_recipe = transformer_engine.common.recipe.Float8CurrentScaling(

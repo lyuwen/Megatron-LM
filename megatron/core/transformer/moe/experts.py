@@ -38,16 +38,10 @@ from megatron.core.transformer.utils import (
     make_sharded_object_for_checkpoint,
     sharded_state_dict_default,
 )
-from megatron.core.custom_rs import custom_recompute, conditional_checkpoint
-
-import os
-
-USE_BLOCK_FP8 = False
-if os.getenv("USE_BLOCK_FP8", "false") == "true":
-    USE_BLOCK_FP8 = True
-
+from megatron.core.custom_rs import recompute_controller
 
 try:
+    import transformer_engine as te  # pylint: disable=unused-import
 
     from megatron.core.extensions.transformer_engine import Fp8Padding, Fp8Unpadding
 
@@ -137,7 +131,7 @@ class GroupedMLP(MegatronModule):
         self.activation_recompute = (
             self.config.recompute_granularity == 'selective'
             and "moe_act" in self.config.recompute_modules
-        )
+        ) or recompute_controller.should_recompute('experts_bias_act')
 
         @jit_fuser
         def activation_func_with_probs(x, probs):
@@ -246,7 +240,6 @@ class GroupedMLP(MegatronModule):
 
         self.register_load_state_dict_post_hook(remove_extra_states_check)
 
-    @custom_recompute('experts')
     def forward(
         self,
         permuted_local_hidden_states: torch.Tensor,
@@ -255,7 +248,7 @@ class GroupedMLP(MegatronModule):
     ):
         """Forward step of the GroupedMLP."""
         if self.activation_recompute:
-            self.activation_checkpoint = tensor_parallel.CheckpointWithoutOutput()
+            self.activation_checkpoint = tensor_parallel.CheckpointWithoutOutput(use_fp8_quantization=True)
 
         if self.config.moe_apply_probs_on_input:
             assert (
@@ -716,7 +709,7 @@ class TEGroupedMLP(MegatronModule):
         self.activation_recompute = (
             self.config.recompute_granularity == 'selective'
             and "moe_act" in self.config.recompute_modules
-        )
+        ) or recompute_controller.should_recompute('experts_bias_act')
 
         # TODO(Hepteract): pass model_comm_pgs to submodule after refactoring Linear modules
         self.linear_fc2 = build_module(
@@ -735,10 +728,9 @@ class TEGroupedMLP(MegatronModule):
 
         if self.config.fp8:
             assert HAVE_TE, "FP8 requires TE."
-            self.fp8_padding = Fp8Padding(self.num_local_experts, 128)
-            self.fp8_unpadding = Fp8Unpadding(self.num_local_experts, 128)
+            self.fp8_padding = Fp8Padding(self.num_local_experts)
+            self.fp8_unpadding = Fp8Unpadding(self.num_local_experts)
 
-    @custom_recompute('experts')
     def forward(
         self,
         permuted_local_hidden_states: torch.Tensor,
@@ -778,16 +770,10 @@ class TEGroupedMLP(MegatronModule):
             # Probs already applied, so reset to 1.
             permuted_probs = torch.ones_like(permuted_probs)
 
-        # FC1层：带重计算控制
-        intermediate_parallel, bias_parallel = conditional_checkpoint(
-            'expert_fc1', 
-            False,
-            self.linear_fc1,
-            permuted_local_hidden_states, 
-            tokens_per_expert
+        intermediate_parallel, bias_parallel = self.linear_fc1(
+            permuted_local_hidden_states, tokens_per_expert
         )
 
-        @custom_recompute('expert_bias_act')
         def bias_act_func(intermediate_parallel, bias_parallel, permuted_probs):
             if self.config.bias_activation_fusion:
                 if self.activation_func == F.silu and self.config.gated_linear_unit:
@@ -829,29 +815,17 @@ class TEGroupedMLP(MegatronModule):
             return intermediate_parallel
 
         if self.activation_recompute:
-            self.activation_checkpoint = tensor_parallel.CheckpointWithoutOutput()
+            self.activation_checkpoint = tensor_parallel.CheckpointWithoutOutput(use_fp8_quantization=True)
             intermediate_parallel = self.activation_checkpoint.checkpoint(
                 bias_act_func, intermediate_parallel, bias_parallel, permuted_probs
             )
-            # FC2层：带重计算控制
-            output, output_bias = conditional_checkpoint(
-                'expert_fc2',
-                False,
-                self.linear_fc2,
-                intermediate_parallel, tokens_per_expert
-            )
+            output, output_bias = self.linear_fc2(intermediate_parallel, tokens_per_expert)
             self.activation_checkpoint.discard_output_and_register_recompute(output)
         else:
             intermediate_parallel = bias_act_func(
                 intermediate_parallel, bias_parallel, permuted_probs
             )
-            # FC2层：带重计算控制
-            output, output_bias = conditional_checkpoint(
-                'expert_fc2',
-                False,
-                self.linear_fc2,
-                intermediate_parallel, tokens_per_expert
-            )
+            output, output_bias = self.linear_fc2(intermediate_parallel, tokens_per_expert)
 
         # upad and concat the output
         if self.config.fp8:
@@ -943,7 +917,6 @@ class SequentialMLP(MegatronModule):
             probs = torch.cat((probs, pad_probs), dim=0)
         return hidden, probs
 
-    @custom_recompute('experts')
     def forward(
         self,
         permuted_local_hidden_states: torch.Tensor,

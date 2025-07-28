@@ -995,6 +995,9 @@ def validate_args(args, defaults={}):
             + f"The supported position embedding types are rope and none."
         )
 
+    if args.use_fused_lce:
+        assert args.tensor_model_parallel_size == 1, 'fused lce only support tp=1 now '
+
     # Print arguments.
     _print_args("arguments", args)
 
@@ -1103,6 +1106,8 @@ def _add_transformer_engine_args(parser):
     group.add_argument('--no-fp8-wgrad', action='store_false',
                        help='Execute wgrad in higher precision even for FP8 runs',
                        dest='fp8_wgrad')
+    group.add_argument('--no-fp8-gemm', action='store_true',
+                       help='override fp8 gemm with higher precision')
     group.add_argument('--transformer-impl', default='transformer_engine',
                        choices=['local', 'transformer_engine'],
                        help='Which Transformer implementation to use.')
@@ -1353,6 +1358,10 @@ def _add_network_size_args(parser):
                        'We compute the average of the MTP losses across all depths, '
                        'and multiply it the scaling factor to obtain the overall MTP loss, '
                        'which serves as an additional training objective.')
+    group.add_argument('--use-fused-lce', action='store_true', default=False,
+                       help='Use fused linear cross entropy to reduce the peak memory')     
+    group.add_argument('--logits-split-chunks', type=int, default=8,
+                       help='Number of logits to split')                          
     return parser
 
 
@@ -2639,6 +2648,10 @@ def _add_moe_args(parser):
                        'dropless training with FP8 precision when num_local_experts > 1. This is a more '
                        'efficient way to pad for FP8 which eliminates the explicit padding in the '
                        'GroupedMLP layer.')
+    group.add_argument('--moe-permute-padding-for-fp8', action='store_true',
+                       help='Pad during token permutation and unpad during unpermutation to ensure expert token counts '
+                       'meet FP8 alignment requirements (16/32/128-byte boundaries). This integrated approach eliminates '
+                       'explicit padding/unpadding in GroupedMLP layers, improving performance and memory efficiency.')
     group.add_argument('--moe-aux-loss-coeff', type=float, default=0.0,
                        help='Scaling coefficient for the aux loss: a starting value of 1e-2 is recommended.')
     group.add_argument('--moe-device-balance-loss-coeff', type=float, default=0.0,
@@ -2671,7 +2684,8 @@ def _add_moe_args(parser):
     group.add_argument('--moe-apply-norm-head', action="store_true",
                        help='Apply lm_head L2 normalization to improve Moe stability.')
     group.add_argument('--moe-topk-router-fusion', action="store_true",
-                    help='use trion fusion op in router')
+                       help='experimental use trion fusion op in topk router, '
+                       'moe-router-pre-softmax must be set to true, moe-expert-capacity-factor must be set to None must be set to true')
 
     return parser
 

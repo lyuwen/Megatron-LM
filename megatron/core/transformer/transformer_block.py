@@ -26,6 +26,8 @@ from megatron.core.transformer.transformer_layer import (
 )
 from megatron.core.transformer.utils import sharded_state_dict_default
 from megatron.core.utils import WrappedTensor, deprecate_inference_params, make_viewless_tensor
+from megatron.core.custom_rs import recompute_controller
+
 
 try:
     from megatron.core.extensions.transformer_engine import (
@@ -265,7 +267,7 @@ class TransformerBlock(MegatronModule):
         self.checkpoint_core_attention = (
             self.config.recompute_granularity == 'selective'
             and "core_attn" in self.config.recompute_modules
-        )
+        ) or recompute_controller.should_recompute('attn_core')
 
         if get_cpu_offload_context is not None:
             (self.offload_context, self.group_prefetch_offload_commit_async) = (

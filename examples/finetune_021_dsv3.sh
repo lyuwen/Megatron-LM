@@ -3,6 +3,9 @@ set -x  # 如果你要调试的话
 # export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 ENV=${ENV:-dsw}
 
+export TOKENIZER=${TOKENIZER_PATH}
+export SEQ_LENGTH=${SEQ_LEN}
+
 ### BASE CONFIG ###
 DEFAULT_MODEL_SIZE=200B
 MODEL_SIZE=${MODEL_SIZE:-${DEFAULT_MODEL_SIZE}}
@@ -34,13 +37,13 @@ SFT=false
 ### OTHERS ###
 AC=${AC:-none} # full
 SAVE_INTERVAL=${SAVE_INTERVAL:-1000}
-if [[ -z $DATASET_FILE ]] ; then
-    echo "Missing environment variable DATASET_FILE."
-    exit 1
-fi
-DATASET_PATH="$(cat ${DATASET_FILE})"
+# if [[ -z $DATASET_FILE ]] ; then
+#     echo "Missing environment variable DATASET_FILE."
+#     exit 1
+# fi
+# DATASET_PATH="$(cat ${DATASET_FILE})"
 #VALID_DATASET_PATH="$(cat ${VALID_DATASET_FILE})"
-VALID_DATASET_PATH=${DATASET_PATH}
+# VALID_DATASET_PATH=${DATASET_PATH}
 DEFUALT_DATASET_CACHE_PATH=${OUTPUT_DIR}/data_cache
 DATASET_CACHE_PATH=${DATASET_CACHE_PATH:-$DEFUALT_DATASET_CACHE_PATH}
 
@@ -71,10 +74,12 @@ ckpt_options="${ckpt_options} \
             #--exit-on-missing-checkpoint \
 
 # training configuraitons
-TRAIN_TOKENS=${TRAIN_TOKENS:-11692571197196}
-WARMUP_TOKENS=${WARMUP_TOKENS:-19660800000}
-TOTAL_TRAIN_ITERS=$(( ${TRAIN_TOKENS} / ${GLOBAL_BATCH_SIZE} / ${SEQ_LEN} ))
-TRAIN_ITERS=${TRAIN_ITERS:-${TOTAL_TRAIN_ITERS}}
+# TRAIN_TOKENS=${TRAIN_TOKENS:-11692571197196}
+# WARMUP_TOKENS=${WARMUP_TOKENS:-19660800000}
+# TOTAL_TRAIN_ITERS=$(( ${TRAIN_TOKENS} / ${GLOBAL_BATCH_SIZE} / ${SEQ_LEN} ))
+# TRAIN_ITERS=${TRAIN_ITERS:-${TOTAL_TRAIN_ITERS}}
+TRAIN_ITERS=$(python ${ZJLM_PATH}/../scripts/get_train_iters.py)
+echo $TRAIN_ITERS
 
 OUTPUT_BASEPATH=${OUTPUT_DIR}
 ### OTHERS ###
@@ -224,8 +229,8 @@ KV_LORA_RANK=512
 QK_NOPE_HEAD_DIM=${QK_NOPE_HEAD_DIM:-128} 
 QK_ROPE_HEAD_DIM=64
 V_HEAD_DIM=128
-ROPE_THETA=10000
-SCALE_FACTOR=${SCALE_FACTOR:-1}
+ROPE_THETA=${ROPE_THETA:-10000}
+SCALE_FACTOR=${SCALE_FACTOR:-40}
 NUM_EXPERTS=${NUM_EXPERTS:-160}
 ROUTER_TOPK=${ROUTER_TOPK:-6}
 NUM_SHARED_EXPERTS=${NUM_SHARED_EXPERTS:-2}
@@ -233,14 +238,20 @@ MOE_LAYER_FREQ=1
 MOE_FIRST_K_DENSE_REPLACE=${MOE_FIRST_K_DENSE_REPLACE:-1}
 RMS_NORM_EPS=1e-6
 
+if [[ ${MOE_ZLOSS_COEFF:-0.0001} = 0 ]]; then
+    zloss_option=" "
+else
+    zloss_option=" --moe-z-loss-coeff ${MOE_ZLOSS_COEFF:-0.0001} "
+fi
+
 moe_options=" \
     --moe-ffn-hidden-size ${MOE_INTERMEDIATE_SIZE} \
     --moe-router-topk ${ROUTER_TOPK} \
     --num-experts ${NUM_EXPERTS} \
     --moe-layer-freq ${MOE_LAYER_FREQ} \
     --moe-first-k-dense-replace ${MOE_FIRST_K_DENSE_REPLACE} \
-    --moe-aux-loss-coeff 0.0005 \
-    --moe-z-loss-coeff 0 \
+    --moe-aux-loss-coeff ${MOE_AUX_LOSS_COEFF:-0.001} \
+    ${zloss_option} \
     --moe-shared-expert-intermediate-size $((${MOE_INTERMEDIATE_SIZE} * ${NUM_SHARED_EXPERTS} )) \
     --expert-model-parallel-size ${EP} \
     --q-lora-rank ${Q_LORA_RANK} \
@@ -375,6 +386,7 @@ touch /root/.cache/huggingface/modules/transformers_modules/release/__init__.py
 touch /root/.cache/huggingface/modules/transformers_modules/__init__.py
 cp ${TOKENIZER_PATH}/tokenization_kimi.py  /root/.cache/huggingface/modules/transformers_modules/release/
 cp ${TOKENIZER_PATH}/tokenization_kimi.py  /root/.cache/huggingface/modules/transformers_modules/
+python -c "from transformers import AutoTokenizer; tok = AutoTokenizer.from_pretrained(\"${TOKENIZER_PATH}\", trust_remote_code=True)"
 
 else
 
@@ -530,6 +542,9 @@ elif [ $PR = fp8 ]; then
         --no-fp8-wgrad \
         --moe-permute-padding-for-fp8 \
     "
+    if [ ${FP8PARAMGATHER:-off} = on ]; then
+        pr_options=" ${pr_options} --fp8-param-gather "
+    fi
         #--fp8-param-gather \
         #--moe-router-padding-for-fp8 \
     export FP8_OUTER=${FP8_OUTER:-true}
@@ -538,9 +553,6 @@ elif [ $PR = fp8 ]; then
     export FP8_MOE=${FP8_MOE:-true}
     export FP8_COMM_P2P=${FP8_COMM_P2P:-true}
     export FP8_COMM_DEEPEP=${FP8_COMM_DEEPEP:-true}
-    if [ ${FP8_PARAM_GATHER:-false} = true ]; then
-        pr_options=" ${pr_options} --fp8-param-gather "
-    fi
 fi
 
 if [ $DO = true ]; then
@@ -580,10 +592,10 @@ if [ -z ${DLC_JOB_ID} ]; then
     DLC_JOB_ID=${HOSTNAME:0:19}
 fi
 
-LR_DECAY_ITERS=$(( ${TRAIN_TOKENS} /  ${GLOBAL_BATCH_SIZE} / ${SEQ_LEN} ))
+# LR_DECAY_ITERS=$(( ${TRAIN_TOKENS} /  ${GLOBAL_BATCH_SIZE} / ${SEQ_LEN} ))
 PREFIX="pretrain-dsv3-${MODEL_SIZE}-bs-${BATCH_SIZE}-gbs-${GLOBAL_BATCH_SIZE}"
-NAME="${PREFIX}-pp-${PP}-ep-${EP}-ac-${AC}_${DLC_JOB_ID}"
 TIMESTAMP=$(date "+%Y%m%d-%H%M")
+NAME="${PREFIX}-pp-${PP}-ep-${EP}-ac-${AC}"
 # NAME_JOBID_TIME="${PREFIX}-pp-${PP}-ep-${EP}-ac-${AC}_${DLC_JOB_ID}_${TIMESTAMP}"
 
 PRETRAIN_CHECKPOINT_PATH_DEFAULT="${OUTPUT_BASEPATH}/checkpoints/${NAME}"
@@ -608,21 +620,25 @@ if [[ ${DEBUG_PRETRAIN_CHECKPOINT_PATH:-none} != none ]]; then
         --no-save-optim \
         --no-save-rng \
         "
-elif [[ ${CPT_PRETRAIN_CHECKPOINT_PATH:-none} != none ]]; then
-    PRETRAIN_CHECKPOINT_PATH=$CPT_PRETRAIN_CHECKPOINT_PATH
-    ckpt_options=" ${ckpt_options} \
-        --auto-detect-ckpt-format \
-        --reset-dataloader \
-        --reset-iterations \
-        --no-load-optim \
-        --no-load-rng \
-        "
 fi
 
-if [ $PRETRAIN_CHECKPOINT_PATH != none ]; then
-    load_options=" \
-            --load $PRETRAIN_CHECKPOINT_PATH "
+if [[ -f ${SAVED_PRETRAIN_CHECKPOINT_PATH}/latest_checkpointed_iteration.txt ]]; then
+    PRETRAIN_CHECKPOINT_PATH=${SAVED_PRETRAIN_CHECKPOINT_PATH}
+    echo "load from ${PRETRAIN_CHECKPOINT_PATH}"
+    load_options=" --load $PRETRAIN_CHECKPOINT_PATH "
+else
+    if [ -d ${BASE_MODEL} ]; then
+        echo "load from ${BASE_MODEL}"
+        load_options=" \
+            --finetune --load ${BASE_MODEL} --auto-detect-ckpt-format --no-load-optim \
+            --no-load-rng --reset-iterations --reset-dataloader "
+    fi
 fi
+
+# if [ $PRETRAIN_CHECKPOINT_PATH != none ]; then
+#     load_options=" \
+#             --load $PRETRAIN_CHECKPOINT_PATH "
+# fi
 
 NUM_WORKERS=${NUM_WORKERS:-1}
 dataset_option=" \
@@ -643,17 +659,17 @@ if [[ ${NO_MMAP_BIN_FILES:-false} = true ]]; then
 fi
 
 # 日志目录中加入worker_id,快速定位相关日志 0417 lzd
-if [[-z ${RANK} ]]; then
+if [[ -z ${RANK} ]]; then
     WORKER_ID="UNKNOW_RANK"
 else
     WORKER_ID=worker_${RANK}
     # WORK_ID=${ATLAS_POD_NAME}+${RANK}
 fi
 
-mkdir -p ${OUTPUT_DIR}/logs/${NAME}
+mkdir -p ${OUTPUT_DIR}/logs/${NAME}/${TIMESTAMP}
 DISTRIBUTED_ARGS="--nproc_per_node $GPUS_PER_NODE --nnodes $NNODES \
     --node_rank $NODE_RANK --master_addr $MASTER_ADDR --master_port $MASTER_PORT \
-    --tee 3 --log_dir ${OUTPUT_DIR}/logs/${NAME}/${WORKER_ID}"
+    --tee 3 --log_dir ${OUTPUT_DIR}/logs/${NAME}/${TIMESTAMP}/${WORKER_ID}"
 
 ##### Prepare logdirs #######
 
@@ -717,7 +733,10 @@ megatron_options="  \
         --moe-router-dtype fp32 \
         --moe-permute-fusion \
         --moe-topk-router-fusion \
-        --multi-latent-attention"
+        --multi-latent-attention\
+        --dataloader-type external \
+        --pad-to-max-seq-length \
+        --calculate-per-token-loss "
         #--no-bias-swiglu-fusion \
         #--no-rope-fusion \
         # --patch-tokenizer-type DeepSeekV2Tokenizer \
@@ -728,32 +747,13 @@ megatron_options="  \
 #         --extra-vocab-size ${EXTRA_VOCAB_SIZE} \
 #         "
 
-#动态bs
-ENABLE_RAMPUP_BS=${ENABLE_RAMPUP_BS:-false}
-if  [[ $ENABLE_RAMPUP_BS = false ]]; then
-    LR_WARMUP_ITERS=${LR_WARMUP_ITERS:-2000}
-    LR_DECAY_ITERS=$(( ${TRAIN_TOKENS} /  ${GLOBAL_BATCH_SIZE} / ${SEQ_LEN} ))
-    megatron_options=" ${megatron_options} \
-        --lr-decay-iters ${LR_DECAY_ITERS} \
-        --lr-warmup-iters ${LR_WARMUP_ITERS} \
-        --train-iters ${TRAIN_ITERS} "
-elif [[ $ENABLE_RAMPUP_BS = fix_lr ]]; then
-    megatron_options=" ${megatron_options} \
-        --train-iters ${TRAIN_ITERS} "
-else
-    warm_step=${LR_WARMUP_ITERS:-2000}
-    GLOBAL_BATCH_SIZE_avg=1920
-    TRAIN_SAMPLES=$(( ${TRAIN_TOKENS} / ${SEQ_LEN} ))
-    LR_WARMUP_SAMPLES=$((${warm_step} * ${GLOBAL_BATCH_SIZE_avg} ))
-    LR_DECAY_SAMPLES=$(( ${TRAIN_TOKENS} /  ${SEQ_LEN} ))
-    DEFAULT_RAMPUP_BATCH_SIZE="1920 960 54931640"
-    RAMPUP_BATCH_SIZE=${RAMPUP_BATCH_SIZE:-${DEFAULT_RAMPUP_BATCH_SIZE}}
-    megatron_options=" ${megatron_options} \
-        --lr-decay-samples ${LR_DECAY_SAMPLES} \
-        --lr-warmup-samples ${LR_WARMUP_SAMPLES} \
-        --train-samples ${TRAIN_SAMPLES} \
-        --rampup-batch-size ${RAMPUP_BATCH_SIZE} "
-fi
+LR_WARMUP_ITERS=$(( ${TRAIN_ITERS} * 2 / 100 ))
+LR_DECAY_ITERS=${TRAIN_ITERS}
+megatron_options=" ${megatron_options} \
+    --lr-decay-iters ${LR_DECAY_ITERS} \
+    --lr-warmup-iters ${LR_WARMUP_ITERS} \
+    --train-iters ${TRAIN_ITERS} "
+
 
 # Turn on PyTorchProfiler in DSW
 if [ $ENV = dsw ]; then
@@ -836,7 +836,7 @@ if [[ $OFFLOAD_OPTIMIZER = true ]]; then
 fi
 
 # 开启12LHSD的atten计算方法,打印MFU
-if [[ ${BENCHMARK_MFU:-true} = true ]] ; then
+if [[ ${BENCHMARK_MFU:-false} = true ]] ; then
     new_options=" ${new_options} \
     --num-steps-average-throughput 5 \
     --benchmark-target-tflops 1200.00 \
@@ -893,7 +893,9 @@ if [[ ${USE_FUSED_LCE:-false} = true ]]; then
     "
 fi
 
-run_cmd="torchrun $DISTRIBUTED_ARGS ${MEGATRON_PATH}/pretrain_gpt.py
+ckpt_options=" ${ckpt_options} --save-total-limit ${SAVE_TOTAL_LIMIT:--1} "
+
+run_cmd="torchrun $DISTRIBUTED_ARGS ${MEGATRON_PATH}/finetune_gpt_zjlm.py
  ${megatron_options} ${dataset_option} ${pr_options} ${load_options} ${te_options} ${activation_checkpoint_options} \
  ${do_options} ${fl_options} ${sp_options} ${moe_options} ${offload_option} ${sft_option} ${vp_options} \
  ${uneven_split_option} ${prof_options} ${seqwarm_options} ${new_options} ${fsdp_options} ${ckpt_options}"
@@ -901,4 +903,3 @@ run_cmd="torchrun $DISTRIBUTED_ARGS ${MEGATRON_PATH}/pretrain_gpt.py
 echo ${run_cmd}
 [[ $RANK = 0 ]] && mkdir -p ${OUTPUT_DIR}/logs/${NAME} && echo ${run_cmd} > ${OUTPUT_DIR}/logs/${NAME}/cmd-${MODEL_SIZE}-pp-${PP}-ep-${EP}-AC-${AC}-gbs-${GLOBAL_BATCH_SIZE}-${TIMESTAMP}.sh
 eval ${run_cmd}
-

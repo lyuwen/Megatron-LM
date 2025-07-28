@@ -28,7 +28,6 @@ from .mappings import (
 from .random import (
     CheckpointWithoutOutput,
     checkpoint,
-    fp8_checkpoint,
     get_cuda_rng_tracker,
     get_data_parallel_rng_tracker_name,
     get_expert_parallel_rng_tracker_name,
