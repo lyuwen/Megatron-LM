@@ -603,6 +603,7 @@ def topk_softmax_with_capacity(
     deterministic_mode: bool = False,
     score_function: str = "softmax",
     expert_bias: Optional[torch.Tensor] = None,
+    moe_norm_topk_prob: bool = False
 ):
     """Apply capacity and padding to the top-k selection.
     Args:
@@ -656,6 +657,9 @@ def topk_softmax_with_capacity(
         else:
             scores, top_indices = compute_topk(logits, topk, num_groups, group_topk)
             probs = torch.softmax(scores, dim=-1, dtype=torch.float32).type_as(logits)
+        # NOTE: hard code norm_topk_prob here
+        if moe_norm_topk_prob:
+            probs = probs / (probs.sum(dim=-1, keepdim=True) + 1e-20)
     elif score_function == "sigmoid":
         scores = torch.sigmoid(logits.float()).type_as(logits)
         if expert_bias is not None:
