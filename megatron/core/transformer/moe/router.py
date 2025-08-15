@@ -241,6 +241,9 @@ class TopKRouter(Router):
         # fallback到原始实现
         if self.score_function == "softmax":
             scores = torch.softmax(logits, dim=-1, dtype=torch.float32)
+            # NOTE: hard code norm_topk_prob here
+            if self.config.moe_norm_topk_prob:
+                scores = scores / (scores.sum(dim=-1, keepdim=True) + 1e-20)
         elif self.score_function == "sigmoid":
             scores = torch.sigmoid(logits)
             scores = (
@@ -287,6 +290,7 @@ class TopKRouter(Router):
                 deterministic_mode=self.config.deterministic_mode,
                 score_function=self.score_function,
                 expert_bias=self.expert_bias,
+                moe_norm_topk_prob=self.config.moe_norm_topk_prob
             )
 
         if self.training and torch.is_grad_enabled():
@@ -344,6 +348,7 @@ class TopKRouter(Router):
                 deterministic_mode=self.config.deterministic_mode,
                 score_function=self.score_function,
                 expert_bias=self.expert_bias,
+                moe_norm_topk_prob=self.config.moe_norm_topk_prob
             )
 
         if self.training and torch.is_grad_enabled():
@@ -566,6 +571,7 @@ class TopKRouter(Router):
                     deterministic_mode=self.config.deterministic_mode,
                     score_function=self.score_function,
                     expert_bias=self.expert_bias,
+                    moe_norm_topk_prob=self.config.moe_norm_topk_prob
                 )
         else:
             raise ValueError(f"Unsupported MoE routing type: {self.routing_type}")

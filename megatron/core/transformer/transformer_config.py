@@ -403,6 +403,10 @@ class TransformerConfig(ModelParallelConfig):
     moe_router_score_function: str = "softmax"
     """Score function for MoE routing. Can be "softmax" or "sigmoid"."""
 
+    # ZJ-021 0815: Enable renormalize per-token router probabilities and the selected top-k scores
+    moe_norm_topk_prob: bool = False
+    """Renormalizes per-token router probabilities and the selected top-k scores"""
+
     moe_router_dtype: Optional[str] = None
     """Data type for routing and expert output weighted averaging. Using fp32 or fp64 can
     improve stability especially when the number of experts is large (e.g. finegrained-moe).

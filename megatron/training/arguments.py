@@ -2617,6 +2617,8 @@ def _add_moe_args(parser):
                        choices=['softmax', 'sigmoid'],
                        default='softmax',
                        help='Score function for MoE TopK routing. Can be "softmax" or "sigmoid".')
+    group.add_argument('--moe-norm-topk-prob', default=False, action='store_true',
+                       help='ZJ-021: Enable renormalize per-token router probabilities and the selected top-k scores')
     group.add_argument('--moe-router-topk', type=int, default=2,
                        help='Number of experts to route to for each token. The default is 2.')
     group.add_argument('--moe-router-pre-softmax', action='store_true',
