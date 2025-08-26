@@ -2705,6 +2705,10 @@ def _add_mla_args(parser):
                        help="Dimension of the head in the V projection.")
     group.add_argument('--rotary-scaling-factor', type=float, default=1.0,
                        help="Rotary scaling factor for the rotary embeddings.")
+    group.add_argument('--beta-fast', type=float, default=32.0,
+                       help="beta_fast for YaRN RoPE in multi-latent attention.")
+    group.add_argument('--beta-slow', type=float, default=1.0,
+                       help="beta_slow for YaRN RoPE in multi-latent attention.")
     group.add_argument('--mscale', type=float, default=1.0,
                        help="Mscale for YaRN RoPE in multi-latent attention.")
     group.add_argument('--mscale-all-dim', type=float, default=1.0,
