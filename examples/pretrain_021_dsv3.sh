@@ -257,7 +257,8 @@ NUM_ATTN_HEADS=128
 NUM_LAYERS=${NUM_LAYERS:-61}
 INTERMEDIATE_SIZE=18432
 MOE_INTERMEDIATE_SIZE=2048
-MAX_POSITION_EMBEDDINGS=163840
+# MAX_POSITION_EMBEDDINGS=163840
+MAX_POSITION_EMBEDDINGS=4096
 EXTRA_VOCAB_SIZE=467
 Q_LORA_RANK=1536
 KV_LORA_RANK=512
@@ -287,6 +288,10 @@ moe_options=" \
     --qk-head-dim ${QK_NOPE_HEAD_DIM} \
     --qk-pos-emb-head-dim ${QK_ROPE_HEAD_DIM} \
     --v-head-dim ${V_HEAD_DIM} \
+    --beta-fast 32 \
+    --beta-slow 1 \
+    --mscale 1.0 \
+    --mscale-all-dim 1.0 \
     --moe-grouped-gemm"
 
 elif [ $MODEL_SIZE = 1000B ]; then
@@ -336,7 +341,8 @@ NUM_ATTN_HEADS=64
 NUM_LAYERS=${NUM_LAYERS:-61}
 INTERMEDIATE_SIZE=18432
 MOE_INTERMEDIATE_SIZE=2048
-MAX_POSITION_EMBEDDINGS=131072
+MAX_POSITION_EMBEDDINGS=4096
+# MAX_POSITION_EMBEDDINGS=131072
 # MAX_POSITION_EMBEDDINGS=163840
 EXTRA_VOCAB_SIZE=467
 Q_LORA_RANK=1536
@@ -367,6 +373,10 @@ moe_options=" \
     --qk-head-dim ${QK_NOPE_HEAD_DIM} \
     --qk-pos-emb-head-dim ${QK_ROPE_HEAD_DIM} \
     --v-head-dim ${V_HEAD_DIM} \
+    --beta-fast 1 \
+    --beta-slow 1 \
+    --mscale 1.0 \
+    --mscale-all-dim 1.0 \
     --moe-grouped-gemm"
 
 # for tokenizer , to fix
