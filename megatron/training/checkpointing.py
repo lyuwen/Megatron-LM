@@ -91,7 +91,7 @@ def check_checkpoint_args(checkpoint_args):
     _compare('num_attention_heads')
     _compare('add_position_embedding', default=True)
     if args.vocab_file:
-        _compare('max_position_embeddings',old_arg_name='original_max_position_embeddings')
+        _compare('max_position_embeddings')
         _compare('make_vocab_size_divisible_by')
         if not args.use_dist_ckpt:
             _compare('padded_vocab_size')
