@@ -1216,11 +1216,14 @@ class MLATransformerConfig(TransformerConfig):
     beta_slow: float = 1
     """Beta slow for YaRN RoPE, used by yarn."""
 
-    mscale: float = 0.707
+    mscale: float = 1.0
     """Mscale for YaRN RoPE in Multi-Latent Attention, used by yarn."""
 
-    mscale_all_dim: float = 0.707
+    mscale_all_dim: float = 0.0
     """Mscale all dimensions for YaRN RoPE in Multi-Latent Attention, used by yarn."""
+
+    original_max_position_embeddings: Optional[int] = None
+    """maximum position embeddings for the original model, used by yarn."""
 
     def __post_init__(self):
         super().__post_init__()
