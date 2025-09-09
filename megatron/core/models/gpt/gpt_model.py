@@ -29,6 +29,8 @@ from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core.utils import WrappedTensor, deprecate_inference_params
 from megatron.core.fusions.fused_linear_cross_entropy import FusedLinearCrossEntropyLoss
 
+from megatron.core.rl import entropy as _entropy
+
 class GPTModel(LanguageModule):
     """GPT Transformer language model.
 
@@ -429,6 +431,11 @@ class GPTModel(LanguageModule):
         if labels is None:
             # [s b h] => [b s h]
             return logits.transpose(0, 1).contiguous()
+
+        # TODO calculate entropy
+        entropy = _entropy.entropy_from_logits(logits.clone().detach())
+        entropy = torch.sum(entropy * loss_mask, dim=-1) / torch.sum(loss_mask, dim=-1)
+        _entropy.push_micro_batch(entropy)
 
         loss = self.compute_language_model_loss(labels, logits)
 
