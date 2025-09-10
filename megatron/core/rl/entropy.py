@@ -29,8 +29,8 @@ _ENTROPY_STORE = []
 
 
 def push_micro_batch(item):
-    global = _ENTROPY_STORE
-    _ENTROPY_STORE.append(_ENTROPY_STORE)
+    global _ENTROPY_STORE
+    _ENTROPY_STORE.append(item)
 
 
 def get_batch():
@@ -44,7 +44,7 @@ def get_batch():
 
 def get_batch_entropy():
     seq_entropy = get_batch()
-    if not seq_entropy:
+    if seq_entropy is not None:
         return None
     entropy = torch.mean(seq_entropy)  # seq-mean
     return entropy

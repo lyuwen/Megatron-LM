@@ -433,7 +433,8 @@ class GPTModel(LanguageModule):
             return logits.transpose(0, 1).contiguous()
 
         # TODO calculate entropy
-        entropy = _entropy.entropy_from_logits(logits.clone().detach())
+        #  entropy = _entropy.entropy_from_logits(logits.clone().detach())
+        entropy = _entropy.vocab_parallel_entropy(logits.clone().detach())
         entropy = torch.sum(entropy * loss_mask, dim=-1) / torch.sum(loss_mask, dim=-1)
         _entropy.push_micro_batch(entropy)
 

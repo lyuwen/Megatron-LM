@@ -1785,6 +1785,7 @@ def training_log(
         entropy = get_batch_entropy()
         if entropy is not None
             log_string += f' entropy: {entropy:.6f} |'
+            writer.add_scalar('entropy', entropy, iteration)
         log_string += f' loss scale: {loss_scale:.1f} |'
         if grad_norm is not None:
             log_string += f' grad norm: {grad_norm:.3f} |'
