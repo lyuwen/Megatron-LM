@@ -1783,7 +1783,7 @@ def training_log(
                     log_string += ' {}: {:.6E} |'.format(key, avg)
                 total_loss_dict[key] = torch.tensor([0.0], dtype=torch.float, device='cuda')
         entropy = get_batch_entropy()
-        if entropy is not None
+        if entropy is not None:
             log_string += f' entropy: {entropy:.6f} |'
         log_string += f' loss scale: {loss_scale:.1f} |'
         if grad_norm is not None:

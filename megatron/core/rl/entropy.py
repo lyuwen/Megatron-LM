@@ -44,7 +44,7 @@ def get_batch():
 
 def get_batch_entropy():
     seq_entropy = get_batch()
-    if not seq_entropy:
+    if seq_entropy is None:
         return None
     entropy = torch.mean(seq_entropy)  # seq-mean
     return entropy

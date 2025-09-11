@@ -863,6 +863,8 @@ def track_moe_metrics(
         # only track aux loss here
         aux_losses = {k: v['values'].float() * loss_scale for k, v in tracker.items() if k.endswith("loss")}
         for name, loss_list in aux_losses.items():
+            if tracker[name].get("layer_pattern", None) is None:
+                continue
             # fix the loss list here, only record the moe_layer, can fix aux loss in both tensorboard and print log
             loss_list = loss_list[torch.tensor(moe_layer_pattern)>0]
             if total_loss_dict is not None:

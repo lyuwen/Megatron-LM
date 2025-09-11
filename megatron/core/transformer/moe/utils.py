@@ -26,7 +26,7 @@ def get_dense_mlp_nparams(config) -> int:
 def get_shared_experts_nparams(config) -> int:
     """ Calculate the number of parmeters for the shared experts in the MoE MLP layer
     """
-    return (config.moe_shared_expert_intermediate_size * config.hidden_size) * 3
+    return ((config.moe_shared_expert_intermediate_size or 0) * config.hidden_size) * 3
 
 
 def get_routed_experts_nparams(config) -> int:

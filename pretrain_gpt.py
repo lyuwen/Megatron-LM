@@ -140,7 +140,7 @@ def model_provider(
                         args.moe_grouped_gemm,
                         args.qk_layernorm,
                         args.multi_latent_attention,
-                        args.moe_use_legacy_grouped_gemm,
+                        getattr(args, "moe_use_legacy_grouped_gemm", False),
                     )
                 else:
                     transformer_layer_spec = get_gpt_layer_local_spec(

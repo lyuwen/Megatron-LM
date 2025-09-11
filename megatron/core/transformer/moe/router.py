@@ -25,12 +25,15 @@ from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core import mpu
 from megatron.core.sequence_length_scheduler import get_iteration
 
-from megatron.core.extensions.transformer_engine import (
-    fused_topk_with_score_function,
-    fused_compute_score_for_moe_aux_loss,
-    fused_moe_aux_loss,
-    HAVE_TE_ROUTER,
-)
+try:
+    from megatron.core.extensions.transformer_engine import (
+        fused_topk_with_score_function,
+        fused_compute_score_for_moe_aux_loss,
+        fused_moe_aux_loss,
+        HAVE_TE_ROUTER,
+    )
+except ImportError:
+    HAVE_TE_ROUTER = False
 
 # Import triton implementation
 try:
@@ -178,6 +181,7 @@ class TopKRouter(Router):
             HAVE_TE_ROUTER
             and self.config.moe_topk_router_fusion
             and self.config.moe_expert_capacity_factor is None
+            and not self.config.moe_norm_topk_prob
         )
 
     def _should_use_te_aux_loss(self):
