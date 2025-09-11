@@ -29,8 +29,8 @@ _ENTROPY_STORE = []
 
 
 def push_micro_batch(item):
-    global = _ENTROPY_STORE
-    _ENTROPY_STORE.append(_ENTROPY_STORE)
+    global _ENTROPY_STORE
+    _ENTROPY_STORE.append(item)
 
 
 def get_batch():
